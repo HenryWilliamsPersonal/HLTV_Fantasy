@@ -6,7 +6,8 @@ Modern HLTV event pages embed their full structure as typed JSON:
   ``SixteenEight`` = 16 teams, top 8) with the full team list, initial
   seedings, pairing rules (round 1 + Buchholz) and per-record matchups.
 - ``data-slotted-bracket-json`` — ``Bracket.SingleElimination`` /
-  ``Bracket.DoubleElimination4`` / ``Bracket.DoubleElimination8`` with named
+  ``Bracket.DoubleElimination4`` / ``Bracket.DoubleElimination8`` (October
+  2026 pages: ``singleElimination`` / ``doubleElimination4`` / ``doubleElimination8``) with named
   brackets ("Playoffs", "Group A", "3rd Place Decider Match") and
   ``FixedTeam`` slots carrying team ids + names.
 - ``<table class="formats table">`` — per-stage format text
@@ -90,7 +91,7 @@ def _collect_teams(node: Any, out: Dict[int, str]) -> None:
         # SlotTeam.Known: {"id": {"teamId": N}, "name": "X", "logo": {...}} (multi-stage
         # blobs) or {"type": "...SlotTeam.Known", "id": {"teamId": N}, "name": "X"} (2026 brackets)
         if node.get("name") and isinstance(node.get("id"), dict) and (
-            node.get("logo") or str(node.get("type") or "").endswith("SlotTeam.Known")
+            node.get("logo") or str(node.get("type") or "").endswith("SlotTeam.Known") or node.get("type") == "known"
         ):
             _put_team(out, node["id"].get("teamId"), node.get("name"))
         for value in node.values():
@@ -241,13 +242,69 @@ def parse_double8_full(data: Dict[str, Any]) -> Dict[str, Any]:
         e = slot.get(f"slotEntry{n}") or {}
         return (str(e.get("type") or ""), str(((e.get("slotId") or {}).get("id")) or ""))
 
-    for (section, idx), expected in _DE8_FULL_ROUTING.items():
-        slots = _de_slots(data.get(section))
-        if len(slots) < idx:
-            raise ValueError(f"DE8 bracket has no {section} slot {idx}")
-        got = (entry(slots[idx - 1], 1), entry(slots[idx - 1], 2))
-        if got != expected:
-            raise ValueError(f"DE8 routing at {section}[{idx}] is {got}, expected {expected}")
+    def slot_id(slot: Dict[str, Any]) -> str:
+        return str(((slot.get("slotId") or {}).get("id")) or "")
+
+    def side_ids(slot: Dict[str, Any], side: str) -> set:
+        """Team ids a side can hold: the known team, or its oneOf candidates."""
+        t = ((slot.get("matchup") or {}).get(side)) or {}
+        if not isinstance(t, dict):
+            return set()
+        if t.get("type") == "oneOf":
+            out = set()
+            for cand in t.get("candidates") or []:
+                raw = (cand or {}).get("id")
+                tid = raw.get("teamId") if isinstance(raw, dict) else raw
+                if tid:
+                    out.add(int(tid))
+            return out
+        known = _slot_side_team(slot, side)
+        return {known["id"]} if known else set()
+
+    explicit = any("slotEntry1" in slot for section in data.values() for slot in _de_slots(section))
+    if explicit:
+        for (section, idx), expected in _DE8_FULL_ROUTING.items():
+            slots = _de_slots(data.get(section))
+            if len(slots) < idx:
+                raise ValueError(f"DE8 bracket has no {section} slot {idx}")
+            got = (entry(slots[idx - 1], 1), entry(slots[idx - 1], 2))
+            if got != expected:
+                raise ValueError(f"DE8 routing at {section}[{idx}] is {got}, expected {expected}")
+    else:
+        # October-2026 schema: no source slot ids. The page must carry exactly
+        # the simulator's sections and slot ids, and wherever it lists the
+        # candidate teams of a slot they must be the feeders the simulator
+        # routes there (the upper bracket and lower round 1); the lower
+        # bracket's crossing is only described in prose, so it is taken as
+        # HLTV's standard layout, which every DE8 page so far has used.
+        expected_ids = {
+            "upperRound1": ["UpperQuarters1", "UpperQuarters2", "UpperQuarters3", "UpperQuarters4"],
+            "upperRound2": ["UpperSemis1", "UpperSemis2"],
+            "upperFinal": ["UpperFinal"],
+            "lowerRound1": ["LowerRound1Match1", "LowerRound1Match2"],
+            "lowerDropdown1": ["LowerSemis1", "LowerSemis2"],
+            "lowerRound2": ["LowerFinal"],
+            "consolidationFinal": ["ConsolidationFinal"],
+            "grandFinal": ["GrandFinal"],
+        }
+        for section, ids in expected_ids.items():
+            got = [slot_id(sl) for sl in _de_slots(data.get(section))]
+            if got != ids:
+                raise ValueError(f"DE8 section {section} has slots {got}, expected {ids}")
+        quarters = _de_slots(data.get("upperRound1"))
+        q_teams = [side_ids(q, "team1") | side_ids(q, "team2") for q in quarters]
+        feeders = {
+            ("upperRound2", 0): (0, 1),
+            ("upperRound2", 1): (2, 3),
+            ("lowerRound1", 0): (0, 1),
+            ("lowerRound1", 1): (2, 3),
+        }
+        for (section, idx), (qa, qb) in feeders.items():
+            slot = _de_slots(data.get(section))[idx]
+            for side, q in (("team1", qa), ("team2", qb)):
+                cands = side_ids(slot, side)
+                if cands and q_teams[q] and cands != q_teams[q]:
+                    raise ValueError(f"DE8 {section}[{idx + 1}] {side} candidates {sorted(cands)} are not upper quarter {q + 1}'s teams {sorted(q_teams[q])}")
     seeds: List[Optional[Dict[str, Any]]] = []
     for slot in _de_slots(data.get("upperRound1"))[:4]:
         seeds.append(_slot_side_team(slot, "team1"))
@@ -333,12 +390,13 @@ def parse_bracket_stages(html: str) -> List[Dict[str, Any]]:
         if not data:
             continue
         type_name = str(data.get("type") or "").rsplit(".", 1)[-1]
+        type_key = type_name.lower()  # "DoubleElimination8" (2025) / "doubleElimination8" (Oct 2026)
         name = str(data.get("name") or "")
         teams: Dict[int, str] = {}
         _collect_teams(data, teams)
-        if type_name.startswith("DoubleElimination"):
+        if type_key.startswith("doubleelimination"):
             try:
-                size = int(type_name.replace("DoubleElimination", "") or 0)
+                size = int(re.sub(r"\D", "", type_name) or 0)
             except ValueError:
                 size = 0
             variant, advance = _classify_de_group(data, type_name, name, size)
@@ -355,9 +413,9 @@ def parse_bracket_stages(html: str) -> List[Dict[str, Any]]:
                 except ValueError as exc:
                     entry.update({"bracket_kind": "double", "seeds": None, "routing_error": str(exc)})
             brackets.append(entry)
-        elif type_name.startswith("SingleElimination"):
+        elif type_key.startswith("singleelimination"):
             rounds = data.get("rounds") or []
-            first = (rounds[0].get("slots") or []) if rounds else []
+            first = _de_slots(rounds[0]) if rounds else []
             byes = sum(1 for s in first if s.get("hidden"))
             visible = len(first) - byes
             brackets.append(
@@ -382,7 +440,7 @@ def parse_bracket_stages(html: str) -> List[Dict[str, Any]]:
         rounds = (bracket or {}).get("rounds") or []
         if not rounds:
             continue
-        first = rounds[0].get("slots") or []
+        first = _de_slots(rounds[0])
         byes = sum(1 for s in first if s.get("hidden"))
         teams = {}
         _collect_teams(bracket, teams)

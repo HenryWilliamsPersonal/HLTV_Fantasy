@@ -3149,12 +3149,31 @@ def _detect_group_format(html: str) -> Optional[str]:
     """
     import html as _htmlmod
 
-    # The bracket JSON is embedded HTML-escaped, so unescape before matching
-    # (the "8" vs "4" marker itself is unaffected, but keeps this consistent).
-    un = _htmlmod.unescape(html or "")
-    if "DoubleElimination8" in un:
+    from backend.services.event_format import parse_bracket_stages
+
+    # The typed bracket JSON first: a group bracket is a double-elim bracket
+    # that is not the whole event (variant _full) or a qualifier (_qual).
+    try:
+        sizes = {
+            int(b.get("size") or 0)
+            for b in parse_bracket_stages(html or "")
+            if b.get("bracket") == "double_elim"
+            and not str(b.get("variant") or "").endswith("_full")
+            and "_qual" not in str(b.get("variant") or "")
+        }
+    except Exception:  # noqa: BLE001 - fall back to the text markers
+        sizes = set()
+    if 8 in sizes:
         return "de8"
-    if "DoubleElimination4" in un:
+    if 4 in sizes:
+        return "gsl4"
+    # The bracket JSON is embedded HTML-escaped, so unescape before matching
+    # (type names are "DoubleElimination8" on 2025 pages, "doubleElimination8"
+    # from October 2026).
+    un = _htmlmod.unescape(html or "").lower()
+    if "doubleelimination8" in un:
+        return "de8"
+    if "doubleelimination4" in un:
         return "gsl4"
     return None
 
@@ -3299,11 +3318,11 @@ def _parse_event_playoff_bracket(html: str) -> Dict[str, Any]:
     for rm in re.finditer(r'"team":\{"id":(\d+),"name":"[^"]+".{0,700}?"ranking":(\d+)', un):
         ranking_by_id.setdefault(int(rm.group(1)), int(rm.group(2)))
 
-    m = re.search(r'SingleElimination","name":"Single Elimination Bracket"', un)
+    m = re.search(r'[Ss]ingleElimination","name":"Single Elimination Bracket"', un)
     if not m:
         return {"bracket_size": 0, "seeds": []}
     seg = un[m.start():]
-    rt = re.search(r"Bracket\.Round\.Round(\d+)", seg)
+    rt = re.search(r'(?:Bracket\.Round\.Round|"type":"round)(\d+)', seg)
     if not rt:
         return {"bracket_size": 0, "seeds": []}
     field_size = int(rt.group(1)) * 2
@@ -3312,12 +3331,14 @@ def _parse_event_playoff_bracket(html: str) -> Dict[str, Any]:
 
     seeds: List[Optional[Dict[str, Any]]] = []
     for tm in re.finditer(
-        r'"team[12]":\{"type":"[^"]*\.(FixedTeam|Placeholder|TBD|Bye|Seed|Winner|Loser)[^"]*"'
-        r'(?:,"team":\{"id":(\d+),"name":"([^"]+)")?',
+        r'"team[12]":\{"type":"(?:[^"]*\.)?(FixedTeam|Placeholder|TBD|Bye|Seed|Winner|Loser|known|text|oneOf)"'
+        r'(?:,"team":\{"id":(\d+),"name":"([^"]+)")?'
+        r'(?:,"id":\{"teamId":(\d+)\},"name":"([^"]+)")?',
         seg,
     ):
-        kind, tid, tname = tm.group(1), tm.group(2), tm.group(3)
-        if kind == "FixedTeam" and tid and tname:
+        kind = tm.group(1)
+        tid, tname = (tm.group(2), tm.group(3)) if kind == "FixedTeam" else (tm.group(4), tm.group(5))
+        if kind in ("FixedTeam", "known") and tid and tname:
             seeds.append({"id": int(tid), "name": tname, "ranking": ranking_by_id.get(int(tid))})
         else:
             seeds.append(None)
@@ -3392,7 +3413,7 @@ def _parse_bracket6_from_structure(html: str):
             data = _json.loads(_htmllib.unescape(raw))
         except Exception:
             continue
-        if not str(data.get("type", "")).endswith("SingleElimination"):
+        if not str(data.get("type", "")).lower().endswith("singleelimination"):
             continue
         bracket_name = str(data.get("name") or "")
         if re.search(r"3rd|third|decider", bracket_name, re.IGNORECASE):

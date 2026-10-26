@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } from "electron";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
@@ -347,6 +347,67 @@ app.whenReady().then(async () => {
       siteUrl: String(PUBLIC_CONFIG.siteUrl || ""),
       packaged: app.isPackaged,
     };
+  });
+  // My Team: sign in to HLTV in a window of its own (a separate cookie
+  // partition, a plain Chrome user agent so hltv.org treats it as a browser)
+  // and hand the session cookies to the renderer once HLTV has set them.
+  const HLTV_PARTITION = "persist:hltv-login";
+  const HLTV_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+  let hltvWindow = null;
+  ipcMain.handle("hltv-connect", async () => {
+    if (hltvWindow && !hltvWindow.isDestroyed()) {
+      hltvWindow.focus();
+      return { status: "busy" };
+    }
+    const ses = session.fromPartition(HLTV_PARTITION);
+    ses.setUserAgent(HLTV_UA);
+    const win = new BrowserWindow({
+      width: 1100,
+      height: 860,
+      backgroundColor: "#0a0c10",
+      autoHideMenuBar: true,
+      parent: mainWindow || undefined,
+      webPreferences: { partition: HLTV_PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false },
+    });
+    hltvWindow = win;
+    win.loadURL("https://www.hltv.org/login");
+    const cookiesNow = async () => {
+      const list = await ses.cookies.get({ domain: "hltv.org" });
+      return list
+        .filter((c) => ["autologin", "PHPSESSID", "cf_clearance", "_cfuvid", "__cflb"].includes(c.name))
+        .map((c) => ({ name: c.name, value: c.value, domain: c.domain || ".hltv.org", path: c.path || "/", expiry: c.expirationDate ? Math.floor(c.expirationDate) : undefined, secure: Boolean(c.secure), httpOnly: Boolean(c.httpOnly) }));
+    };
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (result) => {
+        if (done) return;
+        done = true;
+        clearInterval(timer);
+        clearTimeout(deadline);
+        hltvWindow = null;
+        if (!win.isDestroyed()) win.close();
+        resolve(result);
+      };
+      const timer = setInterval(async () => {
+        if (win.isDestroyed()) return finish({ status: "closed" });
+        try {
+          const cookies = await cookiesNow();
+          if (cookies.some((c) => c.name === "autologin")) finish({ status: "ok", cookies });
+        } catch {
+          /* keep polling */
+        }
+      }, 1500);
+      const deadline = setTimeout(() => finish({ status: "timeout" }), 10 * 60 * 1000);
+      win.on("closed", () => finish({ status: "closed" }));
+    });
+  });
+  ipcMain.handle("hltv-forget", async () => {
+    try {
+      await session.fromPartition(HLTV_PARTITION).clearStorageData();
+    } catch {
+      /* nothing stored */
+    }
+    return { status: "ok" };
   });
   ipcMain.handle("install-update", () => {
     if (autoUpdater) autoUpdater.quitAndInstall(true, true);

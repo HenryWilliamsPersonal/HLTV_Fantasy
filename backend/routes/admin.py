@@ -1512,8 +1512,8 @@ def my_hltv_session_cookies(payload: Dict[str, Any]):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HLTVBrowserError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    data = my_team.save_personal(cookies, str(username or ""))
-    _admin_logger.info("Personal HLTV session handed over: %s", username or "?")
+    data = my_team.save_account(my_team.OPERATOR_KEY, cookies, str(username or ""))
+    _admin_logger.info("Operator's HLTV session handed over: %s", username or "?")
     return {"status": "ok", "logged_in": True, "username": username or "", "autologin_expires_at": data.get("autologin_expires_at")}
 
 
@@ -1521,14 +1521,14 @@ def my_hltv_session_cookies(payload: Dict[str, Any]):
 def get_my_hltv_session():
     from backend.services import my_team
 
-    return my_team.personal_status()
+    return my_team.account_status(my_team.OPERATOR_KEY)
 
 
 @router.delete("/my-hltv-session")
 def delete_my_hltv_session():
     from backend.services import my_team
 
-    my_team.clear_personal()
+    my_team.forget_account(my_team.OPERATOR_KEY)
     return {"status": "ok", "connected": False}
 
 

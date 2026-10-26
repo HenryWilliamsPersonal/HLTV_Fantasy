@@ -3,8 +3,9 @@ scored (per player: rating, team, role and booster points, per match) set
 against what the stored valuation expected, plus a prediction for each
 player's next match.
 
-Sources, read through the shared browser signed in as the PERSONAL HLTV
-account (`.runtime/my-hltv-session.json`, handed over with
+Sources, read through the shared browser signed in as the USER's own HLTV
+account (data/hltv_accounts: the app signs them in through a window on
+hltv.org and hands the cookies over; the operator can also use
 `scripts/hltv-login-handoff.ps1 --account mine`), whose cookies replace the
 scraper account's for the duration of the read and are swapped back after:
 - /fantasy/{eid}/leagues/create/json — `topMenuData.leagueTeams`: the
@@ -33,58 +34,70 @@ logger = logging.getLogger(__name__)
 REFRESH = 600.0
 _CACHE: Dict[str, Dict[str, Any]] = {}
 _LOCK = threading.Lock()
-PERSONAL_SESSION_FILE = Path(__file__).resolve().parents[2] / ".runtime" / "my-hltv-session.json"
 SESSION_COOKIE_NAMES = ("autologin", "PHPSESSID")
+OPERATOR_KEY = "operator"
 
 
 class PersonalSessionError(RuntimeError):
-    """No personal HLTV login, or HLTV no longer accepts it."""
+    """No HLTV login for this user, or HLTV no longer accepts it."""
 
 
-def load_personal() -> Optional[Dict[str, Any]]:
+def _migrate_operator_file() -> None:
+    """The v0.1.95 single personal session file becomes the operator's row."""
+    from backend.data import hltv_accounts
+
+    f = Path(__file__).resolve().parents[2] / ".runtime" / "my-hltv-session.json"
+    if not f.exists() or hltv_accounts.get(OPERATOR_KEY):
+        return
     try:
-        data = json.loads(PERSONAL_SESSION_FILE.read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("cookies"):
+            hltv_accounts.save(OPERATOR_KEY, data["cookies"], str(data.get("username") or ""))
+        f.unlink()
     except Exception:  # noqa: BLE001
-        return None
-    return data if isinstance(data, dict) and data.get("cookies") else None
+        logger.warning("Could not migrate the operator's HLTV session file", exc_info=True)
 
 
-def save_personal(cookies: List[Dict[str, Any]], username: str) -> Dict[str, Any]:
-    expiry = None
-    for c in cookies:
-        if c.get("name") == "autologin" and c.get("expiry"):
-            expiry = float(c["expiry"])
-    data = {"cookies": cookies, "username": username, "saved_at": time.time(), "autologin_expires_at": expiry}
-    PERSONAL_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PERSONAL_SESSION_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    os.replace(tmp, PERSONAL_SESSION_FILE)
+def account(user_key: str) -> Optional[Dict[str, Any]]:
+    from backend.data import hltv_accounts
+
+    if user_key == OPERATOR_KEY:
+        _migrate_operator_file()
+    return hltv_accounts.get(user_key)
+
+
+def account_status(user_key: str) -> Dict[str, Any]:
+    from backend.data import hltv_accounts
+
+    if user_key == OPERATOR_KEY:
+        _migrate_operator_file()
+    return hltv_accounts.status(user_key)
+
+
+def cookies_for(user_key: str) -> List[Dict[str, Any]]:
+    row = account(user_key)
+    cookies = (row or {}).get("cookies") or []
+    if not any(c.get("name") == "autologin" for c in cookies):
+        raise PersonalSessionError("No HLTV login connected")
+    return cookies
+
+
+def save_account(user_key: str, cookies: List[Dict[str, Any]], username: str) -> Dict[str, Any]:
+    from backend.data import hltv_accounts
+
     with _LOCK:
-        _CACHE.clear()
-    return data
+        for k in [k for k in _CACHE if k[0] == user_key]:
+            _CACHE.pop(k, None)
+    return hltv_accounts.save(user_key, cookies, username)
 
 
-def clear_personal() -> None:
-    try:
-        PERSONAL_SESSION_FILE.unlink()
-    except FileNotFoundError:
-        pass
+def forget_account(user_key: str) -> bool:
+    from backend.data import hltv_accounts
+
     with _LOCK:
-        _CACHE.clear()
-
-
-def personal_status() -> Dict[str, Any]:
-    data = load_personal()
-    if not data:
-        return {"connected": False}
-    exp = data.get("autologin_expires_at")
-    return {
-        "connected": True,
-        "username": data.get("username") or "",
-        "saved_at": data.get("saved_at"),
-        "autologin_expires_at": exp,
-        "days_left": round((float(exp) - time.time()) / 86400, 1) if exp else None,
-    }
+        for k in [k for k in _CACHE if k[0] == user_key]:
+            _CACHE.pop(k, None)
+    return hltv_accounts.delete(user_key)
 
 
 def with_personal_session(callback, cookies: Optional[List[Dict[str, Any]]] = None):
@@ -94,9 +107,9 @@ def with_personal_session(callback, cookies: Optional[List[Dict[str, Any]]] = No
     from backend.services import hltv_session
     from backend.services.hltv_browser import run_hltv_browser_session
 
-    personal = cookies if cookies is not None else (load_personal() or {}).get("cookies") or []
+    personal = list(cookies or [])
     if not any(c.get("name") == "autologin" for c in personal):
-        raise PersonalSessionError("No personal HLTV login handed over yet")
+        raise PersonalSessionError("No HLTV login connected")
 
     def session(driver):
         saved = [c for c in (driver.get_cookies() or []) if c.get("name") in SESSION_COOKIE_NAMES]
@@ -165,10 +178,10 @@ def _points(text: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def _fetch_many(urls: List[str], max_age: float = REFRESH) -> Dict[str, str]:
-    """The pages, from the in-memory cache when younger than max_age; the
-    stale ones are read in one visit of the shared browser signed in as the
-    personal account (each archived as a page snapshot)."""
+def _fetch_many(urls: List[str], max_age: float, user_key: str) -> Dict[str, str]:
+    """The pages, from the in-memory cache (per user) when younger than
+    max_age; the stale ones are read in one visit of the shared browser
+    signed in as that user's HLTV account (each archived as a page snapshot)."""
     from backend.data.page_snapshots import save_page_snapshot
 
     out: Dict[str, str] = {}
@@ -176,13 +189,14 @@ def _fetch_many(urls: List[str], max_age: float = REFRESH) -> Dict[str, str]:
     now = time.time()
     with _LOCK:
         for url in urls:
-            hit = _CACHE.get(url)
+            hit = _CACHE.get((user_key, url))
             if hit and now - float(hit["at"]) < max_age:
                 out[url] = str(hit["html"])
             else:
                 stale.append(url)
     if not stale:
         return out
+    cookies = cookies_for(user_key)
 
     def read(driver, _username):
         pages = {}
@@ -197,31 +211,22 @@ def _fetch_many(urls: List[str], max_age: float = REFRESH) -> Dict[str, str]:
                 pass
         return pages
 
-    pages = with_personal_session(read) or {}
+    pages = with_personal_session(read, cookies=cookies) or {}
     with _LOCK:
         for url, html in pages.items():
-            _CACHE[url] = {"at": time.time(), "html": html}
+            _CACHE[(user_key, url)] = {"at": time.time(), "html": html}
     out.update(pages)
     return out
-
-
-def _fetch(url: str, max_age: float = REFRESH) -> str:
-    return _fetch_many([url], max_age).get(url, "")
 
 
 def _draft_url(event_id: int) -> str:
     return f"https://www.hltv.org/fantasy/{int(event_id)}/leagues/create/json"
 
 
-def my_teams_for(event_ids: List[int], max_age: float = REFRESH) -> Dict[int, List[Dict[str, Any]]]:
-    """{event_id: teams} for several events in one browser visit."""
-    pages = _fetch_many([_draft_url(e) for e in event_ids], max_age)
+def my_teams_for(event_ids: List[int], user_key: str, max_age: float = REFRESH) -> Dict[int, List[Dict[str, Any]]]:
+    """{event_id: the user's teams} for several events in one browser visit."""
+    pages = _fetch_many([_draft_url(e) for e in event_ids], max_age, user_key)
     return {int(e): _teams_from_draft(pages.get(_draft_url(e), "")) for e in event_ids}
-
-
-def my_teams(event_id: int, max_age: float = REFRESH) -> List[Dict[str, Any]]:
-    """The account's teams in this fantasy event."""
-    return _teams_from_draft(_fetch(_draft_url(event_id), max_age))
 
 
 def _teams_from_draft(html: str) -> List[Dict[str, Any]]:
@@ -413,8 +418,8 @@ def _predict_match(player_row: Dict[str, Any], own_tid: int, opp_tid: int, bo: i
     }
 
 
-def team_report(event_id: int, max_age: float = REFRESH) -> Optional[Dict[str, Any]]:
-    """The account's team in the event with HLTV's scoring, the valuation's
+def team_report(event_id: int, user_key: str, max_age: float = REFRESH) -> Optional[Dict[str, Any]]:
+    """The user's team in the event with HLTV's scoring, the valuation's
     expectation and the next-match prediction per player. None when the
     account has no team there."""
     from backend.data.player_db import get_player
@@ -423,12 +428,12 @@ def team_report(event_id: int, max_age: float = REFRESH) -> Optional[Dict[str, A
     from backend.services import event_rosters, live_pages
 
     eid = int(event_id)
-    teams = my_teams(eid, max_age)
+    teams = my_teams_for([eid], user_key, max_age).get(eid) or []
     if not teams:
         return None
     mine = teams[0]
     base = f"https://www.hltv.org/fantasy/{eid}/league/{mine['league_id']}/team/{mine['team_id']}"
-    pages = _fetch_many([base, base + "/details"], max_age)
+    pages = _fetch_many([base, base + "/details"], max_age, user_key)
     page = parse_team_page(pages.get(base, ""))
     try:
         rounds = parse_details_page(pages.get(base + "/details", ""))
@@ -497,5 +502,5 @@ def team_report(event_id: int, max_age: float = REFRESH) -> Optional[Dict[str, A
         "rounds": rounds,
         "expected_total": round(sum(float((p.get("expected") or {}).get("total") or 0.0) for p in page["players"]), 1),
         "read_at": time.time(),
-        "account": (load_personal() or {}).get("username") or "",
+        "account": (account(user_key) or {}).get("username") or "",
     }

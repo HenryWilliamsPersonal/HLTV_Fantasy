@@ -114,4 +114,7 @@ contextBridge.exposeInMainWorld("api", {
     },
   },
   checkForUpdates: () => ipcRenderer.invoke("check-updates"),
+  // My Team: sign in to HLTV in a window and get the session cookies back.
+  connectHltv: () => ipcRenderer.invoke("hltv-connect"),
+  forgetHltv: () => ipcRenderer.invoke("hltv-forget"),
 });

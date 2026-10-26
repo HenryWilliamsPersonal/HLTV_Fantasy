@@ -325,7 +325,7 @@ const ALL_TABS = [
   { key: "scheduling", label: "Scheduling" },
   { key: "users", label: "Users" },
 ];
-const PUBLIC_TAB_KEYS = ["view", "events", "tournament", "live"];
+const PUBLIC_TAB_KEYS = ["view", "events", "tournament", "live", "myteam"];
 const visibleTabs = () => (PUBLIC_BUILD ? ALL_TABS.filter((t) => PUBLIC_TAB_KEYS.includes(t.key)) : ALL_TABS);
 const NOT_PUBLISHED = "Valuations for this event have not been published yet.";
 
@@ -6327,22 +6327,76 @@ function MyTeamTab() {
   const [report, setReport] = useState(null);
   const [busy, setBusy] = useState(false);
   const [matchRow, setMatchRow] = useState(null);
+  const [connecting, setConnecting] = useState("");
+  const [pasted, setPasted] = useState("");
   const loadEvents = () => {
     setEvents(null);
     api
       .get("/my-team/events", 240000)
       .then((d) => {
+        if (d?.detail && !("connected" in (d || {}))) {
+          setAccount({ connected: false, error: String(d.detail) });
+          setEvents([]);
+          return;
+        }
         setAccount({ connected: Boolean(d?.connected), username: d?.username || "", days_left: d?.days_left, error: d?.error || "" });
         const list = Array.isArray(d?.events) ? d.events : [];
         setEvents(list);
         if (list.length && !eventId) setEventId((list.find((e) => e.status === "live") || list[0]).event_id);
       })
-      .catch(() => {
-        setAccount({ connected: false });
+      .catch((e) => {
+        setAccount({ connected: false, error: e?.message || "" });
         setEvents([]);
       });
   };
   useEffect(loadEvents, []);
+  // Connect: the app opens hltv.org in a window of its own, the user signs in
+  // there, and the session cookies come back to be verified and stored by
+  // the server for this user. Without the bridge, a pasted autologin cookie.
+  const connectAccount = async () => {
+    setConnecting("Signing in…");
+    try {
+      let payload = null;
+      if (window.api?.connectHltv) {
+        const r = await window.api.connectHltv();
+        if (r?.status === "ok" && Array.isArray(r.cookies)) payload = { cookies: r.cookies };
+        else if (r?.status === "busy") {
+          setConnecting("");
+          return;
+        } else {
+          setConnecting(r?.status === "timeout" ? "Timed out" : "");
+          return;
+        }
+      } else if (pasted.trim()) {
+        payload = { autologin: pasted.trim() };
+      } else {
+        setConnecting("");
+        return;
+      }
+      setConnecting("Checking…");
+      const d = await api.post("/my-team/session", payload, 180000);
+      if (d?.detail) {
+        setConnecting(String(d.detail));
+        return;
+      }
+      setPasted("");
+      setConnecting("");
+      loadEvents();
+    } catch (e) {
+      setConnecting(e?.message || "Could not connect");
+    }
+  };
+  const disconnectAccount = async () => {
+    try {
+      await api.delete("/my-team/session");
+      if (window.api?.forgetHltv) await window.api.forgetHltv();
+    } catch {
+      /* the status reload shows the truth */
+    }
+    setReport(null);
+    setEventId(null);
+    loadEvents();
+  };
   const load = async (id, refresh = false) => {
     if (!id) return;
     setBusy(true);
@@ -6389,14 +6443,25 @@ function MyTeamTab() {
   };
   if (events === null) return <div className="stack" />;
   if (!account?.connected) {
+    const hasBridge = Boolean(window.api?.connectHltv);
     return (
       <Section title="My Team">
         <div className="myteam-connect">
-          <span className="pill warn">Not connected</span>
-          <code>scripts\hltv-login-handoff.ps1 --account mine</code>
-          <button className="secondary" onClick={loadEvents}>
-            Check
+          <span className="pill warn">{account?.error ? account.error : "No HLTV account connected"}</span>
+          {!hasBridge && (
+            <input
+              id="myteam-autologin"
+              type="password"
+              placeholder="HLTV autologin cookie"
+              value={pasted}
+              onChange={(e) => setPasted(e.target.value)}
+              className="myteam-cookie"
+            />
+          )}
+          <button className="primary" onClick={connectAccount} disabled={Boolean(connecting) && connecting.endsWith("…")}>
+            {connecting && connecting.endsWith("…") ? connecting : "Connect HLTV account"}
           </button>
+          {connecting && !connecting.endsWith("…") && <span className="muted">{connecting}</span>}
         </div>
       </Section>
     );
@@ -6404,9 +6469,12 @@ function MyTeamTab() {
   if (events.length === 0) {
     return (
       <Section title="My Team">
-        <div className="pills">
+        <div className="myteam-connect">
           <span className="pill ok">{account.username || "Connected"}</span>
           <span className="muted">None</span>
+          <button className="secondary" onClick={disconnectAccount}>
+            Disconnect
+          </button>
         </div>
       </Section>
     );
@@ -6451,6 +6519,9 @@ function MyTeamTab() {
                   read {report.read_at ? new Date(report.read_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-"}
                   <button className="secondary" onClick={() => load(eventId, true)} disabled={busy}>
                     {busy ? "Reading…" : "Refresh"}
+                  </button>
+                  <button className="secondary" onClick={disconnectAccount}>
+                    Disconnect
                   </button>
                 </div>
               </div>

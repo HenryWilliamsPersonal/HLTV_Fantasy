@@ -58,6 +58,10 @@ PUBLIC_ROUTES: List[Tuple[str, str]] = [
     ("POST", r"/groups/swiss/pairings"),
     ("GET", r"/live/events"),
     ("GET", r"/live/events/\d+"),
+    # My Team: each signed-in user's own HLTV account (routes require a user)
+    ("GET", r"/my-team(/.*)?"),
+    ("POST", r"/my-team/session"),
+    ("DELETE", r"/my-team/session"),
 ]
 
 # Read-only data the Database tab, the player/team modals and the Tournament

@@ -105,7 +105,7 @@ def parse_swiss(html: str, to_tid: Callable[[Optional[int]], Optional[int]]) -> 
                 a, b = to_tid(a_h), to_tid(b_h)
                 if not a or not b:
                     continue
-                entry = {"match_id": mid, "a": a, "b": b, "a_hltv": a_h, "b_hltv": b_h, "start_at": _ts(m.get("timestamp")), "pool": record, "status": "upcoming", "url": f"https://www.hltv.org/matches/{mid}/"}
+                entry = {"match_id": mid, "a": a, "b": b, "a_hltv": a_h, "b_hltv": b_h, "start_at": _ts(m.get("timestamp")), "pool": record, "status": "upcoming", "url": f"https://www.hltv.org/matches/{mid}/-"}
                 res = results.get(mid)
                 if res:
                     sa, sb = res["score_a"], res["score_b"]
@@ -175,7 +175,8 @@ def parse_matches_page(html: str) -> Dict[int, Dict[str, Any]]:
         a_h = int(attrs["team1"]) if str(attrs.get("team1") or "").isdigit() else None
         b_h = int(attrs["team2"]) if str(attrs.get("team2") or "").isdigit() else None
         unix = _UNIX_RE.search(seg)
-        entry: Dict[str, Any] = {"live": str(attrs.get("live") or "").lower() == "true", "start_at": _ts(unix.group(1)) if unix else None, "a_hltv": a_h, "b_hltv": b_h}
+        href = re.search(r'href="(/matches/\d+/[^"]+)"', seg)
+        entry: Dict[str, Any] = {"live": str(attrs.get("live") or "").lower() == "true", "start_at": _ts(unix.group(1)) if unix else None, "a_hltv": a_h, "b_hltv": b_h, "url": f"https://www.hltv.org{href.group(1)}" if href else None}
         if entry["live"]:
             map_scores = {int(t): int(s) for s, t in _MAP_SCORE_RE.findall(seg)}
             maps_won = {int(t): int(n) for t, n in _MAPS_WON_RE.findall(seg)}
@@ -202,8 +203,10 @@ def fetch_event_matches(hltv_event_id: int, hltv_event_url: str, to_tid: Callabl
             a, b = to_tid(info.get("a_hltv")), to_tid(info.get("b_hltv"))
             if not a or not b:
                 continue
-            entry = {"match_id": mid, "a": a, "b": b, "a_hltv": info.get("a_hltv"), "b_hltv": info.get("b_hltv"), "start_at": info.get("start_at"), "pool": None, "status": "upcoming", "url": f"https://www.hltv.org/matches/{mid}/"}
+            entry = {"match_id": mid, "a": a, "b": b, "a_hltv": info.get("a_hltv"), "b_hltv": info.get("b_hltv"), "start_at": info.get("start_at"), "pool": None, "status": "upcoming", "url": info.get("url") or f"https://www.hltv.org/matches/{mid}/-"}
             merged[mid] = entry
+        if info.get("url") and str(entry.get("url") or "").endswith("/-"):
+            entry["url"] = info["url"]  # the page's real slug over the placeholder
         if entry["status"] != "finished":
             if info.get("live"):
                 entry["status"] = "live"

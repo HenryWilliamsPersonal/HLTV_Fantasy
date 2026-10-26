@@ -6336,6 +6336,35 @@ function LiveEventBody({ ev }) {
   const statusLabel = ev.status === "live" ? "Live" : ev.status === "upcoming" ? "Upcoming" : "Finished";
   const daysTo = Math.ceil((Number(ev.start_at) - Date.now() / 1000) / 86400);
   const results = [...(ev.matches || [])].reverse();
+  // A result opens the match's scoreboard: the stored row when the nightly
+  // import has it, else the page's scoreboards read on demand.
+  const [matchRow, setMatchRow] = useState(null);
+  const openResult = async (m) => {
+    const url = String(m.url || "");
+    if (!url) return;
+    const base = {
+      match_url: url,
+      match_id: m.match_id,
+      team1: teamLookup[m.a] || String(m.a),
+      team2: teamLookup[m.b] || String(m.b),
+      score1: m.score_a,
+      score2: m.score_b,
+      winner: m.winner ? teamLookup[m.winner] : null,
+      match_date: m.date,
+    };
+    setMatchRow(base);
+    if (PUBLIC_BUILD) return;
+    try {
+      const d = await api.get(`/events/hltv-results/match-details?match_url=${encodeURIComponent(url)}`, 60000);
+      const stored = d?.stored || {};
+      const next = { ...base, ...stored, maps_json: JSON.stringify(Array.isArray(d?.maps) ? d.maps : []) };
+      if (!next.player_stats_json && Array.isArray(d?.player_stats) && d.player_stats.length > 0) next.player_stats_json = JSON.stringify(d.player_stats);
+      if (!next.map_player_stats_json && d?.map_player_stats && Object.keys(d.map_player_stats).length > 0) next.map_player_stats_json = JSON.stringify(d.map_player_stats);
+      setMatchRow((cur) => (cur && cur.match_url === url ? next : cur));
+    } catch {
+      /* the modal keeps the stored row */
+    }
+  };
   const last = results[0];
   return (
     <div className="stack">
@@ -6496,10 +6525,10 @@ function LiveEventBody({ ev }) {
       {results.length > 0 && (
         <div className="card sub">
           <h3>Results</h3>
-          <table className="live-results">
+          <table className="live-results clickable">
             <thead>
               <tr>
-                <th>Date</th>
+                <th>Round</th>
                 <th>Match</th>
                 <th className="num">Maps</th>
               </tr>
@@ -6509,8 +6538,8 @@ function LiveEventBody({ ev }) {
                 const aWon = Number(m.winner) === Number(m.a);
                 const bWon = Number(m.winner) === Number(m.b);
                 return (
-                  <tr key={m.url || `${m.date}-${m.a}-${m.b}`}>
-                    <td>{formatDMY(m.date)}</td>
+                  <tr key={m.url || `${m.date}-${m.a}-${m.b}`} onClick={() => openResult(m)}>
+                    <td>{m.stage || formatDMY(m.date)}</td>
                     <td>
                       <div className="live-match">
                         <span className={`live-side${aWon ? " win" : bWon ? " lose" : ""}`}>
@@ -6534,6 +6563,7 @@ function LiveEventBody({ ev }) {
           </table>
         </div>
       )}
+      {matchRow && <MatchDetailModal row={matchRow} teams={teamRows} players={[]} onClose={() => setMatchRow(null)} />}
     </div>
   );
 }

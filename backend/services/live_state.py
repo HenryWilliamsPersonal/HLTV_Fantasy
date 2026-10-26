@@ -98,6 +98,7 @@ def _swiss_state(matches: List[Dict[str, Any]], team_ids: List[int], bo3_mode: s
         rounds[r].append({
             "key": key, "a": a, "b": b, "bo": int(swiss_engine.match_bo(wins[a], losses[a], bo3_mode)),
             "pool": f"{wins[a]}-{losses[a]}", "winner": int(w), "date": m["date"], "score": f"{m['score_a']}-{m['score_b']}",
+            "url": m.get("url"), "match_id": m.get("match_id"),
         })
         picks[key] = int(w)
         loser = b if int(w) == a else a
@@ -137,6 +138,7 @@ def _swiss_state(matches: List[Dict[str, Any]], team_ids: List[int], bo3_mode: s
         "picks": picks,
         "played": len(picks),
         "total": int(sum(rd["matches"] for rd in shape["rounds"])),
+        "stage_by_url": {str(m["url"]): f"Round {r}" for r in rounds for m in rounds[r] if m.get("url") and m.get("winner") is not None},
     }
 
 
@@ -147,6 +149,15 @@ def _bracket_state(matches: List[Dict[str, Any]], bracket: Dict[str, Any]) -> Di
     losers: Dict[str, int] = {}
     picks: Dict[str, int] = {}
     used = set()
+    stage_by_url: Dict[str, str] = {}
+    labels: Dict[str, str] = {}
+    try:
+        from backend.services import stage_formats
+
+        full = stage_formats.bracket_spec(str(bracket.get("kind") or "single"), slots, bool(bracket.get("third_place")), int(bracket.get("final_bo") or 3))
+        labels = {str(st.key): str(st.full) for st in full["stages"]}
+    except Exception:  # noqa: BLE001 - labels are cosmetic
+        labels = {}
     for key, _stage, fa, fb in spec:
         def side(f):
             if f[0] == "seed":
@@ -165,24 +176,27 @@ def _bracket_state(matches: List[Dict[str, Any]], bracket: Dict[str, Any]) -> Di
                 picks[str(key)] = w
                 winners[str(key)] = w
                 losers[str(key)] = int(b) if w == int(a) else int(a)
+                stage_by_url[str(m["url"])] = labels.get(str(_stage), str(_stage))
                 break
-    return {"picks": picks, "played": len(picks), "total": len(spec)}
+    return {"picks": picks, "played": len(picks), "total": len(spec), "stage_by_url": stage_by_url}
 
 
 def _groups_state(matches: List[Dict[str, Any]], groups: List[List[int]]) -> List[Dict[str, Any]]:
     out = []
-    for g in groups:
+    for gi, g in enumerate(groups):
         ids = {int(t) for t in g}
         recs = {int(t): [0, 0] for t in g}
         played = 0
+        stage_by_url: Dict[str, str] = {}
         for m in matches:
             a, b, w = int(m["a"]), int(m["b"]), m.get("winner")
             if a in ids and b in ids and w is not None:
                 played += 1
                 recs[int(w)][0] += 1
                 recs[b if int(w) == a else a][1] += 1
+                stage_by_url[str(m.get("url"))] = f"Group {chr(65 + gi)}"
         order = sorted(recs, key=lambda t: (-recs[t][0], recs[t][1]))
-        out.append({"teams": order, "records": {str(t): recs[t] for t in recs}, "played": played})
+        out.append({"teams": order, "records": {str(t): recs[t] for t in recs}, "played": played, "stage_by_url": stage_by_url})
     return out
 
 
@@ -264,19 +278,26 @@ def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float, fetch_if_mi
         "live_count": len(live_now),
         "pages_read_at": (now - live_pages.cache_age(event_id)) if live_pages.cache_age(event_id) is not None else None,
     }
+    stage_by_url: Dict[str, str] = {}
     if fmt == "swiss":
         sw = results.get("swiss") or {}
         entry["swiss"] = _swiss_state(matches, [int(t) for t in (results.get("groups") or [[]])[0]], str(sw.get("bo3_mode") or "elim_qual"), pending)
         entry["played"], entry["total"] = entry["swiss"]["played"], entry["swiss"]["total"]
+        stage_by_url = entry["swiss"].pop("stage_by_url", {})
     elif fmt == "bracket":
         entry["bracket"] = results.get("bracket") or {}
         st = _bracket_state(matches, entry["bracket"])
         entry["bracket_picks"] = st["picks"]
         entry["played"], entry["total"] = st["played"], st["total"]
+        stage_by_url = st.get("stage_by_url") or {}
     else:
         entry["groups"] = _groups_state(matches, [[int(t) for t in g] for g in (results.get("groups") or [])])
         entry["played"] = sum(g["played"] for g in entry["groups"])
         entry["total"] = None
+        for g in entry["groups"]:
+            stage_by_url.update(g.pop("stage_by_url", {}))
+    for m in matches:
+        m["stage"] = stage_by_url.get(str(m.get("url")))
     last = matches[-1] if matches else None
     entry["last_match"] = (
         {"a": rows.get(last["a"], {}).get("name"), "b": rows.get(last["b"], {}).get("name"), "score_a": last["score_a"], "score_b": last["score_b"], "date": last["date"]}

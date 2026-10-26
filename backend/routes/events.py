@@ -4533,10 +4533,14 @@ def get_hltv_result_match_details(match_url: str):
             stored = next((r for r in rows if int(r.get("match_id") or 0) == mid), None)
 
     maps = []
+    player_stats = []
+    map_player_stats = {}
     live_detail_failed = False
     try:
         details = get_hltv_match_details(url)
         maps = details.get("maps") or []
+        player_stats = details.get("player_stats") or []
+        map_player_stats = details.get("map_player_stats") or {}
         if maps and stored and stored.get("match_url"):
             set_hltv_result_maps(str(stored.get("match_url")), maps)
     except HLTVRankingError:
@@ -4559,6 +4563,9 @@ def get_hltv_result_match_details(match_url: str):
         "match_url": url,
         "stored": stored,
         "maps": maps,
+        # the page's scoreboards, for a match not stored yet (today's results)
+        "player_stats": player_stats,
+        "map_player_stats": map_player_stats,
     }
 
 

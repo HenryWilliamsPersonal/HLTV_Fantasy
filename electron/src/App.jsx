@@ -6236,7 +6236,7 @@ function LiveTab() {
     setDetail(null);
     loadDetail(openId);
     if (!openId) return undefined;
-    const t = setInterval(() => loadDetail(openId), 60000);
+    const t = setInterval(() => loadDetail(openId), 30000);
     return () => clearInterval(t);
   }, [openId]);
   const dm = (ts) => {
@@ -6249,6 +6249,21 @@ function LiveTab() {
   );
   if (events === null) return <div className="stack" />;
   const open = events.find((e) => e.event_id === openId) || null;
+  if (openId) {
+    const ev = detail || open;
+    return (
+      <div className="stack">
+        <div className="live-detail-head">
+          <button className="secondary live-back" onClick={() => setOpenId(null)} aria-label="Back to the tournament list">
+            &larr; Back
+          </button>
+          <h2 className="live-detail-title">{ev?.name || ""}</h2>
+          {statusPill(ev?.status)}
+        </div>
+        {detail ? <LiveEventBody ev={detail} /> : null}
+      </div>
+    );
+  }
   return (
     <div className="stack">
       {LIVE_GROUPS.map((g) => {
@@ -6282,7 +6297,12 @@ function LiveTab() {
                         {Number(ev.played || 0)}
                         {ev.total ? <span className="muted"> / {ev.total}</span> : null}
                       </td>
-                      <td>{statusPill(ev.status)}</td>
+                      <td>
+                        <span className="pills">
+                          {statusPill(ev.status)}
+                          {Number(ev.live_count || 0) > 0 ? <span className="pill caution">{ev.live_count} in play</span> : null}
+                        </span>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -6291,22 +6311,6 @@ function LiveTab() {
           </Section>
         );
       })}
-      {openId && (
-        <div className="modal-backdrop" onClick={() => setOpenId(null)}>
-          <div className="modal live-modal" onClick={(e) => e.stopPropagation()}>
-            <header className="modal-header">
-              <div className="pills">
-                <h3>{(detail || open)?.name || ""}</h3>
-                {statusPill((detail || open)?.status)}
-              </div>
-              <button className="close" onClick={() => setOpenId(null)}>
-                &times;
-              </button>
-            </header>
-            <div className="modal-body">{detail ? <LiveEventBody ev={detail} /> : <div className="stack" />}</div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -6324,6 +6328,10 @@ function LiveEventBody({ ev }) {
   const dm = (ts) => {
     const d = new Date(Number(ts) * 1000);
     return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+  };
+  const hhmm = (ts) => {
+    const d = new Date(Number(ts) * 1000);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   };
   const statusLabel = ev.status === "live" ? "Live" : ev.status === "upcoming" ? "Upcoming" : "Finished";
   const daysTo = Math.ceil((Number(ev.start_at) - Date.now() / 1000) / 86400);
@@ -6413,6 +6421,78 @@ function LiveEventBody({ ev }) {
         </div>
       )}
 
+      {(ev.live_matches || []).length > 0 && (
+        <div className="card sub">
+          <h3>In play</h3>
+          <table className="live-results">
+            <thead>
+              <tr>
+                <th>Match</th>
+                <th className="num">Map</th>
+                <th className="num">Maps</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ev.live_matches.map((m) => (
+                <tr key={m.match_id}>
+                  <td>
+                    <div className="live-match">
+                      <span className="live-side win">
+                        <TeamLogo hltvTeamId={hltvId(m.a)} name={teamLookup[m.a]} size={22} />
+                        {teamLookup[m.a] || m.a}
+                      </span>
+                      <span className="live-score live">LIVE</span>
+                      <span className="live-side right win">
+                        {teamLookup[m.b] || m.b}
+                        <TeamLogo hltvTeamId={hltvId(m.b)} name={teamLookup[m.b]} size={22} />
+                      </span>
+                    </div>
+                  </td>
+                  <td className="num">
+                    {m.map_a ?? "-"}–{m.map_b ?? "-"}
+                  </td>
+                  <td className="num">
+                    {m.maps_a ?? 0}–{m.maps_b ?? 0}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {(ev.upcoming_matches || []).length > 0 && (
+        <div className="card sub">
+          <h3>Upcoming</h3>
+          <table className="live-results">
+            <thead>
+              <tr>
+                <th>Start</th>
+                <th>Match</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ev.upcoming_matches.map((m) => (
+                <tr key={m.match_id}>
+                  <td>{m.start_at ? `${dm(m.start_at)} ${hhmm(m.start_at)}` : "-"}</td>
+                  <td>
+                    <div className="live-match">
+                      <span className="live-side">
+                        <TeamLogo hltvTeamId={hltvId(m.a)} name={teamLookup[m.a]} size={22} />
+                        {teamLookup[m.a] || m.a}
+                      </span>
+                      <span className="live-score muted">vs</span>
+                      <span className="live-side right">
+                        {teamLookup[m.b] || m.b}
+                        <TeamLogo hltvTeamId={hltvId(m.b)} name={teamLookup[m.b]} size={22} />
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       {results.length > 0 && (
         <div className="card sub">
           <h3>Results</h3>
@@ -9909,7 +9989,7 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false }
       title: `Round ${rd.round}`,
       pools: Object.keys(byPool)
         .sort(poolOrder)
-        .map((pool) => ({ pool, matches: byPool[pool].map((m) => ({ key: m.key, a: m.a, b: m.b, known: true })) })),
+        .map((pool) => ({ pool, matches: byPool[pool].map((m) => ({ key: m.key, a: m.a, b: m.b, known: true, status: m.status || null, start_at: m.start_at || null, maps_a: m.maps_a, maps_b: m.maps_b })) })),
     });
   });
   (walk?.placeholders || []).forEach((ph) => {
@@ -9971,9 +10051,15 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false }
               <div className="sw-pool" key={`${col.key}-${p.pool}`}>
                 <div className="sw-pool-title">{rec(p.pool)}</div>
                 {p.matches.map((m) => (
-                  <div className="sw-match" key={m.key}>
+                  <div className={`sw-match${m.status === "live" ? " live" : ""}`} key={m.key}>
                     {side(m.a, m, m.known)}
-                    <span className="sw-vs">vs</span>
+                    {m.status === "live" ? (
+                      <span className="sw-vs sw-live">{m.maps_a != null ? `${m.maps_a}–${m.maps_b}` : "live"}</span>
+                    ) : m.status === "upcoming" && m.start_at ? (
+                      <span className="sw-vs sw-time">{new Date(Number(m.start_at) * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                    ) : (
+                      <span className="sw-vs">vs</span>
+                    )}
                     {side(m.b, m, m.known)}
                   </div>
                 ))}

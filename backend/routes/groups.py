@@ -3383,7 +3383,18 @@ def _find_event_snapshot_html(hltv_event_id) -> Optional[str]:
         from backend.data.page_snapshots import list_snapshot_urls, get_page_snapshot
 
         needle = f"/events/{int(hltv_event_id)}/"
-        matches = [u for u in list_snapshot_urls() if needle in u]
+        # Only the event's overview page carries the typed stage JSON; its
+        # sub-pages (/matches, /results, ...) are archived too (the Live page
+        # reads them) and must never stand in for it.
+        sub_pages = {"matches", "results", "stats", "standings", "streams", "prizes", "news", "fantasy", "-"}
+        matches = []
+        for u in list_snapshot_urls():
+            if needle not in u:
+                continue
+            tail = u.split(needle, 1)[1].split("#", 1)[0].split("?", 1)[0].strip("/")
+            if "/" in tail or tail in sub_pages:
+                continue
+            matches.append(u)
         matches.sort(key=lambda u: ("#" in u or "simulator" in u.lower(), u))
         for url in matches:
             snap = get_page_snapshot(url)

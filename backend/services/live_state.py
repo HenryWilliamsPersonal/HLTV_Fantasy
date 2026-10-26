@@ -20,11 +20,12 @@ from typing import Any, Dict, List, Optional
 
 from backend.data import team_aliases
 from backend.data.db import connect
+from backend.services import live_pages
 
 GRACE_DAYS = 1
 PREVIOUS_LIMIT = 12
 DAY = 86400.0
-SUMMARY_KEYS = ("event_id", "name", "kind", "label", "group_format", "status", "start_at", "end_at", "played", "total", "team_count", "last_match")
+SUMMARY_KEYS = ("event_id", "name", "kind", "label", "group_format", "status", "start_at", "end_at", "played", "total", "team_count", "last_match", "live_count")
 
 
 def _iso(ts: float) -> str:
@@ -69,13 +70,15 @@ def _event_matches(conn: sqlite3.Connection, key_to_tid: Dict[str, int], start: 
         except Exception:  # noqa: BLE001
             maps = 0
         out.append({
-            "url": r["match_url"], "date": r["match_date"], "a": a, "b": b,
+            "url": r["match_url"], "match_id": r["match_id"], "date": r["match_date"], "a": a, "b": b,
             "score_a": s1, "score_b": s2, "winner": winner, "maps": maps,
         })
     return out
 
 
-def _swiss_state(matches: List[Dict[str, Any]], team_ids: List[int], bo3_mode: str) -> Dict[str, Any]:
+def _swiss_state(matches: List[Dict[str, Any]], team_ids: List[int], bo3_mode: str, pending: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Rounds from the finished matches, then the pairings HLTV has made but
+    not finished (live or scheduled) in the round their records put them."""
     from backend.services import swiss_engine
 
     wins = {int(t): 0 for t in team_ids}
@@ -100,6 +103,21 @@ def _swiss_state(matches: List[Dict[str, Any]], team_ids: List[int], bo3_mode: s
         loser = b if int(w) == a else a
         wins[int(w)] += 1
         losses[loser] += 1
+    for pm in pending or []:
+        a, b = int(pm["a"]), int(pm["b"])
+        if a not in wins or b not in wins:
+            continue
+        if max(wins[a], losses[a], wins[b], losses[b]) >= swiss_engine.TARGET:
+            continue
+        r = max(wins[a] + losses[a], wins[b] + losses[b]) + 1
+        if r > swiss_engine.ROUNDS:
+            continue
+        key = f"r{r}_{len(rounds[r])}"
+        rounds[r].append({
+            "key": key, "a": a, "b": b, "bo": int(swiss_engine.match_bo(wins[a], losses[a], bo3_mode)),
+            "pool": f"{wins[a]}-{losses[a]}", "winner": None, "status": pm.get("status"), "start_at": pm.get("start_at"),
+            "maps_a": pm.get("maps_a"), "maps_b": pm.get("maps_b"), "map_a": pm.get("map_a"), "map_b": pm.get("map_b"),
+        })
     shape = swiss_engine._format_shape(len(team_ids))
     placeholders = []
     for rd in shape["rounds"]:
@@ -111,7 +129,7 @@ def _swiss_state(matches: List[Dict[str, Any]], team_ids: List[int], bo3_mode: s
             placeholders.append({"round": rd["round"], "matches": sum(p["matches"] for p in pools), "pools": pools})
     complete = all(wins[t] >= swiss_engine.TARGET or losses[t] >= swiss_engine.TARGET for t in wins)
     return {
-        "rounds": [{"round": r, "matches": rounds[r], "complete": True} for r in sorted(rounds)],
+        "rounds": [{"round": r, "matches": rounds[r], "complete": all(m.get("winner") is not None for m in rounds[r])} for r in sorted(rounds)],
         "placeholders": placeholders,
         "final_slots": shape["final"],
         "records": {str(t): [wins[t], losses[t]] for t in wins},
@@ -168,7 +186,7 @@ def _groups_state(matches: List[Dict[str, Any]], groups: List[List[int]]) -> Lis
     return out
 
 
-def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float) -> Optional[Dict[str, Any]]:
+def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float, fetch_if_missing: bool = False) -> Optional[Dict[str, Any]]:
     from backend.data.event_db import get_event_detail
     from backend.routes import events as events_routes
     from backend.routes.groups import _GROUPS_STATE
@@ -197,6 +215,38 @@ def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float) -> Optional
     key_to_tid = {team_aliases.key(str(r["name"] or "")): tid for tid, r in rows.items() if r.get("name")}
     matches = _event_matches(conn, key_to_tid, _iso(start), _iso(end + GRACE_DAYS * DAY))
     fmt = str(results.get("group_format") or "")
+
+    # HLTV's own pages between the nightly imports: today's results, the
+    # matches in play and the pairings already made (services/live_pages).
+    tid_by_hltv = {int(r["hltv_team_id"]): tid for tid, r in rows.items() if r.get("hltv_team_id")}
+
+    def to_tid(hltv_id):
+        try:
+            return tid_by_hltv.get(int(hltv_id)) if hltv_id else None
+        except (TypeError, ValueError):
+            return None
+
+    page: List[Dict[str, Any]] = []
+    hltv_event_id = int(detail.get("hltv_event_id") or 0)
+    if hltv_event_id and status in ("live", "upcoming"):
+        if live_pages.refresh_due(event_id, status, float(start), now):
+            if fetch_if_missing and live_pages.cache_age(event_id) is None:
+                page = live_pages.refresh(event_id, hltv_event_id, str(detail.get("hltv_event_url") or ""), to_tid)
+            else:
+                live_pages.refresh_in_background(event_id, hltv_event_id, str(detail.get("hltv_event_url") or ""), to_tid)
+        page = page or live_pages.cached(event_id)
+    known_ids = {int(m["match_id"]) for m in matches if m.get("match_id")}
+    for pm in page:
+        if pm["status"] == "finished" and int(pm["match_id"]) not in known_ids:
+            matches.append({
+                "url": pm["url"], "match_id": pm["match_id"], "date": _iso(pm["start_at"]) if pm.get("start_at") else _iso(now),
+                "a": pm["a"], "b": pm["b"], "score_a": pm.get("score_a"), "score_b": pm.get("score_b"), "winner": pm.get("winner"),
+                "maps": int(pm.get("score_a") or 0) + int(pm.get("score_b") or 0),
+            })
+    matches.sort(key=lambda m: (str(m.get("date") or ""), int(m.get("match_id") or 0)))
+    pending = [pm for pm in page if pm["status"] in ("live", "upcoming")]
+    live_now = [pm for pm in pending if pm["status"] == "live"]
+    upcoming = sorted((pm for pm in pending if pm["status"] == "upcoming"), key=lambda pm: (pm.get("start_at") or 0.0))
     entry: Dict[str, Any] = {
         "event_id": event_id,
         "name": detail.get("name") or ev.get("name") or _event_name(conn, event_id) or f"Event {event_id}",
@@ -209,10 +259,14 @@ def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float) -> Optional
         "team_count": len(rows),
         "teams": {str(tid): {"name": r.get("name"), "hltv_team_id": r.get("hltv_team_id")} for tid, r in rows.items()},
         "matches": matches,
+        "live_matches": live_now,
+        "upcoming_matches": upcoming,
+        "live_count": len(live_now),
+        "pages_read_at": (now - live_pages.cache_age(event_id)) if live_pages.cache_age(event_id) is not None else None,
     }
     if fmt == "swiss":
         sw = results.get("swiss") or {}
-        entry["swiss"] = _swiss_state(matches, [int(t) for t in (results.get("groups") or [[]])[0]], str(sw.get("bo3_mode") or "elim_qual"))
+        entry["swiss"] = _swiss_state(matches, [int(t) for t in (results.get("groups") or [[]])[0]], str(sw.get("bo3_mode") or "elim_qual"), pending)
         entry["played"], entry["total"] = entry["swiss"]["played"], entry["swiss"]["total"]
     elif fmt == "bracket":
         entry["bracket"] = results.get("bracket") or {}
@@ -261,6 +315,6 @@ def live_event(event_id: int, now: Optional[float] = None) -> Optional[Dict[str,
     now = float(now or time.time())
     conn = connect()
     try:
-        return _entry(conn, {"event_id": int(event_id)}, now)
+        return _entry(conn, {"event_id": int(event_id)}, now, fetch_if_missing=True)
     finally:
         conn.close()

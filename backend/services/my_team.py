@@ -403,11 +403,20 @@ def parse_team_page(html: str) -> Dict[str, Any]:
         role = ""
         if 'assign-role-button assigned' in block:
             role = _block_field(block, "assign-role-text")
-        booster_text = _block_field(block, "assign-booster-button")
-        # "Add booster", "No booster assigned", "No upcoming match" and the
-        # like all mean none; anything else is the booster's name.
-        booster = "" if re.search(r"(add|no)\s*booster|no\s*(upcoming|match)", booster_text, re.I) or not booster_text.strip() else booster_text
-        upcoming = _block_field(block, "upcoming-match")
+        # An assigned booster shows only its icon (boost/<slug>.png) and the
+        # word "assigned"; the slug names the booster. Anything else ("Add
+        # booster", "No booster assigned", "No upcoming match") means none.
+        booster = ""
+        if "assign-booster-button assigned" in block:
+            slug = re.search(r'boost/([a-z0-9_\-]+)\.png', block)
+            booster = _booster_name_from_slug(slug.group(1)) if slug else "Booster"
+        # <div class="upcoming-match">Today - 17:00<br><div class="opponent">vs. X</div></div>
+        upcoming_html = re.search(r'<div class="upcoming-match[^"]*">(.*?)<div class="assign-booster-button', block, flags=re.S)
+        upcoming_html = upcoming_html.group(1) if upcoming_html else ""
+        # ...or, for a scheduled match, "Today - 17:00<br> vs. X" with no div.
+        opp = re.search(r'<div class="opponent">\s*(?:vs\.?\s*)?([^<]+?)\s*</div>', upcoming_html) or re.search(r"<br\s*/?>\s*vs\.?\s*([^<]+?)\s*(?:<|$)", upcoming_html)
+        start_text = _strip(re.split(r"<br\s*/?>|<div", upcoming_html, 1)[0]) if upcoming_html else ""
+        level = re.search(r"player-card-level-(\w+)", block)
         players.append({
             "player_id": int(pid.group(1)) if pid else None,
             "name": _strip(name.group(1)) if name else "",
@@ -416,21 +425,33 @@ def parse_team_page(html: str) -> Dict[str, Any]:
             "role_index": ROLE_INDEX_BY_NAME.get(role.lower()) if role else None,
             "booster": booster or None,
             "booster_index": _booster_index(booster) if booster else None,
-            "next_match_text": upcoming or None,
+            "next_match_text": _strip(upcoming_html) or None,
+            "next_opponent": _strip(opp.group(1)) if opp else None,
+            "next_start_text": start_text or None,
+            "in_match": "player-in-match" in block,
+            "level": level.group(1) if level else None,
         })
-    key: Dict[str, Any] = {}
+    key: Dict[str, Any] = {"rows": []}
     kn = core.find("Key numbers")
     if kn >= 0:
-        seg = _strip(core[kn:kn + 4000])
-        m = re.search(r"League placement\s*(\d[\d,]*)\s*/\s*(\d[\d,]*)", seg)
+        seg = core[kn:kn + 6000]
+        for rm in re.finditer(r'<div class="key-number-description">([^<]*)</div>\s*<div class="key-number-data">([^<]*)</div>', seg):
+            key["rows"].append({"label": _strip(rm.group(1)), "value": _strip(rm.group(2))})
+        text = _strip(seg)
+        m = re.search(r"League placement\s*(\d[\d,]*)\s*/\s*(\d[\d,]*)", text)
         if m:
             key["placement"], key["league_size"] = int(m.group(1).replace(",", "")), int(m.group(2).replace(",", ""))
-        m = re.search(r"Role / boosters\s*(\d+)\s*/\s*(\d+)", seg)
+        m = re.search(r"Role / boosters\s*(\d+)\s*/\s*(\d+)", text)
         if m:
             key["roles_assigned"], key["boosters_assigned"] = int(m.group(1)), int(m.group(2))
-        m = re.search(r"Total points\s*(-?\d+)", seg)
+        m = re.search(r"Total points\s*(-?\d+)", text)
         if m:
             key["total_points"] = int(m.group(1))
+        m = re.search(r"Money drafted teams\s*(\d[\d,]*)\s*/\s*(\d[\d,]*)", text)
+        if m:
+            key["money_placement"], key["money_size"] = int(m.group(1).replace(",", "")), int(m.group(2).replace(",", ""))
+    messages = [_strip(t) for t in re.findall(r'<div class="team-message">(.*?)</div>', core, flags=re.S)]
+    messages = [t for t in messages if t]
     tracker: List[Dict[str, Any]] = []
     for m in _TRACKER_RE.finditer(core[j:] if j >= 0 else ""):
         item = m.group(0)
@@ -444,19 +465,47 @@ def parse_team_page(html: str) -> Dict[str, Any]:
         link = re.search(r'href="(/matches/\d+/[^"]*)"', item)
         if not (pid or name):
             continue
+        content_points = _block_field(item, "content-points")
+        if re.search(r"next\s*match", status or "", re.I):
+            # A coming match: the opponent sits where the points go, and the
+            # bottom row carries "Today - 13:40 / Match start".
+            start = re.search(r'<div class="player-tracker-points">\s*([^<]+?)\s*</div>\s*<div class="player-tracker-points-description">\s*Match start', item)
+            tracker.append({
+                "player_id": int(pid.group(1)) if pid else None,
+                "name": _strip(name.group(1)) if name else "",
+                "points": None,
+                "result": "NEXT",
+                "opponent": content_points or None,
+                "start_text": _strip(start.group(1)) if start else None,
+                "rating_points": None, "team_points": None, "role_points": None, "booster_points": None,
+                "match_url": f"https://www.hltv.org{link.group(1)}" if link else None,
+            })
+            continue
         tracker.append({
             "player_id": int(pid.group(1)) if pid else None,
             "name": _strip(name.group(1)) if name else "",
-            "points": _points(_block_field(item, "content-points")),
+            "points": _points(content_points),
             "result": (sm.group(1) if sm else (status or "")).upper() or None,
             "opponent": (sm.group(2) or "").strip() if sm else None,
+            "start_text": None,
             "rating_points": parts.get("ratingpoints"),
             "team_points": parts.get("teampoints"),
             "role_points": parts.get("rolepoints"),
             "booster_points": parts.get("boosterpoints"),
             "match_url": f"https://www.hltv.org{link.group(1)}" if link else None,
         })
-    return {"players": players, "key": key, "tracker": tracker}
+    return {"players": players, "key": key, "tracker": tracker, "messages": messages}
+
+
+def _booster_name_from_slug(slug: str) -> str:
+    """"cannon_fodder" -> "Cannon fodder" (the booster list's spelling)."""
+    from backend.services.match_engine import BOOSTER_NAMES
+
+    want = _norm(slug.replace("_", "").replace("-", ""))
+    for name in BOOSTER_NAMES.values():
+        if _norm(name) == want:
+            return str(name)
+    return slug.replace("_", " ").replace("-", " ").strip().capitalize()
 
 
 _ROUND_RE = re.compile(r'<div class="breakdown-round-row expandable">(.*?)(?=<div class="breakdown-round-row expandable">|<div class="booster-breakdown|$)', re.S)
@@ -595,6 +644,12 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
     all_teams = {int(t["team_id"]): t for t in get_all_teams()}
     ranks = {tid: int(t.get("hltv_rank") or 999) for tid, t in all_teams.items()}
     names = {tid: str(t.get("name") or tid) for tid, t in all_teams.items()}
+    hltv_ids = {tid: t.get("hltv_team_id") for tid, t in all_teams.items()}
+    tid_by_name = {str(t.get("name") or "").strip().lower(): tid for tid, t in all_teams.items() if t.get("name")}
+    for t in page["tracker"]:
+        opp_tid = tid_by_name.get(str(t.get("opponent") or "").strip().lower())
+        t["opponent_team_id"] = opp_tid
+        t["opponent_hltv_team_id"] = hltv_ids.get(opp_tid) if opp_tid else None
     # The next matches come from the event's live pages; right after a start
     # nothing has read them yet, so ask for the event (which reads them).
     if not live_pages.cached(eid):
@@ -611,6 +666,7 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
         tid = team_of_player.get(int(pid)) if pid else None
         pl["team_id"] = tid
         pl["team"] = names.get(tid) if tid else None
+        pl["hltv_team_id"] = hltv_ids.get(tid) if tid else None
         ev = expected_by_pid.get(int(pid)) if pid else None
         pl["expected"] = (
             {
@@ -647,6 +703,7 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
         "key": page["key"],
         "players": page["players"],
         "tracker": page["tracker"],
+        "messages": page.get("messages") or [],
         "rounds": rounds,
         "expected_total": round(sum(float((p.get("expected") or {}).get("total") or 0.0) for p in page["players"]), 1),
         "read_at": time.time(),

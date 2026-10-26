@@ -6200,8 +6200,16 @@ const describeEventFormat = (k) => {
 // Live: every current fantasy event as it actually stands, from the stored
 // results (services/live_state). The Swiss board and the bracket board are
 // the completed-stage pickers in read-only mode, filled with real winners.
+const LIVE_GROUPS = [
+  { key: "live", title: "Live" },
+  { key: "upcoming", title: "Upcoming" },
+  { key: "finished", title: "Previous" },
+];
+
 function LiveTab() {
   const [events, setEvents] = useState(null);
+  const [openId, setOpenId] = useState(null);
+  const [detail, setDetail] = useState(null);
   const load = async () => {
     try {
       const d = await api.get("/live/events", 60000);
@@ -6210,29 +6218,100 @@ function LiveTab() {
       setEvents((prev) => prev || []);
     }
   };
+  const loadDetail = async (id) => {
+    if (!id) return;
+    try {
+      const d = await api.get(`/live/events/${id}`, 60000);
+      if (d?.event) setDetail(d.event);
+    } catch {
+      /* the list row stays; the modal shows what it has */
+    }
+  };
   useEffect(() => {
     load();
     const t = setInterval(load, 60000);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => {
+    setDetail(null);
+    loadDetail(openId);
+    if (!openId) return undefined;
+    const t = setInterval(() => loadDetail(openId), 60000);
+    return () => clearInterval(t);
+  }, [openId]);
+  const dm = (ts) => {
+    const d = new Date(Number(ts) * 1000);
+    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+  };
+  const formatOf = (ev) => (ev.group_format === "swiss" ? "Swiss" : ev.group_format === "bracket" ? (ev.kind === "double_elim" ? "Double elimination" : "Single elimination") : "Groups");
+  const statusPill = (status) => (
+    <span className={`pill${status === "live" ? " ok" : ""}`}>{status === "live" ? "Live" : status === "upcoming" ? "Upcoming" : "Finished"}</span>
+  );
   if (events === null) return <div className="stack" />;
-  if (events.length === 0) {
-    return (
-      <Section title="Live">
-        <p className="muted">No current events.</p>
-      </Section>
-    );
-  }
+  const open = events.find((e) => e.event_id === openId) || null;
   return (
     <div className="stack">
-      {events.map((ev) => (
-        <LiveEventCard key={ev.event_id} ev={ev} />
-      ))}
+      {LIVE_GROUPS.map((g) => {
+        const rows = events.filter((e) => e.status === g.key);
+        return (
+          <Section title={g.title} key={g.key}>
+            {rows.length === 0 ? (
+              <p className="muted">None</p>
+            ) : (
+              <table className="live-list">
+                <thead>
+                  <tr>
+                    <th>Event</th>
+                    <th>Format</th>
+                    <th>Dates</th>
+                    <th className="num">Teams</th>
+                    <th className="num">Matches</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((ev) => (
+                    <tr key={ev.event_id} onClick={() => setOpenId(ev.event_id)}>
+                      <td className="live-list-name">{ev.name}</td>
+                      <td>{formatOf(ev)}</td>
+                      <td>
+                        {dm(ev.start_at)} – {dm(ev.end_at)}
+                      </td>
+                      <td className="num">{ev.team_count}</td>
+                      <td className="num">
+                        {Number(ev.played || 0)}
+                        {ev.total ? <span className="muted"> / {ev.total}</span> : null}
+                      </td>
+                      <td>{statusPill(ev.status)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Section>
+        );
+      })}
+      {openId && (
+        <div className="modal-backdrop" onClick={() => setOpenId(null)}>
+          <div className="modal live-modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-header">
+              <div className="pills">
+                <h3>{(detail || open)?.name || ""}</h3>
+                {statusPill((detail || open)?.status)}
+              </div>
+              <button className="close" onClick={() => setOpenId(null)}>
+                &times;
+              </button>
+            </header>
+            <div className="modal-body">{detail ? <LiveEventBody ev={detail} /> : <div className="stack" />}</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function LiveEventCard({ ev }) {
+function LiveEventBody({ ev }) {
   const teamLookup = useMemo(() => {
     const m = {};
     Object.entries(ev.teams || {}).forEach(([tid, t]) => {
@@ -6251,7 +6330,7 @@ function LiveEventCard({ ev }) {
   const results = [...(ev.matches || [])].reverse();
   const last = results[0];
   return (
-    <Section title={ev.name}>
+    <div className="stack">
       <div className="live-strip">
         <div className={`topx-tile${ev.status === "live" ? "" : " empty"}`}>
           <div className="topx-tile-label">Status</div>
@@ -6375,7 +6454,7 @@ function LiveEventCard({ ev }) {
           </table>
         </div>
       )}
-    </Section>
+    </div>
   );
 }
 

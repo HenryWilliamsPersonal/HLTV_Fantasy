@@ -3415,6 +3415,13 @@ button:disabled {
 }
 
 /* Live page */
+.live-list tbody tr { cursor: pointer; }
+.live-list td, .live-list th { vertical-align: middle; }
+.live-list-name { font-family: var(--display); font-stretch: condensed; text-transform: uppercase; font-weight: 700; font-size: 15px; letter-spacing: 0.03em; color: #f2f5f9; }
+.live-list .pill { font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; font-size: 12px; padding: 3px 9px; min-width: 44px; text-align: center; }
+.modal.live-modal { max-width: 1560px; }
+.modal.live-modal .modal-header .pills h3 { margin: 0; }
+.modal.live-modal .modal-header .pill { font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; font-size: 12px; padding: 3px 9px; }
 .live-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .live-strip .topx-tile-value { font-size: 28px; font-variant-numeric: tabular-nums; }
 .live-strip .live-of { color: #8fa3bf; font-size: 18px; }

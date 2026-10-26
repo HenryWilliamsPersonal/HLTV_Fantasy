@@ -760,17 +760,19 @@ def _extract_block_by_class(html: str, class_token: str) -> str:
 
 
 def _extract_results_entries(html: str) -> List[Dict[str, object]]:
+    """Result cards on a /results page. A match can appear twice: in the
+    featured "big results" block at the top (no day heading or stamp near it,
+    so no date) and again in its day's list (dated). The dated occurrence
+    wins; a match seen only in the featured block keeps match_date None for
+    the importer to fill from the match page."""
     rows: List[Dict[str, object]] = []
-    seen = set()
+    by_href: Dict[str, Dict[str, object]] = {}
     skipped_not_played = 0
-    with_match_date = 0
 
     for m in _RESULT_LINK_RE.finditer(html):
         href = m.group("href")
         body = m.group("body") or ""
         if "result-score" not in body.lower():
-            continue
-        if href in seen:
             continue
 
         team1_block = _extract_block_by_class(body, "team1")
@@ -876,22 +878,27 @@ def _extract_results_entries(html: str) -> List[Dict[str, object]]:
                         except Exception:
                             continue
 
-        rows.append(
-            {
-                "team1": team1,
-                "team2": team2,
-                "score1": score1,
-                "score2": score2,
-                "winner": winner,
-                "event": event_name or None,
-                "match_date": match_date,
-                "match_url": f"https://www.hltv.org{href}",
-            }
-        )
-        if match_date:
-            with_match_date += 1
-        seen.add(href)
+        existing = by_href.get(href)
+        if existing is not None:
+            if match_date and not existing.get("match_date"):
+                existing["match_date"] = match_date
+            if event_name and not existing.get("event"):
+                existing["event"] = event_name
+            continue
+        row = {
+            "team1": team1,
+            "team2": team2,
+            "score1": score1,
+            "score2": score2,
+            "winner": winner,
+            "event": event_name or None,
+            "match_date": match_date,
+            "match_url": f"https://www.hltv.org{href}",
+        }
+        rows.append(row)
+        by_href[href] = row
 
+    with_match_date = sum(1 for r in rows if r.get("match_date"))
     logger.info(
         "HLTV results parse: kept=%d with_match_date=%d missing_match_date=%d skipped_not_played=%d",
         len(rows),

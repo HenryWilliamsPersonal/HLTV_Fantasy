@@ -528,6 +528,32 @@ def _row_passes_hltv_rank_filter(row: Dict[str, Any], max_rank: int, mode: str) 
     return len(ranks) == 2 and all(rank <= max_rank for rank in ranks)
 
 
+_MATCH_PAGE_DATE_RE = re.compile(r'class="date"[^>]*data-unix="(\d{10,13})"')
+
+
+def _match_date_from_match_page(match_url: str) -> str | None:
+    """The match's day (UTC) from its archived HLTV match page — the header's
+    data-unix stamp — for results the /results page listed without a day
+    (its featured "big results" block carries no date). None when the page
+    is not archived or has no stamp."""
+    import datetime as _dt
+
+    from backend.data.page_snapshots import get_page_snapshot
+
+    try:
+        snap = get_page_snapshot(match_url)
+    except Exception:  # noqa: BLE001
+        return None
+    html = (snap or {}).get("html") or ""
+    m = _MATCH_PAGE_DATE_RE.search(html) or re.search(r'data-unix="(\d{10,13})"', html)
+    if not m:
+        return None
+    ts = int(m.group(1))
+    if ts > 10_000_000_000:
+        ts //= 1000
+    return _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).date().isoformat()
+
+
 def _row_is_on_or_after(row: Dict[str, Any], cutoff: date) -> bool:
     raw = str(row.get("match_date") or "").strip()
     if not raw:
@@ -798,6 +824,11 @@ def _import_hltv_results_work(
     detail_complete = True
     checkpoint(detail_complete=True, phase="storing_results", current="Saving matches")
     report(phase="storing_results", current="Saving matches")
+    # A match listed only in the featured block has no date from /results;
+    # its match page (just fetched for the details) says when it was played.
+    for r in rows:
+        if not str(r.get("match_date") or "").strip():
+            r["match_date"] = _match_date_from_match_page(str(r.get("match_url") or ""))
     stored = upsert_hltv_results(rows)
     processed_units += 1
     checkpoint(phase="deduping_results", current="Removing duplicates")

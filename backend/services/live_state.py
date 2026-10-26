@@ -1,13 +1,14 @@
 """The Live page's data: each current fantasy event's stage as it actually
 stands, built from the results the nightly import stored.
 
-For every event with a stored valuation whose dates put it in the window
-(a few days before its start to a day past its end), the stored results
-between the event's own teams inside those dates are mapped onto the
-stage: a Swiss stage round by round (a team's n-th match is its round n,
-the pool is its record going in), a bracket match by match down the spec,
-a group stage as each group's records. No fixtures are known ahead of
-time, so unplayed matches show as the format's remaining slots.
+For every event with a stored valuation — live ones, every upcoming one
+and the most recent finished ones — the stored results between the
+event's own teams inside its dates are mapped onto the stage: a Swiss
+stage round by round (a team's n-th match is its round n, the pool is its
+record going in), a bracket match by match down the spec, a group stage
+as each group's records. No fixtures are known ahead of time, so unplayed
+matches show as the format's remaining slots. The list route serves
+summaries; one event's full state is built on demand.
 """
 from __future__ import annotations
 
@@ -20,14 +21,19 @@ from typing import Any, Dict, List, Optional
 from backend.data import team_aliases
 from backend.data.db import connect
 
-UPCOMING_DAYS = 7
 GRACE_DAYS = 1
-FINISHED_SHOWN_DAYS = 2
+PREVIOUS_LIMIT = 12
 DAY = 86400.0
+SUMMARY_KEYS = ("event_id", "name", "kind", "label", "group_format", "status", "start_at", "end_at", "played", "total", "team_count", "last_match")
 
 
 def _iso(ts: float) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(float(ts)))
+
+
+def _event_name(conn: sqlite3.Connection, event_id: int) -> Optional[str]:
+    row = conn.execute("SELECT name FROM events WHERE event_id = ?", (int(event_id),)).fetchone()
+    return str(row["name"]) if row and row["name"] else None
 
 
 def _team_rows(conn: sqlite3.Connection, team_ids: List[int]) -> Dict[int, Dict[str, Any]]:
@@ -162,70 +168,99 @@ def _groups_state(matches: List[Dict[str, Any]], groups: List[List[int]]) -> Lis
     return out
 
 
-def live_events(now: Optional[float] = None) -> List[Dict[str, Any]]:
-    from backend.data.event_db import get_event_detail, list_events
+def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float) -> Optional[Dict[str, Any]]:
+    from backend.data.event_db import get_event_detail
     from backend.routes import events as events_routes
     from backend.routes.groups import _GROUPS_STATE
+
+    event_id = int(ev.get("event_id") or 0)
+    if not event_id:
+        return None
+    detail = get_event_detail(event_id)
+    if not detail:
+        return None
+    try:
+        detected = events_routes._detect_event_tournament_kind_cached(detail)
+    except Exception:  # noqa: BLE001
+        return None
+    start, end = detected.get("start_at"), detected.get("end_at")
+    if not start:
+        return None
+    end = float(end or float(start) + 7 * DAY)
+    stored = _GROUPS_STATE.load(key=event_id)
+    results = (stored or {}).get("results") or {}
+    if not results.get("teams"):
+        return None
+    status = "upcoming" if now < float(start) else "live" if now <= end + GRACE_DAYS * DAY else "finished"
+    team_ids = [int(t) for t in results["teams"]]
+    rows = _team_rows(conn, team_ids)
+    key_to_tid = {team_aliases.key(str(r["name"] or "")): tid for tid, r in rows.items() if r.get("name")}
+    matches = _event_matches(conn, key_to_tid, _iso(start), _iso(end + GRACE_DAYS * DAY))
+    fmt = str(results.get("group_format") or "")
+    entry: Dict[str, Any] = {
+        "event_id": event_id,
+        "name": detail.get("name") or ev.get("name") or _event_name(conn, event_id) or f"Event {event_id}",
+        "kind": str(detected.get("kind") or ""),
+        "label": str(detected.get("label") or ""),
+        "group_format": fmt,
+        "status": status,
+        "start_at": float(start),
+        "end_at": end,
+        "team_count": len(rows),
+        "teams": {str(tid): {"name": r.get("name"), "hltv_team_id": r.get("hltv_team_id")} for tid, r in rows.items()},
+        "matches": matches,
+    }
+    if fmt == "swiss":
+        sw = results.get("swiss") or {}
+        entry["swiss"] = _swiss_state(matches, [int(t) for t in (results.get("groups") or [[]])[0]], str(sw.get("bo3_mode") or "elim_qual"))
+        entry["played"], entry["total"] = entry["swiss"]["played"], entry["swiss"]["total"]
+    elif fmt == "bracket":
+        entry["bracket"] = results.get("bracket") or {}
+        st = _bracket_state(matches, entry["bracket"])
+        entry["bracket_picks"] = st["picks"]
+        entry["played"], entry["total"] = st["played"], st["total"]
+    else:
+        entry["groups"] = _groups_state(matches, [[int(t) for t in g] for g in (results.get("groups") or [])])
+        entry["played"] = sum(g["played"] for g in entry["groups"])
+        entry["total"] = None
+    last = matches[-1] if matches else None
+    entry["last_match"] = (
+        {"a": rows.get(last["a"], {}).get("name"), "b": rows.get(last["b"], {}).get("name"), "score_a": last["score_a"], "score_b": last["score_b"], "date": last["date"]}
+        if last else None
+    )
+    return entry
+
+
+def summary(entry: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: entry.get(k) for k in SUMMARY_KEYS}
+
+
+def live_events(now: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Every live and upcoming event plus the PREVIOUS_LIMIT most recently
+    finished ones, full entries, live first."""
+    from backend.data.event_db import list_events
 
     now = float(now or time.time())
     out = []
     conn = connect()
     try:
         for ev in list_events():
-            event_id = int(ev.get("event_id") or 0)
-            if not event_id:
-                continue
-            detail = get_event_detail(event_id)
-            if not detail:
-                continue
-            try:
-                detected = events_routes._detect_event_tournament_kind_cached(detail)
-            except Exception:  # noqa: BLE001
-                continue
-            start, end = detected.get("start_at"), detected.get("end_at")
-            if not start:
-                continue
-            end = float(end or float(start) + 7 * DAY)
-            if now < float(start) - UPCOMING_DAYS * DAY or now > end + (GRACE_DAYS + FINISHED_SHOWN_DAYS) * DAY:
-                continue
-            stored = _GROUPS_STATE.load(key=event_id)
-            results = (stored or {}).get("results") or {}
-            if not results.get("teams"):
-                continue
-            status = "upcoming" if now < float(start) else "live" if now <= end + GRACE_DAYS * DAY else "finished"
-            team_ids = [int(t) for t in results["teams"]]
-            rows = _team_rows(conn, team_ids)
-            key_to_tid = {team_aliases.key(str(r["name"] or "")): tid for tid, r in rows.items() if r.get("name")}
-            matches = _event_matches(conn, key_to_tid, _iso(start), _iso(end + GRACE_DAYS * DAY))
-            fmt = str(results.get("group_format") or "")
-            entry: Dict[str, Any] = {
-                "event_id": event_id,
-                "name": detail.get("name") or ev.get("name") or f"Event {event_id}",
-                "kind": str(detected.get("kind") or ""),
-                "label": str(detected.get("label") or ""),
-                "group_format": fmt,
-                "status": status,
-                "start_at": float(start),
-                "end_at": end,
-                "teams": {str(tid): {"name": r.get("name"), "hltv_team_id": r.get("hltv_team_id")} for tid, r in rows.items()},
-                "matches": matches,
-            }
-            if fmt == "swiss":
-                sw = results.get("swiss") or {}
-                entry["swiss"] = _swiss_state(matches, [int(t) for t in (results.get("groups") or [[]])[0]], str(sw.get("bo3_mode") or "elim_qual"))
-                entry["played"], entry["total"] = entry["swiss"]["played"], entry["swiss"]["total"]
-            elif fmt == "bracket":
-                entry["bracket"] = results.get("bracket") or {}
-                st = _bracket_state(matches, entry["bracket"])
-                entry["bracket_picks"] = st["picks"]
-                entry["played"], entry["total"] = st["played"], st["total"]
-            else:
-                entry["groups"] = _groups_state(matches, [[int(t) for t in g] for g in (results.get("groups") or [])])
-                entry["played"] = sum(g["played"] for g in entry["groups"])
-                entry["total"] = None
-            out.append(entry)
+            entry = _entry(conn, ev, now)
+            if entry:
+                out.append(entry)
     finally:
         conn.close()
     order = {"live": 0, "upcoming": 1, "finished": 2}
-    out.sort(key=lambda e: (order.get(e["status"], 3), e["start_at"]))
-    return out
+    live_and_next = sorted((e for e in out if e["status"] != "finished"), key=lambda e: (order[e["status"]], e["start_at"]))
+    previous = sorted((e for e in out if e["status"] == "finished"), key=lambda e: -e["end_at"])[:PREVIOUS_LIMIT]
+    return live_and_next + previous
+
+
+def live_event(event_id: int, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """One event's full state, or None when it has no valuation."""
+    now = float(now or time.time())
+    conn = connect()
+    try:
+        return _entry(conn, {"event_id": int(event_id)}, now)
+    finally:
+        conn.close()

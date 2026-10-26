@@ -3519,7 +3519,7 @@ button:disabled {
 .myteam-rounds th.wide { width: 200px; }
 .myteam-rounds td.wide { white-space: nowrap; }
 .myteam-rounds tbody tr.live td { background: rgba(255, 107, 26, 0.07); }
-.mt-tracker { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.mt-tracker { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
 /* round by round: one block per round — status, name and the round's
    numbers on a strip, the round's player cards under it */
 .mt-rounds { display: flex; flex-direction: column; gap: 12px; }
@@ -3527,7 +3527,29 @@ button:disabled {
 .mt-round.live { border-color: #ff6b1a; }
 .mt-round-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .mt-round-name { font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 18px; letter-spacing: 0.03em; text-transform: uppercase; color: #f2f5f9; min-width: 90px; }
-.mt-round-foot { display: flex; gap: 32px; justify-content: flex-end; flex-wrap: wrap; border-top: 1px solid #242b35; padding-top: 10px; }
+.mt-round-foot { display: flex; gap: 32px; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; border-top: 1px solid #242b35; padding-top: 10px; }
+/* the small points-by-component tables on the cards and the round footer */
+.mt-mini { width: auto; table-layout: auto; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.mt-mini th, .mt-mini td { padding: 3px 0 3px 10px; text-align: right; white-space: nowrap; border: 0; font-size: 12.5px; line-height: 1.2; }
+.mt-mini th:first-child, .mt-mini td:first-child { padding-left: 0; text-align: left; }
+.mt-mini th { color: #8fa3bf; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; padding-bottom: 4px; }
+.mt-mini td { color: #e9edf3; font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 14px; }
+.mt-mini td.mt-mini-label { color: #8fa3bf; font-family: inherit; font-stretch: normal; font-weight: 500; font-size: 12px; }
+.mt-mini td.strong, .mt-mini th.strong { color: #ff8a47; }
+.mt-mini td.pos { color: #86efac; }
+.mt-mini td.neg { color: #fca5a5; }
+.mt-mini tbody tr { background: none; }
+.mt-mini tbody tr:hover td { background: none; }
+.mt-track .mt-mini { width: 100%; table-layout: fixed; }
+.mt-track .mt-mini th, .mt-track .mt-mini td { padding-left: 4px; font-size: 13px; }
+.mt-track .mt-mini th { font-size: 9px; letter-spacing: 0.06em; }
+.mt-track .mt-mini th:first-child, .mt-track .mt-mini td:first-child { width: 58px; padding-left: 0; }
+.mt-track .mt-mini td.mt-mini-label { font-size: 11px; }
+.mt-round-table td.mt-mini-label { min-width: 160px; }
+.mt-round-place { display: grid; grid-template-columns: auto auto; column-gap: 28px; row-gap: 0; align-items: baseline; justify-items: end; }
+.mt-round-place .mt-round-num-value { font-size: 22px; }
+.mt-round-place .mt-round-num-value.strong { color: #ff8a47; }
+.mt-track-time { flex: none; font-weight: 600; font-size: 12.5px; color: #c3cddb; text-align: right; line-height: 1.2; }
 .mt-round-num { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; min-width: 56px; }
 .mt-round-num-value { font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 19px; color: #e9edf3; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mt-round-num.strong .mt-round-num-value { color: #ff8a47; }
@@ -3535,7 +3557,7 @@ button:disabled {
 .mt-round-num.neg .mt-round-num-value { color: #fca5a5; }
 .mt-round-num-label { color: #8fa3bf; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 1px; white-space: nowrap; }
 .mt-round .mt-track { background: #171c24; }
-.mt-track { background: #171c24; border: 1px solid #2c3441; clip-path: polygon(8px 0, 100% 0, 100% 100%, 0 100%, 0 8px); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.mt-track { background: #171c24; border: 1px solid #2c3441; clip-path: polygon(8px 0, 100% 0, 100% 100%, 0 100%, 0 8px); padding: 12px 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; overflow: hidden; }
 .mt-track.clickable { cursor: pointer; }
 .mt-track.clickable:hover { border-color: #ff6b1a; }
 .mt-track.next { opacity: 0.85; }
@@ -3556,8 +3578,8 @@ button:disabled {
 .mt-track-diff.neg { color: #fca5a5; }
 .mt-track-points.neg { color: #ff9c9c; }
 .mt-track-stats { max-width: none; }
-@media (max-width: 1250px) { .mt-lineup { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 800px) { .mt-lineup { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1250px) { .mt-lineup, .mt-tracker { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 800px) { .mt-lineup, .mt-tracker { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .myteam-table tbody tr, .myteam-rounds tbody tr { cursor: default; }
 .myteam-table .pill, .myteam-rounds .pill, .myteam-matches .pill { font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; font-size: 12px; padding: 3px 9px; white-space: nowrap; }
 @media (max-width: 1100px) { .myteam-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

@@ -794,16 +794,40 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
     # given his team plays it) and for the lineup as a whole, against the
     # round's actual subtotal.
     lineup = [(p.get("player_id"), p.get("team_id")) for p in page["players"] if p.get("player_id") is not None]
+    comps = (("rating", "rating"), ("team", "win"), ("role", "role"), ("booster", "booster"), ("total", "total"))
+    actual_keys = {"rating": "rating_points", "team": "team_points", "role": "role_points", "booster": "booster_points", "total": "points"}
+    round_actual_keys = {"rating": "rating_points", "team": "team_points", "role": "role_points", "booster": "booster_points", "total": "subtotal"}
+    running_exp = {k: 0.0 for k, _ in comps}
+    running_act = {k: 0.0 for k, _ in comps}
     for i, r in enumerate(rounds):
         stage_key = stage_order[i] if i < len(stage_order) else None
         for c in r.get("players") or []:
             c_tid = team_of_player.get(int(c["player_id"])) if c.get("player_id") is not None else None
-            total = round_ev(c.get("player_id"), c_tid, stage_key, "total") if stage_key else None
-            c["expected"] = round(float(total), 1) if total is not None else None
-            c["difference"] = round(float(c["points"]) - float(total), 1) if total is not None and c.get("points") is not None else None
-        exp_total = sum(float(round_ev(pid, tid, stage_key, "total") or 0.0) for pid, tid in lineup) if stage_key else None
-        r["expected_total"] = round(exp_total, 1) if exp_total is not None else None
-        r["difference"] = round(float(r["subtotal"]) - exp_total, 1) if exp_total is not None and r.get("subtotal") is not None and r.get("status") != "TBA" else None
+            parts = {k: round_ev(c.get("player_id"), c_tid, stage_key, src) for k, src in comps} if stage_key else {}
+            known = parts and parts.get("total") is not None
+            c["expected"] = round(float(parts["total"]), 1) if known else None
+            c["expected_parts"] = {k: (round(float(v), 1) if v is not None else None) for k, v in parts.items()} if known else None
+            c["difference"] = round(float(c["points"]) - float(parts["total"]), 1) if known and c.get("points") is not None else None
+            c["difference_parts"] = (
+                {k: (round(float(c.get(actual_keys[k]) or 0) - float(parts[k]), 1) if parts.get(k) is not None else None) for k, _ in comps}
+                if known and c.get("points") is not None else None
+            )
+        # the round for the lineup: expected by component, actual by component, running sums
+        exp_parts = {k: sum(float(round_ev(pid, tid, stage_key, src) or 0.0) for pid, tid in lineup) for k, src in comps} if stage_key else None
+        played_round = r.get("status") != "TBA" and r.get("subtotal") is not None
+        act_parts = {k: float(r.get(round_actual_keys[k]) or 0.0) for k, _ in comps} if played_round else None
+        if exp_parts:
+            for k, _ in comps:
+                running_exp[k] += exp_parts[k]
+        if act_parts:
+            for k, _ in comps:
+                running_act[k] += act_parts[k]
+        r["expected_parts"] = {k: round(v, 1) for k, v in exp_parts.items()} if exp_parts else None
+        r["expected_total"] = r["expected_parts"]["total"] if exp_parts else None
+        r["actual_parts"] = {k: round(v, 1) for k, v in act_parts.items()} if act_parts else None
+        r["difference"] = round(act_parts["total"] - exp_parts["total"], 1) if exp_parts and act_parts else None
+        r["running_expected_parts"] = {k: round(v, 1) for k, v in running_exp.items()} if exp_parts else None
+        r["running_actual_parts"] = {k: round(v, 1) for k, v in running_act.items()} if act_parts else None
     report = {
         "event_id": eid,
         "team": mine,

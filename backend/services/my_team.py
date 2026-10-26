@@ -32,6 +32,11 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 REFRESH = 600.0
+REPORT_STALE = 120.0  # a shown report older than this is re-read in the background
+DRAFT_MAX_AGE = 3600.0  # the draft page only answers "which team is mine" (and is stored once known)
+# A page on the domain, so the session cookies can be swapped in before the
+# real pages are read; the lightest one HLTV serves.
+ENTRY_URL = "https://www.hltv.org/robots.txt"
 _CACHE: Dict[str, Dict[str, Any]] = {}
 _LOCK = threading.Lock()
 SESSION_COOKIE_NAMES = ("autologin", "PHPSESSID")
@@ -83,11 +88,16 @@ def cookies_for(user_key: str) -> List[Dict[str, Any]]:
 
 
 def _forget_cached(user_key: str) -> None:
+    """Everything remembered for the user: pages, job results and the stored
+    team identities and reports (a reconnected account may be another one)."""
+    from backend.data import my_team_cache
+
     with _LOCK:
         for k in [k for k in _CACHE if k[0] == user_key]:
             _CACHE.pop(k, None)
         for k in [k for k in _RESULTS if k.split("|")[1:2] == [user_key]]:
             _RESULTS.pop(k, None)
+    my_team_cache.delete_user(user_key)
 
 
 def save_account(user_key: str, cookies: List[Dict[str, Any]], username: str) -> Dict[str, Any]:
@@ -117,17 +127,19 @@ def _job_key(kind: str, user_key: str, *parts: Any) -> str:
     return "|".join([kind, user_key, *[str(p) for p in parts]])
 
 
-def run_in_background(key: str, fn, max_age: float) -> Dict[str, Any]:
+def run_in_background(key: str, fn, max_age: float, force: bool = False) -> Dict[str, Any]:
     """{"value", "pending", "error"}: fn's cached result when younger than
     max_age (an error is kept for a minute); otherwise the stale one, or
-    None, with pending=True while one thread per key computes a fresh one."""
+    None, with pending=True while one thread per key computes a fresh one.
+    `force` re-reads whatever the age, still handing out the stale value."""
     now = time.time()
     with _LOCK:
         hit = _RESULTS.get(key)
-        if hit and now - float(hit["at"]) < (_ERROR_RETRY if hit.get("error") else max_age):
-            return {"value": hit.get("value"), "pending": False, "error": hit.get("error")}
         thread = _JOBS.get(key)
-        if thread is None or not thread.is_alive():
+        running = thread is not None and thread.is_alive()
+        if hit and not force and not running and now - float(hit["at"]) < (_ERROR_RETRY if hit.get("error") else max_age):
+            return {"value": hit.get("value"), "pending": False, "error": hit.get("error")}
+        if not running:
 
             def work() -> None:
                 try:
@@ -192,19 +204,27 @@ def connect_account(user_key: str, cookies: List[Dict[str, Any]]) -> Dict[str, A
 
 
 def report_for(event_id: int, user_key: str, refresh: bool = False) -> Dict[str, Any]:
-    """Background wrapper of team_report; refresh drops the cached report
-    and re-reads the pages."""
+    """Background wrapper of team_report: the last report (from memory, or
+    the one stored across restarts) at once, re-read in the background when
+    older than REPORT_STALE or on refresh."""
+    from backend.data import my_team_cache
+
     key = _job_key("report", user_key, int(event_id))
-    if refresh:
-        with _LOCK:
-            _RESULTS.pop(key, None)
-    return run_in_background(key, lambda: team_report(int(event_id), user_key, 0.0 if refresh else REFRESH), REFRESH)
+    with _LOCK:
+        if key not in _RESULTS:
+            stored = my_team_cache.get(user_key, int(event_id))
+            if stored and stored.get("report"):
+                _RESULTS[key] = {"value": stored["report"], "at": float(stored.get("read_at") or 0.0), "error": None}
+    return run_in_background(key, lambda: team_report(int(event_id), user_key), REPORT_STALE, force=refresh)
 
 
-def with_personal_session(callback, cookies: Optional[List[Dict[str, Any]]] = None):
-    """Run `callback(driver)` in the shared browser signed in as the personal
-    account: the scraper account's session cookies are set aside, the
-    personal ones added, and the scraper's put back whatever happens."""
+def with_personal_session(callback, cookies: Optional[List[Dict[str, Any]]] = None, verify: bool = True):
+    """Run `callback(driver, username)` in the shared browser signed in as the
+    personal account: the scraper account's session cookies are set aside,
+    the personal ones added, and the scraper's put back whatever happens.
+    With `verify` the front page is loaded first to confirm the login and
+    read the account name (one page more); without, the callback checks the
+    login on a page it loads anyway and the username is ""."""
     from backend.services import hltv_session
     from backend.services.hltv_browser import run_hltv_browser_session
 
@@ -229,8 +249,10 @@ def with_personal_session(callback, cookies: Optional[List[Dict[str, Any]]] = No
                 if c.get("httpOnly"):
                     cookie["httpOnly"] = True
                 driver.add_cookie(cookie)
+            if not verify:
+                return callback(driver, "")
             driver.get("https://www.hltv.org/")
-            time.sleep(1.5)
+            time.sleep(1.0)
             if not hltv_session.is_logged_in(driver):
                 raise PersonalSessionError("HLTV no longer accepts the personal login; hand it over again")
             return callback(driver, hltv_session.nav_username(driver))
@@ -246,7 +268,7 @@ def with_personal_session(callback, cookies: Optional[List[Dict[str, Any]]] = No
                 except Exception:  # noqa: BLE001
                     logger.warning("Could not restore the scraper's %s cookie", c.get("name"))
 
-    return run_hltv_browser_session("https://www.hltv.org/", session, wait_text=None, timeout_ms=60000)
+    return run_hltv_browser_session(ENTRY_URL, session, wait_text=None, timeout_ms=60000)
 
 ROLE_INDEX_BY_NAME = {
     "main awp": 0, "support": 1, "attacker": 2, "leader": 3, "stathunter": 4, "entry fragger": 5,
@@ -297,14 +319,25 @@ def _fetch_many(urls: List[str], max_age: float, user_key: str) -> Dict[str, str
                 stale.append(url)
     if not stale:
         return out
+    from backend.services import hltv_session
+
     cookies = cookies_for(user_key)
+    # The login is checked on the first HTML page read (its navigation bar
+    # names the account); a batch of JSON pages alone gets the front-page
+    # check instead, since JSON carries no navigation bar.
+    html_urls = [u for u in stale if not u.endswith("/json")]
 
     def read(driver, _username):
         pages = {}
+        checked = not html_urls
         for url in stale:
             driver.get(url)
             time.sleep(0.5)
             html = driver.page_source or ""
+            if not checked and url in html_urls:
+                checked = True
+                if not hltv_session.is_logged_in(driver):
+                    raise PersonalSessionError("HLTV no longer accepts the personal login; hand it over again")
             pages[url] = html
             try:
                 save_page_snapshot(url, html, kind="fantasy-mine")
@@ -312,7 +345,7 @@ def _fetch_many(urls: List[str], max_age: float, user_key: str) -> Dict[str, str
                 pass
         return pages
 
-    pages = with_personal_session(read, cookies=cookies) or {}
+    pages = with_personal_session(read, cookies=cookies, verify=not html_urls) or {}
     with _LOCK:
         for url, html in pages.items():
             _CACHE[(user_key, url)] = {"at": time.time(), "html": html}
@@ -521,22 +554,27 @@ def _predict_match(player_row: Dict[str, Any], own_tid: int, opp_tid: int, bo: i
     }
 
 
-def team_report(event_id: int, user_key: str, max_age: float = REFRESH) -> Optional[Dict[str, Any]]:
+def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
     """The user's team in the event with HLTV's scoring, the valuation's
-    expectation and the next-match prediction per player. None when the
-    account has no team there."""
+    expectation and the next-match prediction per player, freshly read
+    (two pages; the team's identity comes from the store after the first
+    read) and stored. None when the account has no team there."""
+    from backend.data import my_team_cache
     from backend.data.player_db import get_player
     from backend.data.team_db import get_all_teams
     from backend.routes.groups import _GROUPS_STATE
     from backend.services import event_rosters, live_pages, live_state
 
     eid = int(event_id)
-    teams = my_teams_for([eid], user_key, max_age).get(eid) or []
-    if not teams:
-        return None
-    mine = teams[0]
+    mine = (my_team_cache.get(user_key, eid) or {}).get("team")
+    if not mine:
+        teams = my_teams_for([eid], user_key, DRAFT_MAX_AGE).get(eid) or []
+        if not teams:
+            return None
+        mine = teams[0]
+        my_team_cache.save_team(user_key, eid, mine)
     base = f"https://www.hltv.org/fantasy/{eid}/league/{mine['league_id']}/team/{mine['team_id']}"
-    pages = _fetch_many([base, base + "/details"], max_age, user_key)
+    pages = _fetch_many([base, base + "/details"], 0.0, user_key)
     page = parse_team_page(pages.get(base, ""))
     try:
         rounds = parse_details_page(pages.get(base + "/details", ""))
@@ -603,7 +641,7 @@ def team_report(event_id: int, user_key: str, max_age: float = REFRESH) -> Optio
             "booster_points": sum(int(t.get("booster_points") or 0) for t in page["tracker"] if t.get("player_id") == pid),
             "matches": sum(1 for t in page["tracker"] if t.get("player_id") == pid and t.get("result") in ("WON", "LOST")),
         }
-    return {
+    report = {
         "event_id": eid,
         "team": mine,
         "key": page["key"],
@@ -614,3 +652,5 @@ def team_report(event_id: int, user_key: str, max_age: float = REFRESH) -> Optio
         "read_at": time.time(),
         "account": (account(user_key) or {}).get("username") or "",
     }
+    my_team_cache.save_report(user_key, eid, mine, report, report["read_at"])
+    return report

@@ -550,6 +550,10 @@ def refresh_hltv_for_all_teams_today():
                 ],
                 hltv_team_id=hltv_team_id,
             )
+            if hltv_team_id:
+                from backend.data.team_db import sync_twin_team_rows
+
+                sync_twin_team_rows(int(hltv_team_id), hltv_rank=int(data.get("hltv_rating") or 999), hltv_points=int(data.get("points") or 0))
             updated += 1
             if not before_exists:
                 inserted += 1
@@ -689,6 +693,10 @@ def refresh_vrs_for_all_teams_today():
                 ],
                 hltv_team_id=existing.get("hltv_team_id"),
             )
+            if existing.get("hltv_team_id"):
+                from backend.data.team_db import sync_twin_team_rows
+
+                sync_twin_team_rows(int(existing["hltv_team_id"]), vrs_rank=int(data.get("vrs_rank") or 999), vrs_points=int(data.get("points") or 0))
             updated += 1
             if not before_exists:
                 inserted += 1

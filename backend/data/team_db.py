@@ -134,14 +134,51 @@ def update_team_roster(team_id: int, player_ids: List[int], checked_at: Optional
 
 def clear_stale_hltv_ranks(keep_team_ids: List[int]) -> int:
     """Teams the latest HLTV ranking no longer lists drop to the unranked
-    placeholder (999) so nothing scopes by a rank they held months ago."""
+    placeholder (999) so nothing scopes by a rank they held months ago.
+
+    A kept row's twins — other rows with the same HLTV team id, i.e. the same
+    team under another spelling (BetBoom / BETBOOM) — are the same team: they
+    are never unranked (the refresh loops sync their ranking)."""
     keep = sorted({int(t) for t in keep_team_ids if t})
+    if not keep:
+        return 0
     conn = connect()
     try:
-        placeholders = ",".join("?" * len(keep)) or "NULL"
+        marks = ",".join("?" * len(keep))
+        kept_ids = f"SELECT hltv_team_id FROM teams WHERE team_id IN ({marks}) AND hltv_team_id IS NOT NULL"
         cur = conn.execute(
-            f"UPDATE teams SET hltv_rank = 999 WHERE hltv_rank IS NOT NULL AND hltv_rank < 999 AND team_id NOT IN ({placeholders})",
-            keep,
+            f"""UPDATE teams SET hltv_rank = 999
+                WHERE hltv_rank IS NOT NULL AND hltv_rank < 999
+                  AND team_id NOT IN ({marks})
+                  AND (hltv_team_id IS NULL OR hltv_team_id NOT IN ({kept_ids}))""",
+            keep + keep,
+        )
+        unranked = int(cur.rowcount or 0)
+        conn.commit()
+        return unranked
+    finally:
+        conn.close()
+
+
+def sync_twin_team_rows(
+    hltv_team_id: int,
+    *,
+    hltv_rank: Optional[int] = None,
+    hltv_points: Optional[int] = None,
+    vrs_rank: Optional[int] = None,
+    vrs_points: Optional[int] = None,
+) -> int:
+    """Every row with this HLTV team id — the same team under another
+    spelling (BetBoom / BETBOOM) — carries the same ranking, so whichever
+    row an event or a ranking entry lands on, the rank is the current one."""
+    cols = {k: v for k, v in {"hltv_rank": hltv_rank, "hltv_points": hltv_points, "vrs_rank": vrs_rank, "vrs_points": vrs_points}.items() if v is not None}
+    if not cols or not hltv_team_id:
+        return 0
+    conn = connect()
+    try:
+        cur = conn.execute(
+            f"UPDATE teams SET {', '.join(f'{k} = ?' for k in cols)} WHERE hltv_team_id = ?",
+            [*cols.values(), int(hltv_team_id)],
         )
         conn.commit()
         return int(cur.rowcount or 0)

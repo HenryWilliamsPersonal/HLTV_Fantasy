@@ -6696,9 +6696,16 @@ function MyTeamPanel({ ev, onOpenSettings }) {
               </div>
             </div>
             {t.result === "NEXT" ? (
-              <div className="mt-track-points time">{(t.start_text || "").replace(" - ", "\n").split("\n").map((part, k) => <div key={k}>{part}</div>)}</div>
+              <div className="mt-track-pts">
+                <div className="mt-track-points time">{(t.start_text || "").replace(" - ", "\n").split("\n").map((part, k) => <div key={k}>{part}</div>)}</div>
+                {t.expected != null && <div className="mt-track-exp">exp {fmt1(t.expected)}</div>}
+              </div>
             ) : (
-              <div className={`mt-track-points${Number(t.points) < 0 ? " neg" : ""}`}>{t.points ?? 0} pts</div>
+              <div className="mt-track-pts">
+                <div className={`mt-track-points${Number(t.points) < 0 ? " neg" : ""}`}>{t.points ?? 0} pts</div>
+                {t.expected != null && <div className="mt-track-exp">exp {fmt1(t.expected)}</div>}
+                {t.difference != null && <div className={`mt-track-diff${Number(t.difference) < 0 ? " neg" : " pos"}`}>{signed(t.difference)}</div>}
+              </div>
             )}
           </div>
           {played && (
@@ -6813,25 +6820,23 @@ function MyTeamPanel({ ev, onOpenSettings }) {
               return (
                 <div className={`mt-round${r.status === "LIVE" ? " live" : ""}`} key={r.name}>
                   <div className="mt-round-head">
-                    <span className={`pill${r.status === "LIVE" ? " ok" : r.status === "ENDED" ? "" : " muted"}`}>{r.status === "ENDED" ? "Ended" : r.status === "LIVE" ? "Live" : "TBA"}</span>
                     <span className="mt-round-name">{r.name}</span>
-                    <div className="mt-round-nums">
-                      {[
-                        ["Rating", signed(r.rating_points)],
-                        ["Team", signed(r.team_points)],
-                        ["Role / boost", `${r.role_points ?? "-"}/${r.booster_points ?? "-"}`],
-                        ["Subtotal", signed(r.subtotal)],
-                        ["Placement", r.placement != null ? `${Number(r.placement).toLocaleString()} / ${Number(key.league_size || 0).toLocaleString()}` : "-"],
-                        ["Total", r.total ?? "-"],
-                      ].map(([label, v]) => (
-                        <div className={`mt-round-num${label === "Total" ? " strong" : ""}`} key={label}>
-                          <span className="mt-round-num-value">{v}</span>
-                          <span className="mt-round-num-label">{label}</span>
-                        </div>
-                      ))}
-                    </div>
                   </div>
                   {cards.length > 0 && <div className="mt-tracker">{cards.map((t, i) => trackCard(t, i))}</div>}
+                  <div className="mt-round-foot">
+                    {[
+                      ["Expected", r.expected_total != null ? fmt1(r.expected_total) : "-", ""],
+                      ["Actual", r.status === "TBA" ? "-" : signed(r.subtotal), ""],
+                      ["Difference", r.difference != null ? signed(r.difference) : "-", r.difference != null ? (Number(r.difference) < 0 ? " neg" : " pos") : ""],
+                      ["Placement", r.placement != null ? `${Number(r.placement).toLocaleString()} / ${Number(key.league_size || 0).toLocaleString()}` : "-", ""],
+                      ["Total", r.status === "TBA" ? "-" : r.total ?? "-", " strong"],
+                    ].map(([label, v, cls]) => (
+                      <div className={`mt-round-num${cls}`} key={label}>
+                        <span className="mt-round-num-value">{v}</span>
+                        <span className="mt-round-num-label">{label}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               );
             })}

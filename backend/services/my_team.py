@@ -730,6 +730,20 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
     stage_stats = results.get("stage_stats") or {}
     stage_order = [str(s.get("key")) for s in (stage_stats.get("stages") or []) if s.get("key") and s.get("key") != "padding"]
     stage_players = stage_stats.get("players") or {}
+    stage_teams = stage_stats.get("teams") or {}
+
+    def round_ev(pid: Optional[int], tid: Optional[int], stage_key: str, comp: str) -> Optional[float]:
+        """The player's expectation for one round GIVEN his team plays it:
+        the run's figure is weighted by the chance of reaching the round, so
+        it is divided by that chance (1 for the opening rounds)."""
+        stages = ((stage_players.get(str(pid)) or {}).get("stages") or {}) if pid is not None else {}
+        st = stages.get(stage_key)
+        if not st:
+            return None
+        play = float((((stage_teams.get(str(tid)) or {}).get("rounds") or {}).get(stage_key) or {}).get("play") or 0.0) if tid is not None else 0.0
+        value = float(st.get(comp) or 0.0)
+        return value / play if play > 0.05 else value
+
     for pl in page["players"]:
         pid = pl.get("player_id")
         row = get_player(int(pid)) if pid else None
@@ -741,7 +755,7 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
         ev = expected_by_pid.get(int(pid)) if pid else None
         stages = ((stage_players.get(str(pid)) or {}).get("stages") or {}) if pid else {}
         so_far = {
-            comp: round(sum(float((stages.get(k) or {}).get(comp) or 0.0) for k in stage_order[:played]), 1)
+            comp: round(sum(float(round_ev(pid, tid, k, comp) or 0.0) for k in stage_order[:played]), 1)
             for comp in ("total", "rating", "win", "role", "booster")
         }
         pl["expected"] = (
@@ -776,6 +790,20 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
             "booster_points": sum(int(t.get("booster_points") or 0) for t in page["tracker"] if t.get("player_id") == pid),
             "matches": sum(1 for t in page["tracker"] if t.get("player_id") == pid and t.get("result") in ("WON", "LOST")),
         }
+    # Each round's expectation: per card (the player's figure for that round,
+    # given his team plays it) and for the lineup as a whole, against the
+    # round's actual subtotal.
+    lineup = [(p.get("player_id"), p.get("team_id")) for p in page["players"] if p.get("player_id") is not None]
+    for i, r in enumerate(rounds):
+        stage_key = stage_order[i] if i < len(stage_order) else None
+        for c in r.get("players") or []:
+            c_tid = team_of_player.get(int(c["player_id"])) if c.get("player_id") is not None else None
+            total = round_ev(c.get("player_id"), c_tid, stage_key, "total") if stage_key else None
+            c["expected"] = round(float(total), 1) if total is not None else None
+            c["difference"] = round(float(c["points"]) - float(total), 1) if total is not None and c.get("points") is not None else None
+        exp_total = sum(float(round_ev(pid, tid, stage_key, "total") or 0.0) for pid, tid in lineup) if stage_key else None
+        r["expected_total"] = round(exp_total, 1) if exp_total is not None else None
+        r["difference"] = round(float(r["subtotal"]) - exp_total, 1) if exp_total is not None and r.get("subtotal") is not None and r.get("status") != "TBA" else None
     report = {
         "event_id": eid,
         "team": mine,

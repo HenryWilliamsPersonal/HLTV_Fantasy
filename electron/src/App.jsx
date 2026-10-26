@@ -10083,6 +10083,27 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false }
 // each team's record odds and qualify chance from the stored run.
 function SwissStageView({ results, teams, teamLookup, excludeSet = null, teamPlayerIds = null, onToggleTeam = null }) {
   const sw = results?.swiss || null;
+  // The stage as it stands — results so far, the pairings HLTV has made,
+  // live scores — from the Live page's state, refreshed while this is open.
+  const liveId = Number(sw?.event_id || results?.event_id || 0) || null;
+  const [live, setLive] = useState(null);
+  useEffect(() => {
+    if (!liveId) return undefined;
+    let on = true;
+    const load = () =>
+      api
+        .get(`/live/events/${liveId}`, 60000)
+        .then((d) => {
+          if (on && d?.event) setLive(d.event);
+        })
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 30000);
+    return () => {
+      on = false;
+      clearInterval(t);
+    };
+  }, [liveId]);
   if (!sw) {
     return (
       <div className="card sub">
@@ -10105,7 +10126,17 @@ function SwissStageView({ results, teams, teamLookup, excludeSet = null, teamPla
     return wins.reduce((acc, r) => acc + Number(rec[r] || 0), 0);
   };
   return (
-    <div className="card sub group-card">
+    <>
+      {live?.swiss && (
+        <div className="card sub group-card">
+          <div className="group-card-head">
+            <h3>Swiss Stage</h3>
+            {live.status === "live" && <span className="pill ok">Live</span>}
+          </div>
+          <SwissBoard walk={live.swiss} teams={teams} teamLookup={teamLookup} picks={live.swiss.picks || {}} onPick={() => {}} readOnly />
+        </div>
+      )}
+      <div className="card sub group-card">
       <div className="group-card-head">
         <h3>{sw.stage_name && sw.stage_name !== "SixteenEight" ? sw.stage_name : "Swiss"}</h3>
       </div>
@@ -10167,7 +10198,8 @@ function SwissStageView({ results, teams, teamLookup, excludeSet = null, teamPla
           })}
         </tbody>
       </table>
-    </div>
+      </div>
+    </>
   );
 }
 

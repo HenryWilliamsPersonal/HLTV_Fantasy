@@ -6722,15 +6722,6 @@ function MyTeamPanel({ ev, onOpenSettings }) {
   return (
     <div className="stack">
       <Section title={report.team?.team_name || "My Team"}>
-        <div className="mt-head">
-          <span className="muted">{report.team?.league_name || ""}</span>
-          <span className="muted">
-            read {report.read_at ? new Date(report.read_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-"}
-          </span>
-          <button className="secondary" onClick={() => load(eventId, true)} disabled={busy}>
-            {busy ? "Reading…" : "Refresh"}
-          </button>
-        </div>
         <div className="mt-lineup">
           {players.map((p) => {
             const n = nextLine(p);

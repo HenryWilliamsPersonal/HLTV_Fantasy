@@ -387,14 +387,21 @@ app.whenReady().then(async () => {
     });
     hltvWindow = win;
     win.webContents.setUserAgent(HLTV_UA);
+    // Every hltv.org cookie in the partition. Not cookies.get({domain}):
+    // that filter keeps only cookies that would be SENT to that host, so a
+    // cookie HLTV sets host-only on www.hltv.org (its login cookies) never
+    // matched "hltv.org" and the sign-in was never noticed.
+    const hltvCookies = async () => {
+      const list = await ses.cookies.get({});
+      return list.filter((c) => /(^|\.)hltv\.org$/i.test(String(c.domain || "")));
+    };
     let signinOpened = false;
     win.webContents.on("did-finish-load", async () => {
       if (signinOpened || win.isDestroyed()) return;
       try {
         const url = win.webContents.getURL();
         if (!/^https:\/\/www\.hltv\.org\/?(\?.*)?$/.test(url)) return;
-        const list = await ses.cookies.get({ domain: "hltv.org", name: "autologin" });
-        if (list.length) return;
+        if ((await hltvCookies()).some((c) => c.name === "autologin")) return;
         signinOpened = true;
         await win.webContents.executeJavaScript(HLTV_OPEN_SIGNIN, true);
       } catch (e) {
@@ -402,8 +409,14 @@ app.whenReady().then(async () => {
       }
     });
     win.loadURL("https://www.hltv.org/");
+    let loggedNames = "";
     const cookiesNow = async () => {
-      const list = await ses.cookies.get({ domain: "hltv.org" });
+      const list = await hltvCookies();
+      const names = list.map((c) => `${c.name}@${c.domain}`).sort().join(",");
+      if (names !== loggedNames && list.some((c) => c.name === "PHPSESSID")) {
+        loggedNames = names;
+        ulog("info", "hltv-connect", `cookies: ${names}`);
+      }
       return list
         .filter((c) => ["autologin", "PHPSESSID"].includes(c.name))
         .map((c) => ({ name: c.name, value: c.value, domain: c.domain || ".hltv.org", path: c.path || "/", expiry: c.expirationDate ? Math.floor(c.expirationDate) : undefined, secure: Boolean(c.secure), httpOnly: Boolean(c.httpOnly) }));

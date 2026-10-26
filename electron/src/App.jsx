@@ -6322,20 +6322,27 @@ function LiveTab() {
 // round-by-round breakdown and every scored match (a row opens the match).
 function MyTeamTab() {
   const [events, setEvents] = useState(null);
+  const [account, setAccount] = useState(null); // {connected, username, days_left, error}
   const [eventId, setEventId] = useState(null);
   const [report, setReport] = useState(null);
   const [busy, setBusy] = useState(false);
   const [matchRow, setMatchRow] = useState(null);
-  useEffect(() => {
+  const loadEvents = () => {
+    setEvents(null);
     api
-      .get("/my-team/events", 120000)
+      .get("/my-team/events", 240000)
       .then((d) => {
+        setAccount({ connected: Boolean(d?.connected), username: d?.username || "", days_left: d?.days_left, error: d?.error || "" });
         const list = Array.isArray(d?.events) ? d.events : [];
         setEvents(list);
         if (list.length && !eventId) setEventId((list.find((e) => e.status === "live") || list[0]).event_id);
       })
-      .catch(() => setEvents([]));
-  }, []);
+      .catch(() => {
+        setAccount({ connected: false });
+        setEvents([]);
+      });
+  };
+  useEffect(loadEvents, []);
   const load = async (id, refresh = false) => {
     if (!id) return;
     setBusy(true);
@@ -6381,10 +6388,26 @@ function MyTeamTab() {
     }
   };
   if (events === null) return <div className="stack" />;
+  if (!account?.connected) {
+    return (
+      <Section title="My Team">
+        <div className="myteam-connect">
+          <span className="pill warn">Not connected</span>
+          <code>scripts\hltv-login-handoff.ps1 --account mine</code>
+          <button className="secondary" onClick={loadEvents}>
+            Check
+          </button>
+        </div>
+      </Section>
+    );
+  }
   if (events.length === 0) {
     return (
       <Section title="My Team">
-        <p className="muted">None</p>
+        <div className="pills">
+          <span className="pill ok">{account.username || "Connected"}</span>
+          <span className="muted">None</span>
+        </div>
       </Section>
     );
   }
@@ -6422,9 +6445,10 @@ function MyTeamTab() {
                 <div className="topx-tile-maps">{ev ? `${ev.status === "live" ? "Live" : ev.status === "upcoming" ? "Upcoming" : "Finished"} · ${ev.played ?? 0}${ev.total ? ` / ${ev.total}` : ""} matches` : ""}</div>
               </div>
               <div className="topx-tile">
-                <div className="topx-tile-label">Read</div>
-                <div className="topx-tile-value">{report.read_at ? new Date(report.read_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-"}</div>
+                <div className="topx-tile-label">Account</div>
+                <div className="topx-tile-value">{report.account || account.username || "-"}</div>
                 <div className="topx-tile-maps">
+                  read {report.read_at ? new Date(report.read_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-"}
                   <button className="secondary" onClick={() => load(eventId, true)} disabled={busy}>
                     {busy ? "Reading…" : "Refresh"}
                   </button>

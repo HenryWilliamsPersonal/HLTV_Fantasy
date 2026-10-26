@@ -3,7 +3,10 @@ scored (per player: rating, team, role and booster points, per match) set
 against what the stored valuation expected, plus a prediction for each
 player's next match.
 
-Sources, read through the shared browser with the operator's HLTV login:
+Sources, read through the shared browser signed in as the PERSONAL HLTV
+account (`.runtime/my-hltv-session.json`, handed over with
+`scripts/hltv-login-handoff.ps1 --account mine`), whose cookies replace the
+scraper account's for the duration of the read and are swapped back after:
 - /fantasy/{eid}/leagues/create/json — `topMenuData.leagueTeams`: the
   account's teams for the event (team id, league id, names);
 - /fantasy/{eid}/league/{lid}/team/{tid} — the five player blocks (role,
@@ -18,9 +21,11 @@ from __future__ import annotations
 import html as htmllib
 import json
 import logging
+import os
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -28,6 +33,106 @@ logger = logging.getLogger(__name__)
 REFRESH = 600.0
 _CACHE: Dict[str, Dict[str, Any]] = {}
 _LOCK = threading.Lock()
+PERSONAL_SESSION_FILE = Path(__file__).resolve().parents[2] / ".runtime" / "my-hltv-session.json"
+SESSION_COOKIE_NAMES = ("autologin", "PHPSESSID")
+
+
+class PersonalSessionError(RuntimeError):
+    """No personal HLTV login, or HLTV no longer accepts it."""
+
+
+def load_personal() -> Optional[Dict[str, Any]]:
+    try:
+        data = json.loads(PERSONAL_SESSION_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    return data if isinstance(data, dict) and data.get("cookies") else None
+
+
+def save_personal(cookies: List[Dict[str, Any]], username: str) -> Dict[str, Any]:
+    expiry = None
+    for c in cookies:
+        if c.get("name") == "autologin" and c.get("expiry"):
+            expiry = float(c["expiry"])
+    data = {"cookies": cookies, "username": username, "saved_at": time.time(), "autologin_expires_at": expiry}
+    PERSONAL_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = PERSONAL_SESSION_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, PERSONAL_SESSION_FILE)
+    with _LOCK:
+        _CACHE.clear()
+    return data
+
+
+def clear_personal() -> None:
+    try:
+        PERSONAL_SESSION_FILE.unlink()
+    except FileNotFoundError:
+        pass
+    with _LOCK:
+        _CACHE.clear()
+
+
+def personal_status() -> Dict[str, Any]:
+    data = load_personal()
+    if not data:
+        return {"connected": False}
+    exp = data.get("autologin_expires_at")
+    return {
+        "connected": True,
+        "username": data.get("username") or "",
+        "saved_at": data.get("saved_at"),
+        "autologin_expires_at": exp,
+        "days_left": round((float(exp) - time.time()) / 86400, 1) if exp else None,
+    }
+
+
+def with_personal_session(callback, cookies: Optional[List[Dict[str, Any]]] = None):
+    """Run `callback(driver)` in the shared browser signed in as the personal
+    account: the scraper account's session cookies are set aside, the
+    personal ones added, and the scraper's put back whatever happens."""
+    from backend.services import hltv_session
+    from backend.services.hltv_browser import run_hltv_browser_session
+
+    personal = cookies if cookies is not None else (load_personal() or {}).get("cookies") or []
+    if not any(c.get("name") == "autologin" for c in personal):
+        raise PersonalSessionError("No personal HLTV login handed over yet")
+
+    def session(driver):
+        saved = [c for c in (driver.get_cookies() or []) if c.get("name") in SESSION_COOKIE_NAMES]
+        try:
+            for name in SESSION_COOKIE_NAMES:
+                try:
+                    driver.delete_cookie(name)
+                except Exception:  # noqa: BLE001
+                    pass
+            for c in personal:
+                cookie = {"name": c["name"], "value": c["value"], "domain": c.get("domain") or ".hltv.org", "path": c.get("path") or "/"}
+                if c.get("expiry"):
+                    cookie["expiry"] = int(c["expiry"])
+                if c.get("secure"):
+                    cookie["secure"] = True
+                if c.get("httpOnly"):
+                    cookie["httpOnly"] = True
+                driver.add_cookie(cookie)
+            driver.get("https://www.hltv.org/")
+            time.sleep(1.5)
+            if not hltv_session.is_logged_in(driver):
+                raise PersonalSessionError("HLTV no longer accepts the personal login; hand it over again")
+            return callback(driver, hltv_session.nav_username(driver))
+        finally:
+            for name in SESSION_COOKIE_NAMES:
+                try:
+                    driver.delete_cookie(name)
+                except Exception:  # noqa: BLE001
+                    pass
+            for c in saved:
+                try:
+                    driver.add_cookie({k: v for k, v in c.items() if k in ("name", "value", "domain", "path", "expiry", "secure", "httpOnly")})
+                except Exception:  # noqa: BLE001
+                    logger.warning("Could not restore the scraper's %s cookie", c.get("name"))
+
+    return run_hltv_browser_session("https://www.hltv.org/", session, wait_text=None, timeout_ms=60000)
 
 ROLE_INDEX_BY_NAME = {
     "main awp": 0, "support": 1, "attacker": 2, "leader": 3, "stathunter": 4, "entry fragger": 5,
@@ -60,25 +165,67 @@ def _points(text: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def _fetch(url: str, max_age: float = REFRESH) -> str:
-    """The page, from the in-memory cache when younger than max_age, else
-    read now through the shared browser (which archives it too)."""
-    with _LOCK:
-        hit = _CACHE.get(url)
-    if hit and time.time() - float(hit["at"]) < max_age:
-        return str(hit["html"])
-    from backend.services.hltv_browser import fetch_hltv_html
+def _fetch_many(urls: List[str], max_age: float = REFRESH) -> Dict[str, str]:
+    """The pages, from the in-memory cache when younger than max_age; the
+    stale ones are read in one visit of the shared browser signed in as the
+    personal account (each archived as a page snapshot)."""
+    from backend.data.page_snapshots import save_page_snapshot
 
-    html = fetch_hltv_html(url)
+    out: Dict[str, str] = {}
+    stale: List[str] = []
+    now = time.time()
     with _LOCK:
-        _CACHE[url] = {"at": time.time(), "html": html}
-    return html
+        for url in urls:
+            hit = _CACHE.get(url)
+            if hit and now - float(hit["at"]) < max_age:
+                out[url] = str(hit["html"])
+            else:
+                stale.append(url)
+    if not stale:
+        return out
+
+    def read(driver, _username):
+        pages = {}
+        for url in stale:
+            driver.get(url)
+            time.sleep(1.5)
+            html = driver.page_source or ""
+            pages[url] = html
+            try:
+                save_page_snapshot(url, html, kind="fantasy-mine")
+            except Exception:  # noqa: BLE001
+                pass
+        return pages
+
+    pages = with_personal_session(read) or {}
+    with _LOCK:
+        for url, html in pages.items():
+            _CACHE[url] = {"at": time.time(), "html": html}
+    out.update(pages)
+    return out
+
+
+def _fetch(url: str, max_age: float = REFRESH) -> str:
+    return _fetch_many([url], max_age).get(url, "")
+
+
+def _draft_url(event_id: int) -> str:
+    return f"https://www.hltv.org/fantasy/{int(event_id)}/leagues/create/json"
+
+
+def my_teams_for(event_ids: List[int], max_age: float = REFRESH) -> Dict[int, List[Dict[str, Any]]]:
+    """{event_id: teams} for several events in one browser visit."""
+    pages = _fetch_many([_draft_url(e) for e in event_ids], max_age)
+    return {int(e): _teams_from_draft(pages.get(_draft_url(e), "")) for e in event_ids}
 
 
 def my_teams(event_id: int, max_age: float = REFRESH) -> List[Dict[str, Any]]:
     """The account's teams in this fantasy event."""
-    html = _fetch(f"https://www.hltv.org/fantasy/{int(event_id)}/leagues/create/json", max_age)
-    m = re.search(r"<pre>(.*?)</pre>", html, flags=re.S)
+    return _teams_from_draft(_fetch(_draft_url(event_id), max_age))
+
+
+def _teams_from_draft(html: str) -> List[Dict[str, Any]]:
+    m = re.search(r"<pre>(.*?)</pre>", html or "", flags=re.S)
     raw = htmllib.unescape(m.group(1)) if m else html
     try:
         data = json.loads(raw)
@@ -281,9 +428,10 @@ def team_report(event_id: int, max_age: float = REFRESH) -> Optional[Dict[str, A
         return None
     mine = teams[0]
     base = f"https://www.hltv.org/fantasy/{eid}/league/{mine['league_id']}/team/{mine['team_id']}"
-    page = parse_team_page(_fetch(base, max_age))
+    pages = _fetch_many([base, base + "/details"], max_age)
+    page = parse_team_page(pages.get(base, ""))
     try:
-        rounds = parse_details_page(_fetch(base + "/details", max_age))
+        rounds = parse_details_page(pages.get(base + "/details", ""))
     except Exception:  # noqa: BLE001
         rounds = []
 
@@ -349,4 +497,5 @@ def team_report(event_id: int, max_age: float = REFRESH) -> Optional[Dict[str, A
         "rounds": rounds,
         "expected_total": round(sum(float((p.get("expected") or {}).get("total") or 0.0) for p in page["players"]), 1),
         "read_at": time.time(),
+        "account": (load_personal() or {}).get("username") or "",
     }

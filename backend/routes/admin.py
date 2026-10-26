@@ -1471,6 +1471,67 @@ def hltv_session_cookies(payload: Dict[str, Any]):
     return {"status": "ok", "applied": names, **result}
 
 
+def _handoff_cookies(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = (payload or {}).get("cookies")
+    if not isinstance(raw, list) or not raw:
+        raise HTTPException(status_code=400, detail="cookies must be a non-empty list")
+    cookies: List[Dict[str, Any]] = []
+    for item in raw:
+        item = item or {}
+        name = str(item.get("name") or "").strip()
+        value = str(item.get("value") or "")
+        if name not in _HLTV_HANDOFF_COOKIE_ALLOWLIST or not value:
+            continue
+        cookie: Dict[str, Any] = {"name": name, "value": value, "domain": str(item.get("domain") or ".hltv.org"), "path": str(item.get("path") or "/")}
+        try:
+            if item.get("expiry"):
+                cookie["expiry"] = int(item["expiry"])
+        except Exception:
+            pass
+        if item.get("secure"):
+            cookie["secure"] = True
+        if item.get("httpOnly"):
+            cookie["httpOnly"] = True
+        cookies.append(cookie)
+    if "autologin" not in {c["name"] for c in cookies}:
+        raise HTTPException(status_code=400, detail="an 'autologin' cookie is required (PHPSESSID is optional)")
+    return cookies
+
+
+@router.post("/my-hltv-session-cookies")
+def my_hltv_session_cookies(payload: Dict[str, Any]):
+    """The PERSONAL HLTV login for the My Team page (hand-off with
+    --account mine): verified by signing the shared browser in with it for a
+    moment, then stored apart from the scraper account's session."""
+    from backend.services import my_team
+
+    cookies = _handoff_cookies(payload)
+    try:
+        username = my_team.with_personal_session(lambda _driver, name: name, cookies=cookies)
+    except my_team.PersonalSessionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HLTVBrowserError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    data = my_team.save_personal(cookies, str(username or ""))
+    _admin_logger.info("Personal HLTV session handed over: %s", username or "?")
+    return {"status": "ok", "logged_in": True, "username": username or "", "autologin_expires_at": data.get("autologin_expires_at")}
+
+
+@router.get("/my-hltv-session")
+def get_my_hltv_session():
+    from backend.services import my_team
+
+    return my_team.personal_status()
+
+
+@router.delete("/my-hltv-session")
+def delete_my_hltv_session():
+    from backend.services import my_team
+
+    my_team.clear_personal()
+    return {"status": "ok", "connected": False}
+
+
 @router.get("/dev-flags")
 def get_dev_flags():
     """Formats/shapes the app met but refuses to model yet (see services/dev_flags.py)."""

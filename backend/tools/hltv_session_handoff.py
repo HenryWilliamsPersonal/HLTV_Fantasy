@@ -117,7 +117,7 @@ def _collect_from_profile(headless: bool, names: tuple[str, ...], timeout_minute
             except Exception:
                 pass
             print(
-                f"A Chrome window is open on hltv.org: sign in there as the APP account "
+                f"A Chrome window is open on hltv.org: sign in there as {'YOUR OWN account' if os.getenv('HLTV_HANDOFF_ACCOUNT') == 'mine' else 'the APP account'} "
                 f"(solve the captcha if asked). Waiting up to {timeout_minutes:g} minutes...",
                 flush=True,
             )
@@ -144,7 +144,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--include-cloudflare", action="store_true", help="also hand over the Cloudflare clearance cookies")
     ap.add_argument("--timeout-minutes", type=float, default=5.0, help="how long to wait for a manual sign-in (default 5)")
     ap.add_argument("--headed", action="store_true", help="open the visible window immediately instead of trying headless first")
+    ap.add_argument("--account", choices=("scraper", "mine"), default="scraper", help="scraper = the app's data account (default); mine = YOUR account for the My Team page")
+    ap.add_argument("--profile-dir", help="browser profile to read the login from (default: the hand-off profile; '-mine' sibling for --account mine)")
     args = ap.parse_args(argv)
+    personal = args.account == "mine"
+    os.environ["HLTV_HANDOFF_ACCOUNT"] = args.account
+    if args.profile_dir:
+        os.environ["HLTV_PROFILE_DIR"] = args.profile_dir
+    elif personal:
+        from backend.services.hltv_browser import _resolve_profile_dir
+
+        base = _resolve_profile_dir()
+        os.environ["HLTV_PROFILE_DIR"] = str(base.parent / f"{base.name}-mine")
 
     names = SESSION_COOKIES + (CLOUDFLARE_COOKIES if args.include_cloudflare else ())
     backend = _backend_url(args.backend_url)
@@ -162,15 +173,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"Signed in here as {user or '(unknown)'}; handing over {sorted(c['name'] for c in cookies)}", flush=True)
 
+    route = "/admin/my-hltv-session-cookies" if personal else "/admin/hltv-session-cookies"
     try:
-        result = _request_json(f"{backend}/admin/hltv-session-cookies", {"cookies": cookies})
+        result = _request_json(f"{backend}{route}", {"cookies": cookies})
     except Exception as exc:
         print(f"ERROR: backend rejected the hand-off: {exc}", file=sys.stderr)
         return 1
     if not result.get("logged_in"):
         print(f"ERROR: backend applied the cookies but is still signed out: {result}", file=sys.stderr)
         return 1
-    print(f"OK: the backend's browser is now signed in to HLTV as {result.get('username') or '(unknown)'}.", flush=True)
+    if personal:
+        print(f"OK: the My Team page now reads the HLTV account {result.get('username') or '(unknown)'}.", flush=True)
+    else:
+        print(f"OK: the backend's browser is now signed in to HLTV as {result.get('username') or '(unknown)'}.", flush=True)
     if result.get("message"):
         print(f"    {result['message']}", flush=True)
     return 0

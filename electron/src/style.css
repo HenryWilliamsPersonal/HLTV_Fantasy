@@ -3453,7 +3453,9 @@ button:disabled {
 /* My Team */
 .myteam-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .myteam-strip .topx-tile-value { font-size: 28px; font-variant-numeric: tabular-nums; }
-.myteam-strip .secondary { padding: 4px 10px; font-size: 11px; margin-top: 4px; }
+.myteam-strip .secondary { padding: 4px 10px; font-size: 11px; margin-left: 10px; }
+.myteam-connect { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.myteam-connect code { background: #10141a; border: 1px solid #242b35; padding: 8px 12px; font-family: Consolas, "Cascadia Mono", ui-monospace, monospace; font-size: 13px; color: #f2f5f9; }
 .myteam-table td, .myteam-rounds td, .myteam-matches td { vertical-align: middle; font-variant-numeric: tabular-nums; }
 .myteam-table tbody tr, .myteam-rounds tbody tr { cursor: default; }
 .myteam-table .pill, .myteam-rounds .pill, .myteam-matches .pill { font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; font-size: 12px; padding: 3px 9px; white-space: nowrap; }

@@ -6333,8 +6333,6 @@ function LiveEventBody({ ev }) {
     const d = new Date(Number(ts) * 1000);
     return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   };
-  const statusLabel = ev.status === "live" ? "Live" : ev.status === "upcoming" ? "Upcoming" : "Finished";
-  const daysTo = Math.ceil((Number(ev.start_at) - Date.now() / 1000) / 86400);
   const results = [...(ev.matches || [])].reverse();
   // A result opens the match's scoreboard: the stored row when the nightly
   // import has it, else the page's scoreboards read on demand.
@@ -6365,46 +6363,8 @@ function LiveEventBody({ ev }) {
       /* the modal keeps the stored row */
     }
   };
-  const last = results[0];
   return (
     <div className="stack">
-      <div className="live-strip">
-        <div className={`topx-tile${ev.status === "live" ? "" : " empty"}`}>
-          <div className="topx-tile-label">Status</div>
-          <div className="topx-tile-value">{statusLabel}</div>
-          <div className="topx-tile-maps">
-            {dm(ev.start_at)} – {dm(ev.end_at)}
-            {ev.status === "upcoming" && daysTo > 0 ? ` · in ${daysTo}d` : ""}
-          </div>
-        </div>
-        <div className="topx-tile">
-          <div className="topx-tile-label">Matches played</div>
-          <div className="topx-tile-value">
-            {Number(ev.played || 0)}
-            {ev.total ? <span className="live-of"> / {ev.total}</span> : null}
-          </div>
-          <div className="topx-tile-maps">{ev.label}</div>
-        </div>
-        <div className="topx-tile">
-          <div className="topx-tile-label">Last result</div>
-          {last ? (
-            <>
-              <div className="topx-tile-value live-last">
-                {teamLookup[last.a]} {last.score_a}–{last.score_b} {teamLookup[last.b]}
-              </div>
-              <div className="topx-tile-maps">{formatDMY(last.date)}</div>
-            </>
-          ) : (
-            <div className="topx-tile-value">-</div>
-          )}
-        </div>
-        <div className="topx-tile">
-          <div className="topx-tile-label">Teams</div>
-          <div className="topx-tile-value">{Object.keys(ev.teams || {}).length}</div>
-          <div className="topx-tile-maps">{ev.group_format === "swiss" ? "Swiss" : ev.group_format === "bracket" ? (ev.bracket?.kind === "double" ? "Double elimination" : "Single elimination") : "Groups"}</div>
-        </div>
-      </div>
-
       {ev.group_format === "swiss" && ev.swiss && (
         <div className="card sub">
           <h3>Swiss Stage</h3>

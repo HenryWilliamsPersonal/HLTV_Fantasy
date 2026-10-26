@@ -3427,10 +3427,6 @@ button:disabled {
 .sw-match.live { border-color: #ff6b1a; }
 .sw-vs.sw-live { color: #ff8a47; font-variant-numeric: tabular-nums; }
 .sw-vs.sw-time { color: #8fa3bf; text-transform: none; font-variant-numeric: tabular-nums; }
-.live-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
-.live-strip .topx-tile-value { font-size: 28px; font-variant-numeric: tabular-nums; }
-.live-strip .live-of { color: #8fa3bf; font-size: 18px; }
-.live-strip .live-last { font-size: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .live-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .live-group h3 { margin-top: 0; }
 .live-group table { margin: 0; }
@@ -3446,7 +3442,6 @@ button:disabled {
 .sw-board.readonly .sw-side:disabled { opacity: 1; }
 .sw-board.readonly .sw-side.lost:disabled { opacity: 0.35; }
 .pb-bracket .gsl-pick button:disabled.active { opacity: 1; }
-@media (max-width: 1100px) { .live-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .live-group .table-player-cell span { max-width: none; white-space: normal; overflow: visible; text-overflow: clip; }
 .live-group td.num, .live-group th.num { width: 48px; text-align: right; }
 

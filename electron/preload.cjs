@@ -94,6 +94,51 @@ contextBridge.exposeInMainWorld("api", {
     requestJson(path, {
       method: "DELETE",
     }),
+  // Server-sent events: onEvent({event, data}) for every message until the
+  // returned function is called; onClose() once if the connection drops.
+  subscribe: (path, onEvent, onClose) => {
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const headers = { Accept: "text/event-stream" };
+        if (APP_INFO.publicBuild) headers["X-Public-Client"] = "1";
+        if (AUTH_TOKEN) headers.Authorization = `Bearer ${AUTH_TOKEN}`;
+        const res = await fetch(`${API_BASE}${path}`, { headers, signal: controller.signal });
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let cut;
+          while ((cut = buffer.indexOf("\n\n")) >= 0) {
+            const block = buffer.slice(0, cut);
+            buffer = buffer.slice(cut + 2);
+            let event = "message";
+            let data = "";
+            for (const line of block.split("\n")) {
+              if (line.startsWith("event:")) event = line.slice(6).trim();
+              else if (line.startsWith("data:")) data += line.slice(5).trim();
+            }
+            if (!data) continue;
+            let parsed = data;
+            try {
+              parsed = JSON.parse(data);
+            } catch {
+              /* plain text */
+            }
+            onEvent({ event, data: parsed });
+          }
+        }
+      } catch {
+        /* dropped or aborted */
+      }
+      if (!controller.signal.aborted && typeof onClose === "function") onClose();
+    })();
+    return () => controller.abort();
+  },
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
   onUpdateStatus: (callback) => {
     ipcRenderer.on("update-status", (_event, status) => callback(status));

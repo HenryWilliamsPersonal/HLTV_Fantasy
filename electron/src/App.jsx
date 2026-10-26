@@ -510,6 +510,48 @@ const rawApi = window.api || {
     requestJson(path, {
       method: "DELETE",
     }),
+  // Server-sent events without the bridge (a plain browser): same contract
+  // as the preload's subscribe.
+  subscribe: (path, onEvent, onClose) => {
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}${path}`, { headers: { Accept: "text/event-stream" }, signal: controller.signal });
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let cut;
+          while ((cut = buffer.indexOf("\n\n")) >= 0) {
+            const block = buffer.slice(0, cut);
+            buffer = buffer.slice(cut + 2);
+            let event = "message";
+            let data = "";
+            for (const line of block.split("\n")) {
+              if (line.startsWith("event:")) event = line.slice(6).trim();
+              else if (line.startsWith("data:")) data += line.slice(5).trim();
+            }
+            if (!data) continue;
+            let parsed = data;
+            try {
+              parsed = JSON.parse(data);
+            } catch {
+              /* plain text */
+            }
+            onEvent({ event, data: parsed });
+          }
+        }
+      } catch {
+        /* dropped or aborted */
+      }
+      if (!controller.signal.aborted && typeof onClose === "function") onClose();
+    })();
+    return () => controller.abort();
+  },
   openExternal: async (url) => {
     if (typeof window !== "undefined" && typeof window.open === "function") {
       window.open(url, "_blank", "noopener,noreferrer");
@@ -524,6 +566,39 @@ const api = {
   delete: (path) => rawApi.delete(withViewEvent(path)),
 };
 
+
+// The server's live stream (GET /live/stream): a `change` message names an
+// event whose HLTV pages were just re-read and differ. onChange gets its
+// data ({event_id, version, read_at, live_count}). The stream reconnects
+// after a short pause whenever it drops; callers keep a slow poll as the
+// fallback for when it cannot connect at all.
+function useLiveStream(onChange) {
+  const handler = useRef(onChange);
+  handler.current = onChange;
+  useEffect(() => {
+    if (typeof api.subscribe !== "function") return undefined;
+    let stop = null;
+    let timer = null;
+    let closed = false;
+    const open = () => {
+      stop = api.subscribe(
+        "/live/stream",
+        (msg) => {
+          if (msg?.event === "change" && msg.data && typeof msg.data === "object") handler.current(msg.data);
+        },
+        () => {
+          if (!closed) timer = setTimeout(open, 5000);
+        }
+      );
+    };
+    open();
+    return () => {
+      closed = true;
+      clearTimeout(timer);
+      if (stop) stop();
+    };
+  }, []);
+}
 
 // "0.1.2" vs "0.1.10" -> -1. Only digits matter.
 const compareVersions = (a, b) => {
@@ -6239,19 +6314,27 @@ function LiveTab({ onOpenSettings }) {
       /* the list row stays; the modal shows what it has */
     }
   };
+  const openIdRef = useRef(null);
   useEffect(() => {
     load();
-    const t = setInterval(load, 60000);
+    const t = setInterval(load, 120000);
     return () => clearInterval(t);
   }, []);
   useEffect(() => {
+    openIdRef.current = openId;
     setDetail(null);
     setSub("event");
     loadDetail(openId);
     if (!openId) return undefined;
-    const t = setInterval(() => loadDetail(openId), 30000);
+    const t = setInterval(() => loadDetail(openId), 60000);
     return () => clearInterval(t);
   }, [openId]);
+  // The server says an event's pages changed: the list and, if it is the
+  // open one, the page re-read at once.
+  useLiveStream((change) => {
+    load();
+    if (openIdRef.current && Number(change.event_id) === Number(openIdRef.current)) loadDetail(openIdRef.current);
+  });
   const dm = (ts) => {
     const d = new Date(Number(ts) * 1000);
     return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -6506,6 +6589,11 @@ function MyTeamPanel({ ev, onOpenSettings }) {
     load(eventId);
     return () => clearTimeout(poll.current);
   }, [eventId]);
+  // The event's pages changed on the server: ask for the report again (the
+  // server re-reads it when it is old enough, keeping the shown one meanwhile).
+  useLiveStream((change) => {
+    if (idRef.current && Number(change.event_id) === Number(idRef.current)) load(idRef.current, false, true);
+  });
   const fmt1 = (v) => (v == null || Number.isNaN(Number(v)) ? "-" : Number(v).toFixed(1));
   const signed = (v) => (v == null ? "-" : `${Number(v) > 0 ? "+" : ""}${Number(v)}`);
   const when = (ts) => {

@@ -21,7 +21,7 @@ from backend.services.scheduler import scheduler
 from backend.services.public_access import PublicAccessMiddleware, admin_token
 from backend.routes import auth as auth_routes
 from backend.data.auth_db import ensure_auth_schema
-from backend.services import roster_scores
+from backend.services import live_watch, roster_scores
 
 SCHEMA_INITIALIZERS = (
     ensure_schema,
@@ -70,6 +70,12 @@ async def _lifespan(app: FastAPI):
         scheduler.start()
     except Exception:
         logging.getLogger(__name__).warning("Could not start data scheduler", exc_info=True)
+    # The live events' HLTV pages are kept fresh on the server's clock and
+    # pushed to open apps over GET /live/stream (services/live_watch).
+    try:
+        live_watch.start()
+    except Exception:
+        logging.getLogger(__name__).warning("Could not start the live watch", exc_info=True)
     # Warm the heavy in-process caches off the request path: the stored groups
     # run (~1 s blob parse) and every event's format detection (~1 s burst).
     import threading
@@ -107,6 +113,7 @@ async def _lifespan(app: FastAPI):
 
     threading.Thread(target=_warm, name="cache-warmup", daemon=True).start()
     yield
+    live_watch.stop()
     scheduler.stop()
 
 

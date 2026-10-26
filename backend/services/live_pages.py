@@ -17,6 +17,7 @@ finished events.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -27,9 +28,14 @@ from backend.services.event_format import _BRACKET_JSON_RE, _SWISS_JSON_RE, _de_
 
 logger = logging.getLogger(__name__)
 
-LIVE_REFRESH = 600.0
+LIVE_REFRESH = 300.0  # a live event with no match in play
+LIVE_MATCH_REFRESH = 60.0  # a live event with a match in play
 UPCOMING_REFRESH = 3600.0
 UPCOMING_WINDOW = 2 * 86400.0
+# Change tracking for the live stream (routes/live.py): a counter bumped by
+# every read that changed an event's matches, and each event's last change.
+_VERSION = 0
+_CHANGED: Dict[int, Dict[str, Any]] = {}
 
 _CACHE: Dict[int, Dict[str, Any]] = {}
 _LOCK = threading.Lock()
@@ -228,10 +234,34 @@ def cache_age(event_id: int) -> Optional[float]:
     return (time.time() - float(entry["fetched_at"])) if entry else None
 
 
+def version() -> int:
+    with _LOCK:
+        return _VERSION
+
+
+def changes_since(version_seen: int) -> List[Dict[str, Any]]:
+    """The events whose matches changed after `version_seen`, oldest first:
+    {event_id, version, read_at, live_count}."""
+    with _LOCK:
+        rows = [dict(event_id=eid, **c) for eid, c in _CHANGED.items() if int(c["version"]) > int(version_seen)]
+    return sorted(rows, key=lambda r: r["version"])
+
+
+def _note_change(eid: int, matches: List[Dict[str, Any]]) -> None:
+    """Under _LOCK. Bumps the version when the event's matches differ from
+    what was cached before."""
+    global _VERSION
+    before = (_CACHE.get(eid) or {}).get("matches")
+    if before is not None and json.dumps(before, sort_keys=True, default=str) == json.dumps(matches, sort_keys=True, default=str):
+        return
+    _VERSION += 1
+    _CHANGED[eid] = {"version": _VERSION, "read_at": time.time(), "live_count": sum(1 for m in matches if m.get("status") == "live")}
+
+
 def refresh_due(event_id: int, status: str, start_at: float, now: Optional[float] = None) -> bool:
     now = float(now or time.time())
     if status == "live":
-        interval = LIVE_REFRESH
+        interval = LIVE_MATCH_REFRESH if any(m.get("status") == "live" for m in cached(event_id)) else LIVE_REFRESH
     elif status == "upcoming" and float(start_at) - now <= UPCOMING_WINDOW:
         interval = UPCOMING_REFRESH
     else:
@@ -259,6 +289,7 @@ def refresh(event_id: int, hltv_event_id: int, hltv_event_url: str, to_tid: Call
     try:
         matches = fetch_event_matches(int(hltv_event_id), hltv_event_url, to_tid)
         with _LOCK:
+            _note_change(eid, matches)
             _CACHE[eid] = {"fetched_at": time.time(), "matches": matches}
         logger.info("Live pages read for event %s: %d matches (%d live)", eid, len(matches), sum(1 for m in matches if m["status"] == "live"))
         return matches

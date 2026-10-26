@@ -452,8 +452,18 @@ def parse_team_page(html: str) -> Dict[str, Any]:
             key["money_placement"], key["money_size"] = int(m.group(1).replace(",", "")), int(m.group(2).replace(",", ""))
     messages = [_strip(t) for t in re.findall(r'<div class="team-message">(.*?)</div>', core, flags=re.S)]
     messages = [t for t in messages if t]
-    tracker: List[Dict[str, Any]] = []
-    for m in _TRACKER_RE.finditer(core[j:] if j >= 0 else ""):
+    tracker = _parse_tracker_items(core[j:] if j >= 0 else "")
+    return {"players": players, "key": key, "tracker": tracker, "messages": messages}
+
+
+def _parse_tracker_items(segment: str) -> List[Dict[str, Any]]:
+    """The player match cards ("tracker items") in a page segment: the team
+    page's tracker, or one round's cards on the details page. A played card
+    carries the result, the opponent and the four point components; a
+    coming one the opponent and the start text."""
+    items: List[Dict[str, Any]] = []
+    # the pattern needs something after the last card to stop at
+    for m in _TRACKER_RE.finditer((segment or "") + "</section>"):
         item = m.group(0)
         pid = _STATS_LINK_RE.search(item)
         name = re.search(r'card-player-tag[^>]*>(?:<span[^>]*>)?([^<]+)<', item)
@@ -470,7 +480,7 @@ def parse_team_page(html: str) -> Dict[str, Any]:
             # A coming match: the opponent sits where the points go, and the
             # bottom row carries "Today - 13:40 / Match start".
             start = re.search(r'<div class="player-tracker-points">\s*([^<]+?)\s*</div>\s*<div class="player-tracker-points-description">\s*Match start', item)
-            tracker.append({
+            items.append({
                 "player_id": int(pid.group(1)) if pid else None,
                 "name": _strip(name.group(1)) if name else "",
                 "points": None,
@@ -481,7 +491,7 @@ def parse_team_page(html: str) -> Dict[str, Any]:
                 "match_url": f"https://www.hltv.org{link.group(1)}" if link else None,
             })
             continue
-        tracker.append({
+        items.append({
             "player_id": int(pid.group(1)) if pid else None,
             "name": _strip(name.group(1)) if name else "",
             "points": _points(content_points),
@@ -494,18 +504,47 @@ def parse_team_page(html: str) -> Dict[str, Any]:
             "booster_points": parts.get("boosterpoints"),
             "match_url": f"https://www.hltv.org{link.group(1)}" if link else None,
         })
-    return {"players": players, "key": key, "tracker": tracker, "messages": messages}
+    return items
+
+
+# HLTV names a booster's icon after what it depicts, not after the booster
+# (boost/trade.png is the Avenger, boost/knife.png the Rambo); the official
+# names are the ones in match_engine.BOOSTER_NAMES. Seen on HLTV's pages
+# 2026-10-26; a slug not listed here falls back to a name match.
+_BOOSTER_ICON_NAMES = {
+    "trade": "Avenger",
+    "knife": "Rambo",
+    "baiter": "Bait",
+    "consistent": "Mister consistent",
+    "aimbot": "Aim bot",
+    "cannonfodder": "Cannon fodder",
+    "hellcase_booster": "Hellcase",
+    "carry": "Carry",
+    "clutch": "Clutch",
+    "assist": "Assist",
+    "saver": "Saver",
+    "flash": "Flash",
+    "farmer": "Farmer",
+    "kobe": "Kobe",
+    "quad": "Quad",
+    "pistol": "Best Pistol Round",
+    "bottom": "Bottom of scoreboard",
+    "top": "Top of scoreboard",
+}
 
 
 def _booster_name_from_slug(slug: str) -> str:
-    """"cannon_fodder" -> "Cannon fodder" (the booster list's spelling)."""
+    """The booster's official name for its icon slug."""
     from backend.services.match_engine import BOOSTER_NAMES
 
-    want = _norm(slug.replace("_", "").replace("-", ""))
+    key = str(slug or "").strip().lower()
+    if key in _BOOSTER_ICON_NAMES:
+        return _BOOSTER_ICON_NAMES[key]
+    want = _norm(key.replace("_", "").replace("-", ""))
     for name in BOOSTER_NAMES.values():
-        if _norm(name) == want:
+        if _norm(name) == want or _norm(name).startswith(want) or want.startswith(_norm(name)):
             return str(name)
-    return slug.replace("_", " ").replace("-", " ").strip().capitalize()
+    return key.replace("_", " ").replace("-", " ").strip().capitalize()
 
 
 _ROUND_RE = re.compile(r'<div class="breakdown-round-row expandable">(.*?)(?=<div class="breakdown-round-row expandable">|<div class="booster-breakdown|$)', re.S)
@@ -533,7 +572,10 @@ def parse_details_page(html: str) -> List[Dict[str, Any]]:
         rb = vals.get("booster-role", "")
         rbm = re.match(r"\s*(-?\d+)\s*/\s*(-?\d+)", rb)
         plm = re.match(r"\s*(\d[\d,]*)\s*/\s*(\d[\d,]*)", vals.get("league-placement", ""))
+        # the round's player cards sit under the numbers (breakdown-row-bottom)
+        bottom = row.split('<div class="breakdown-row-bottom">', 1)
         rounds.append({
+            "players": _parse_tracker_items(bottom[1]) if len(bottom) > 1 else [],
             "status": status.group(1) if status else None,
             "name": _strip(name.group(1)) if name else "",
             "rating_points": num("player"),
@@ -646,7 +688,29 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
     names = {tid: str(t.get("name") or tid) for tid, t in all_teams.items()}
     hltv_ids = {tid: t.get("hltv_team_id") for tid, t in all_teams.items()}
     tid_by_name = {str(t.get("name") or "").strip().lower(): tid for tid, t in all_teams.items() if t.get("name")}
+    # Rounds whose cards HLTV did not render (its collapsed rows) get them
+    # from the tracker: a player's k-th played match is his team's k-th
+    # round, and his coming match belongs to the first round he has not
+    # played. Cards keep the lineup's order.
+    lineup_order = {int(p["player_id"]): n for n, p in enumerate(page["players"]) if p.get("player_id") is not None}
+    by_player: Dict[int, List[Dict[str, Any]]] = {}
     for t in page["tracker"]:
+        if t.get("player_id") is not None:
+            by_player.setdefault(int(t["player_id"]), []).append(t)
+    for i, r in enumerate(rounds):
+        if r.get("players"):
+            continue
+        cards = []
+        for pid_key, entries in by_player.items():
+            played = [t for t in entries if t.get("result") in ("WON", "LOST")]
+            if i < len(played):
+                cards.append(played[i])
+            elif i == len(played) and r.get("status") != "ENDED":
+                nxt = next((t for t in entries if t.get("result") == "NEXT"), None)
+                if nxt:
+                    cards.append(nxt)
+        r["players"] = sorted(cards, key=lambda t: lineup_order.get(int(t.get("player_id") or -1), 99))
+    for t in page["tracker"] + [c for r in rounds for c in (r.get("players") or [])]:
         opp_tid = tid_by_name.get(str(t.get("opponent") or "").strip().lower())
         t["opponent_team_id"] = opp_tid
         t["opponent_hltv_team_id"] = hltv_ids.get(opp_tid) if opp_tid else None
@@ -660,6 +724,12 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
     pending = [m for m in live_pages.cached(eid) if m.get("status") in ("live", "upcoming")]
     pending.sort(key=lambda m: (m.get("start_at") or 0.0))
 
+    # The run's per-round expectations (stage_stats.players[pid].stages[r]):
+    # a player's expectation "so far" is the sum over the rounds his team has
+    # played, so a team two matches in is judged against two rounds' worth.
+    stage_stats = results.get("stage_stats") or {}
+    stage_order = [str(s.get("key")) for s in (stage_stats.get("stages") or []) if s.get("key") and s.get("key") != "padding"]
+    stage_players = stage_stats.get("players") or {}
     for pl in page["players"]:
         pid = pl.get("player_id")
         row = get_player(int(pid)) if pid else None
@@ -667,7 +737,13 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
         pl["team_id"] = tid
         pl["team"] = names.get(tid) if tid else None
         pl["hltv_team_id"] = hltv_ids.get(tid) if tid else None
+        played = sum(1 for t in page["tracker"] if t.get("player_id") == pid and t.get("result") in ("WON", "LOST"))
         ev = expected_by_pid.get(int(pid)) if pid else None
+        stages = ((stage_players.get(str(pid)) or {}).get("stages") or {}) if pid else {}
+        so_far = {
+            comp: round(sum(float((stages.get(k) or {}).get(comp) or 0.0) for k in stage_order[:played]), 1)
+            for comp in ("total", "rating", "win", "role", "booster")
+        }
         pl["expected"] = (
             {
                 "total": round(float(ev.get("total_points") or 0.0), 1),
@@ -677,6 +753,9 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
                 "booster_points": round(float(ev.get("booster_points_total") or 0.0), 1),
                 "role_index": ev.get("role_id"),
                 "role": ROLE_NAMES.get(int(ev["role_id"])) if ev.get("role_id") is not None else None,
+                "so_far": so_far["total"] if stages else None,
+                "so_far_rounds": played,
+                "so_far_components": {"rating_points": so_far["rating"], "win_points": so_far["win"], "role_points": so_far["role"], "booster_points": so_far["booster"]} if stages else None,
             }
             if ev else None
         )
@@ -706,6 +785,7 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
         "messages": page.get("messages") or [],
         "rounds": rounds,
         "expected_total": round(sum(float((p.get("expected") or {}).get("total") or 0.0) for p in page["players"]), 1),
+        "expected_so_far": round(sum(float((p.get("expected") or {}).get("so_far") or 0.0) for p in page["players"]), 1),
         "read_at": time.time(),
         "account": (account(user_key) or {}).get("username") or "",
     }

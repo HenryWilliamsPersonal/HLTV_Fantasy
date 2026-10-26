@@ -6648,12 +6648,26 @@ function MyTeamPanel({ ev, onOpenSettings }) {
   const tracker = report.tracker || [];
   const actualTotal = key.total_points ?? players.reduce((a, p) => a + Number(p.points || 0), 0);
   const predictedNext = players.reduce((a, p) => a + Number(p.next_match?.predicted?.total || 0), 0);
+  const expectedSoFar = report.expected_so_far != null ? report.expected_so_far : report.expected_total || 0;
   const hasPrediction = players.some((p) => p.next_match?.predicted);
-  const keyRows = Array.isArray(key.rows) && key.rows.length ? key.rows : [
+  // HLTV's key numbers minus the money-league placement (only the league
+  // placement matters here).
+  const keyRows = (Array.isArray(key.rows) && key.rows.length ? key.rows : [
     { label: "League placement", value: key.placement != null ? `${Number(key.placement).toLocaleString()} / ${Number(key.league_size || 0).toLocaleString()}` : "-" },
     { label: "Role / boosters", value: `${key.roles_assigned ?? "-"} / ${key.boosters_assigned ?? "-"}` },
     { label: "Total points", value: key.total_points ?? "-" },
-  ];
+  ]).filter((r) => !/money/i.test(String(r.label || "")));
+  // Where the team should stand when this round is done: the points now plus
+  // the model's prediction for every player whose match in it is still to be
+  // played or in play.
+  const endOfRound = Number(actualTotal) + predictedNext;
+  // HLTV's messages, each one carrying the match's points: a line about a
+  // player's match that omits the number gets it from the tracker.
+  const messageWithPoints = (msg) => {
+    if (/\d+\s*points?/i.test(msg)) return msg;
+    const entry = tracker.find((t) => t.name && t.opponent && t.points != null && msg.startsWith(t.name) && msg.includes(t.opponent));
+    return entry ? `${msg} · ${entry.points} points` : msg;
+  };
   // The player's next match line, HLTV's way: "Today - 17:00" then "vs. X";
   // our live pages take precedence when they know the match.
   const nextLine = (p) => {
@@ -6663,6 +6677,48 @@ function MyTeamPanel({ ev, onOpenSettings }) {
     return null;
   };
   const resultWord = (t) => (t.result === "WON" ? "Won" : t.result === "LOST" ? "Lost" : t.result === "NEXT" ? "Next match" : t.result ? t.result.charAt(0) + t.result.slice(1).toLowerCase() : "-");
+  // One player's match card (the tracker's unit): portrait, result with the
+  // opponent's logo, points or the start time, the four components; a
+  // played card opens the scoreboard.
+  const trackCard = (t, i) => {
+      const played = t.result === "WON" || t.result === "LOST";
+      return (
+        <div className={`mt-track${played && t.match_url ? " clickable" : ""}${t.result === "NEXT" ? " next" : ""}`} key={`${t.player_id}-${i}`} onClick={() => played && openMatch(t)}>
+          <div className="mt-track-top">
+            <PlayerPhoto playerId={t.player_id} name={t.name} size={56} className="mt-track-photo" />
+            <div className="mt-track-text">
+              <div className="mt-track-name">{t.name}</div>
+              <div className={`mt-track-result${t.result === "WON" ? " won" : t.result === "LOST" ? " lost" : ""}`}>
+                {t.opponent_hltv_team_id ? <TeamLogo hltvTeamId={t.opponent_hltv_team_id} name={t.opponent} size={18} /> : null}
+                {resultWord(t)}
+                {t.opponent && t.result !== "NEXT" ? ` vs ${t.opponent}` : ""}
+                {t.result === "NEXT" && t.opponent ? ` · ${t.opponent}` : ""}
+              </div>
+            </div>
+            {t.result === "NEXT" ? (
+              <div className="mt-track-points time">{(t.start_text || "").replace(" - ", "\n").split("\n").map((part, k) => <div key={k}>{part}</div>)}</div>
+            ) : (
+              <div className={`mt-track-points${Number(t.points) < 0 ? " neg" : ""}`}>{t.points ?? 0} pts</div>
+            )}
+          </div>
+          {played && (
+            <div className="event-player-stats ev-mini mt-track-stats">
+              {[
+                ["Rating", t.rating_points],
+                ["Team", t.team_points],
+                ["Role", t.role_points],
+                ["Booster", t.booster_points],
+              ].map(([label, v]) => (
+                <div className="event-player-stat" key={label}>
+                  <span className="event-player-mini">{signed(v)}</span>
+                  <span className="event-player-stat-label">{label}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+  };
   return (
     <div className="stack">
       <Section title={report.team?.team_name || "My Team"}>
@@ -6691,7 +6747,7 @@ function MyTeamPanel({ ev, onOpenSettings }) {
                 <div className="mt-name">{p.name}</div>
                 <div className="mt-team">{p.team || ""}</div>
                 <div className={`mt-points${Number(p.points) < 0 ? " neg" : ""}`}>{p.points ?? 0} points</div>
-                <div className="mt-expected">expected {x ? fmt1(x.total) : "-"}</div>
+                <div className="mt-expected">expected {x ? fmt1(x.so_far != null ? x.so_far : x.total) : "-"}</div>
                 <div className="mt-next">
                   {n ? (
                     <>
@@ -6732,16 +6788,16 @@ function MyTeamPanel({ ev, onOpenSettings }) {
               <span className="mt-row-value">{actualTotal}</span>
             </div>
             <div className="mt-row">
-              <span className="mt-row-label">Expected</span>
-              <span className="mt-row-value">{fmt1(report.expected_total)}</span>
+              <span className="mt-row-label">Expected so far</span>
+              <span className="mt-row-value">{fmt1(report.expected_so_far != null ? report.expected_so_far : report.expected_total)}</span>
             </div>
             <div className="mt-row">
               <span className="mt-row-label">Against expectation</span>
-              <span className={`mt-row-value${Number(actualTotal) - Number(report.expected_total || 0) < 0 ? " neg" : " pos"}`}>{signed(Math.round((Number(actualTotal) - Number(report.expected_total || 0)) * 10) / 10)}</span>
+              <span className={`mt-row-value${Number(actualTotal) - Number(expectedSoFar) < 0 ? " neg" : " pos"}`}>{signed(Math.round((Number(actualTotal) - Number(expectedSoFar)) * 10) / 10)}</span>
             </div>
             <div className="mt-row">
-              <span className="mt-row-label">Next matches predicted</span>
-              <span className="mt-row-value">{hasPrediction ? fmt1(predictedNext) : "-"}</span>
+              <span className="mt-row-label">End of round predicted</span>
+              <span className="mt-row-value">{hasPrediction ? fmt1(endOfRound) : actualTotal}</span>
             </div>
           </div>
         </div>
@@ -6751,7 +6807,7 @@ function MyTeamPanel({ ev, onOpenSettings }) {
             <div className="mt-messages">
               {report.messages.map((msg, i) => (
                 <div className="mt-message" key={i}>
-                  {msg}
+                  {messageWithPoints(String(msg))}
                 </div>
               ))}
             </div>
@@ -6760,83 +6816,40 @@ function MyTeamPanel({ ev, onOpenSettings }) {
       </div>
       {(report.rounds || []).length > 0 && (
         <Section title="Round by round">
-          <table className="myteam-rounds">
-            <thead>
-              <tr>
-                <th className="tight"></th>
-                <th>Round</th>
-                <th className="num">Rating</th>
-                <th className="num">Team</th>
-                <th className="num">Role / boost</th>
-                <th className="num">Subtotal</th>
-                <th className="num wide">Placement</th>
-                <th className="num strong">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.rounds.map((r) => (
-                <tr key={r.name} className={r.status === "LIVE" ? "live" : ""}>
-                  <td className="tight">
-                    <span className={`pill${r.status === "LIVE" ? " ok" : r.status === "ENDED" ? "" : " muted"}`}>{r.status === "ENDED" ? "Ended" : r.status === "LIVE" ? "Live" : "TBA"}</span>
-                  </td>
-                  <td>{r.name}</td>
-                  <td className="num">{signed(r.rating_points)}</td>
-                  <td className="num">{signed(r.team_points)}</td>
-                  <td className="num">
-                    {r.role_points ?? "-"}/{r.booster_points ?? "-"}
-                  </td>
-                  <td className="num">{signed(r.subtotal)}</td>
-                  <td className="num wide">{r.placement != null ? `${Number(r.placement).toLocaleString()} / ${Number(key.league_size || 0).toLocaleString()}` : "-"}</td>
-                  <td className="num strong">{r.total ?? "-"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Section>
-      )}
-      {tracker.length > 0 && (
-        <Section title="Player tracker">
-          <div className="mt-tracker">
-            {tracker.map((t, i) => {
-              const played = t.result === "WON" || t.result === "LOST";
+          <div className="mt-rounds">
+            {report.rounds.map((r) => {
+              const cards = Array.isArray(r.players) ? r.players : [];
               return (
-                <div className={`mt-track${played && t.match_url ? " clickable" : ""}${t.result === "NEXT" ? " next" : ""}`} key={`${t.player_id}-${i}`} onClick={() => played && openMatch(t)}>
-                  <div className="mt-track-top">
-                    <PlayerPhoto playerId={t.player_id} name={t.name} size={56} className="mt-track-photo" />
-                    <div className="mt-track-text">
-                      <div className="mt-track-name">{t.name}</div>
-                      <div className={`mt-track-result${t.result === "WON" ? " won" : t.result === "LOST" ? " lost" : ""}`}>
-                        {t.opponent_hltv_team_id ? <TeamLogo hltvTeamId={t.opponent_hltv_team_id} name={t.opponent} size={18} /> : null}
-                        {resultWord(t)}
-                        {t.opponent && t.result !== "NEXT" ? ` vs ${t.opponent}` : ""}
-                        {t.result === "NEXT" && t.opponent ? ` · ${t.opponent}` : ""}
-                      </div>
-                    </div>
-                    {t.result === "NEXT" ? (
-                      <div className="mt-track-points time">{(t.start_text || "").replace(" - ", "\n").split("\n").map((part, k) => <div key={k}>{part}</div>)}</div>
-                    ) : (
-                      <div className={`mt-track-points${Number(t.points) < 0 ? " neg" : ""}`}>{t.points ?? 0} pts</div>
-                    )}
-                  </div>
-                  {played && (
-                    <div className="event-player-stats ev-mini mt-track-stats">
+                <div className={`mt-round${r.status === "LIVE" ? " live" : ""}`} key={r.name}>
+                  <div className="mt-round-head">
+                    <span className={`pill${r.status === "LIVE" ? " ok" : r.status === "ENDED" ? "" : " muted"}`}>{r.status === "ENDED" ? "Ended" : r.status === "LIVE" ? "Live" : "TBA"}</span>
+                    <span className="mt-round-name">{r.name}</span>
+                    <div className="mt-round-nums">
                       {[
-                        ["Rating", t.rating_points],
-                        ["Team", t.team_points],
-                        ["Role", t.role_points],
-                        ["Booster", t.booster_points],
+                        ["Rating", signed(r.rating_points)],
+                        ["Team", signed(r.team_points)],
+                        ["Role / boost", `${r.role_points ?? "-"}/${r.booster_points ?? "-"}`],
+                        ["Subtotal", signed(r.subtotal)],
+                        ["Placement", r.placement != null ? `${Number(r.placement).toLocaleString()} / ${Number(key.league_size || 0).toLocaleString()}` : "-"],
+                        ["Total", r.total ?? "-"],
                       ].map(([label, v]) => (
-                        <div className="event-player-stat" key={label}>
-                          <span className="event-player-mini">{signed(v)}</span>
-                          <span className="event-player-stat-label">{label}</span>
+                        <div className={`mt-round-num${label === "Total" ? " strong" : ""}`} key={label}>
+                          <span className="mt-round-num-value">{v}</span>
+                          <span className="mt-round-num-label">{label}</span>
                         </div>
                       ))}
                     </div>
-                  )}
+                  </div>
+                  {cards.length > 0 && <div className="mt-tracker">{cards.map((t, i) => trackCard(t, i))}</div>}
                 </div>
               );
             })}
           </div>
+        </Section>
+      )}
+      {(report.rounds || []).every((r) => !(Array.isArray(r.players) && r.players.length)) && tracker.length > 0 && (
+        <Section title="Player tracker">
+          <div className="mt-tracker">{tracker.map((t, i) => trackCard(t, i))}</div>
         </Section>
       )}
       {matchRow && <MatchDetailModal row={matchRow} teams={teamRows} players={[]} onClose={() => setMatchRow(null)} />}

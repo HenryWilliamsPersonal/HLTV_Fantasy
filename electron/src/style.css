@@ -3488,27 +3488,23 @@ button:disabled {
 .mt-lineup { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
 .mt-card { display: flex; flex-direction: column; align-items: center; background: #171c24; border: 1px solid #2c3441; clip-path: polygon(9px 0, 100% 0, 100% 100%, 0 100%, 0 9px); padding: 0 12px 14px; text-align: center; min-width: 0; }
 .mt-role { width: calc(100% + 24px); margin: 0 -12px 12px; padding: 9px 10px; background: #243041; color: #dbe4f0; font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 15px; letter-spacing: 0.05em; text-transform: uppercase; }
-.mt-card.live .mt-role { background: #7a2a12; color: #ffd9c7; }
 .mt-role.none { background: #1b212b; color: #6f819e; }
 .mt-photo-wrap { position: relative; width: 112px; height: 112px; margin-bottom: 8px; }
 .mt-photo-wrap .mt-photo, .mt-photo-wrap .img-fallback.round { width: 112px; height: 112px; border-radius: 10px; border: 2px solid #3a4452; }
-.mt-card.level-gold .mt-photo-wrap .mt-photo, .mt-card.level-gold .mt-photo-wrap .img-fallback { border-color: #d7a21a; }
-.mt-card.level-silver .mt-photo-wrap .mt-photo, .mt-card.level-silver .mt-photo-wrap .img-fallback { border-color: #aab4c0; }
-.mt-card.level-bronze .mt-photo-wrap .mt-photo, .mt-card.level-bronze .mt-photo-wrap .img-fallback { border-color: #b87333; }
 .mt-card-logo { position: absolute; top: -6px; right: -8px; background: #0f1216; border-radius: 6px; padding: 2px; }
 .mt-inmatch { position: absolute; left: 0; right: 0; bottom: 10px; background: rgba(10, 12, 16, 0.78); color: #ff8a47; font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 14px; letter-spacing: 0.1em; text-transform: uppercase; padding: 3px 0; }
 .mt-name { font-weight: 700; font-size: 15px; color: #f2f5f9; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-team { color: #8fa3bf; font-size: 11.5px; margin-bottom: 8px; }
-.mt-points { font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 15px; padding: 3px 12px; border-radius: 999px; background: rgba(46, 160, 67, 0.22); color: #7ee2a0; }
-.mt-points.neg { background: rgba(214, 69, 69, 0.22); color: #ff9c9c; }
+.mt-points { display: inline-flex; align-items: center; justify-content: center; line-height: 1; min-width: 96px; font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 15px; padding: 6px 14px 5px; border: 1px solid #ff6b1a; background: rgba(255, 107, 26, 0.16); color: #ffb07a; clip-path: polygon(6px 0, 100% 0, 100% 100%, 0 100%, 0 6px); }
+.mt-points.neg { border-color: #7f2a35; background: #3b1d24; color: #ff9c9c; }
 .mt-expected { color: #8fa3bf; font-size: 11px; margin-top: 4px; }
 .mt-next { margin-top: 10px; min-height: 44px; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 12.5px; }
 .mt-next-when { color: #f2f5f9; font-weight: 700; }
 .mt-next-opp { color: #f2f5f9; font-weight: 600; }
 .mt-next-pred { color: #ff8a47; font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .mt-next-none { color: #6f819e; }
-.mt-booster { margin-top: 10px; width: 100%; padding: 7px 10px; border-radius: 999px; border: 1px solid #2c3441; color: #6f819e; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mt-booster.assigned { background: #1d3a66; border-color: #2d5799; color: #e6efff; }
+.mt-booster { margin-top: 10px; width: 100%; padding: 7px 10px; border: 1px solid #2c3441; color: #6f819e; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; clip-path: polygon(7px 0, 100% 0, 100% 100%, 0 100%, 0 7px); }
+.mt-booster.assigned { background: rgba(255, 107, 26, 0.16); border-color: #ff6b1a; color: #f2f5f9; }
 .mt-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
 .mt-box h3 { margin: 0 0 10px; font-size: 17px; }
 .mt-rows { display: flex; flex-direction: column; }
@@ -3526,6 +3522,19 @@ button:disabled {
 .myteam-rounds td.wide { white-space: nowrap; }
 .myteam-rounds tbody tr.live td { background: rgba(255, 107, 26, 0.07); }
 .mt-tracker { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+/* round by round: one block per round — status, name and the round's
+   numbers on a strip, the round's player cards under it */
+.mt-rounds { display: flex; flex-direction: column; gap: 12px; }
+.mt-round { background: #12161d; border: 1px solid #242b35; clip-path: polygon(9px 0, 100% 0, 100% 100%, 0 100%, 0 9px); padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.mt-round.live { border-color: #ff6b1a; }
+.mt-round-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.mt-round-name { font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 18px; letter-spacing: 0.03em; text-transform: uppercase; color: #f2f5f9; min-width: 90px; }
+.mt-round-nums { display: flex; gap: 26px; margin-left: auto; flex-wrap: wrap; }
+.mt-round-num { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; min-width: 56px; }
+.mt-round-num-value { font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 19px; color: #e9edf3; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mt-round-num.strong .mt-round-num-value { color: #ff8a47; }
+.mt-round-num-label { color: #8fa3bf; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 1px; white-space: nowrap; }
+.mt-round .mt-track { background: #171c24; }
 .mt-track { background: #171c24; border: 1px solid #2c3441; clip-path: polygon(8px 0, 100% 0, 100% 100%, 0 100%, 0 8px); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 .mt-track.clickable { cursor: pointer; }
 .mt-track.clickable:hover { border-color: #ff6b1a; }

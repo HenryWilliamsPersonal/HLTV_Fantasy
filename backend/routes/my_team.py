@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Request
 
-from backend.services import live_state, my_team, public_access
+from backend.services import my_team, public_access
 
 router = APIRouter()
 _COOKIE_ALLOWLIST = ("autologin", "PHPSESSID", "cf_clearance", "_cfuvid", "__cflb", "__cf_bm")
@@ -74,35 +74,17 @@ def disconnect_session(request: Request) -> dict:
     return {"status": "ok", "connected": False}
 
 
-@router.get("/events")
-def list_my_team_events(request: Request) -> dict:
-    """The current events (live, upcoming, recent) in which the user's
-    account has a team, with the account's connection state. `pending`
-    while the login is being verified or the events are being read."""
+@router.get("/{event_id}")
+def get_my_team(request: Request, event_id: int, refresh: bool = False) -> dict:
+    """The user's team in the event, or {pending: true} while it is being
+    read (a stale report comes with pending: true while a refresh is under
+    way). 409 without a usable HLTV login."""
     key = _user_key(request)
     status = my_team.status_for(key)
     if not status.get("connected"):
-        return {**status, "events": [], "pending": False}
+        raise HTTPException(status_code=409, detail=str(status.get("error") or "No HLTV login connected"))
     if status.get("verifying"):
-        return {**status, "events": [], "pending": True}
-    current = live_state.live_events()
-    job = my_team.events_for(key, [int(ev["event_id"]) for ev in current])
-    if job.get("error") and job.get("value") is None:
-        return {**status, "connected": False, "error": job["error"], "events": [], "pending": False}
-    teams_by_event = job.get("value") or {}
-    out = []
-    for ev in current:
-        teams = teams_by_event.get(int(ev["event_id"])) or []
-        if teams:
-            out.append({**live_state.summary(ev), "team_name": teams[0]["team_name"], "league_name": teams[0]["league_name"]})
-    return {**status, "events": out, "pending": bool(job.get("pending"))}
-
-
-@router.get("/{event_id}")
-def get_my_team(request: Request, event_id: int, refresh: bool = False) -> dict:
-    """The report, or {pending: true} while it is being read (a stale report
-    comes with pending: true while a refresh is under way)."""
-    key = _user_key(request)
+        return {"pending": True}
     job = my_team.report_for(int(event_id), key, refresh=refresh)
     if job.get("value"):
         return {**job["value"], "pending": bool(job.get("pending"))}

@@ -320,12 +320,12 @@ const ALL_TABS = [
   { key: "events", label: "Events" },
   { key: "tournament", label: "Tournament" },
   { key: "live", label: "Live" },
-  { key: "myteam", label: "My Team" },
   { key: "devlab", label: "Dev Lab" },
   { key: "scheduling", label: "Scheduling" },
   { key: "users", label: "Users" },
+  { key: "settings", label: "Settings" },
 ];
-const PUBLIC_TAB_KEYS = ["view", "events", "tournament", "live", "myteam"];
+const PUBLIC_TAB_KEYS = ["view", "events", "tournament", "live", "settings"];
 const visibleTabs = () => (PUBLIC_BUILD ? ALL_TABS.filter((t) => PUBLIC_TAB_KEYS.includes(t.key)) : ALL_TABS);
 const NOT_PUBLISHED = "Valuations for this event have not been published yet.";
 
@@ -6210,11 +6210,18 @@ const LIVE_GROUPS = [
   { key: "upcoming", title: "Upcoming" },
   { key: "finished", title: "Previous" },
 ];
+// An open event's page: the event as it stands, or the user's own HLTV
+// fantasy team in it (MyTeamPanel; the account is connected on Settings).
+const LIVE_EVENT_SUBTABS = [
+  { key: "event", label: "Event" },
+  { key: "myteam", label: "My Team" },
+];
 
-function LiveTab() {
+function LiveTab({ onOpenSettings }) {
   const [events, setEvents] = useState(null);
   const [openId, setOpenId] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [sub, setSub] = useState("event");
   const load = async () => {
     try {
       const d = await api.get("/live/events", 60000);
@@ -6239,6 +6246,7 @@ function LiveTab() {
   }, []);
   useEffect(() => {
     setDetail(null);
+    setSub("event");
     loadDetail(openId);
     if (!openId) return undefined;
     const t = setInterval(() => loadDetail(openId), 30000);
@@ -6265,7 +6273,14 @@ function LiveTab() {
           <h2 className="live-detail-title">{ev?.name || ""}</h2>
           {statusPill(ev?.status)}
         </div>
-        {detail ? <LiveEventBody ev={detail} /> : null}
+        <div className="tab-bar small">
+          {LIVE_EVENT_SUBTABS.map((t) => (
+            <button key={t.key} className={sub === t.key ? "tab active" : "tab"} onClick={() => setSub(t.key)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {sub === "myteam" ? <MyTeamPanel ev={ev} onOpenSettings={onOpenSettings} /> : detail ? <LiveEventBody ev={detail} /> : null}
       </div>
     );
   }
@@ -6320,62 +6335,43 @@ function LiveTab() {
   );
 }
 
-// My Team: the HLTV account's fantasy team in each current event — what
-// HLTV has scored (per player and component) against the valuation's
-// expectation, each player's next match with its predicted points, the
-// round-by-round breakdown and every scored match (a row opens the match).
-function MyTeamTab() {
-  const [events, setEvents] = useState(null);
-  const [account, setAccount] = useState(null); // {connected, username, days_left, error}
-  const [eventId, setEventId] = useState(null);
-  const [report, setReport] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [matchRow, setMatchRow] = useState(null);
+// Settings: the app user's own preferences. For now the HLTV account that
+// the My Team tab of a live event page reads with (services/my_team).
+function SettingsTab() {
+  return (
+    <div className="stack">
+      <HltvAccountSettings />
+    </div>
+  );
+}
+
+// The user's HLTV account: its connection state from the server, the
+// sign-in window (or a pasted autologin cookie) and Disconnect. The server
+// verifies a new login in the background; the status polls meanwhile.
+function HltvAccountSettings() {
+  const [account, setAccount] = useState(null); // {connected, username, days_left, verifying, error}
   const [connecting, setConnecting] = useState("");
   const [pasted, setPasted] = useState("");
   const [showPaste, setShowPaste] = useState(false); // the pasted-cookie route while the sign-in window exists
-  const [eventsPending, setEventsPending] = useState(false); // the server is still verifying the login or reading the events
-  const eventsPoll = useRef(null);
-  const reportPoll = useRef(null);
-  const eventIdRef = useRef(null);
-  // The server answers at once and reads HLTV in the background; while a
-  // response says `pending` the page asks again a few seconds later.
-  const loadEvents = (quiet = false) => {
-    clearTimeout(eventsPoll.current);
-    if (!quiet) setEvents(null);
+  const poll = useRef(null);
+  const loadStatus = () => {
+    clearTimeout(poll.current);
     api
-      .get("/my-team/events", 60000)
+      .get("/my-team/session", 30000)
       .then((d) => {
-        if (d?.detail && !("connected" in (d || {}))) {
-          setAccount({ connected: false, error: String(d.detail) });
-          setEvents([]);
-          setEventsPending(false);
-          return;
-        }
-        setAccount({ connected: Boolean(d?.connected), username: d?.username || "", days_left: d?.days_left, error: d?.error || "" });
-        const list = Array.isArray(d?.events) ? d.events : [];
-        setEvents(list);
-        setEventsPending(Boolean(d?.pending));
-        if (list.length) setEventId((cur) => cur || (list.find((e) => e.status === "live") || list[0]).event_id);
-        if (d?.pending) eventsPoll.current = setTimeout(() => loadEvents(true), 4000);
+        setAccount({ connected: Boolean(d?.connected), username: d?.username || "", days_left: d?.days_left, verifying: Boolean(d?.verifying), error: d?.error || "" });
+        if (d?.verifying) poll.current = setTimeout(loadStatus, 3000);
       })
-      .catch((e) => {
-        setAccount({ connected: false, error: e?.message || "" });
-        setEvents([]);
-        setEventsPending(false);
-      });
+      .catch((e) => setAccount({ connected: false, error: e?.message || "" }));
   };
   useEffect(() => {
-    loadEvents();
-    return () => {
-      clearTimeout(eventsPoll.current);
-      clearTimeout(reportPoll.current);
-    };
+    loadStatus();
+    return () => clearTimeout(poll.current);
   }, []);
   // Connect: the app opens hltv.org in a window of its own, the user signs in
-  // there, and the session cookies come back to be verified and stored by
-  // the server for this user. Without the bridge, or when the user chose to
-  // paste it, an autologin cookie copied from their own browser.
+  // there, and the session cookies go to the server for this user. Without
+  // the bridge, or when the user chose to paste it, an autologin cookie
+  // copied from their own browser.
   const connectAccount = async () => {
     setConnecting("Signing in…");
     try {
@@ -6396,15 +6392,15 @@ function MyTeamTab() {
         setConnecting("");
         return;
       }
-      setConnecting("Checking…");
-      const d = await api.post("/my-team/session", payload, 180000);
+      setConnecting("Saving…");
+      const d = await api.post("/my-team/session", payload, 60000);
       if (d?.detail) {
         setConnecting(String(d.detail));
         return;
       }
       setPasted("");
       setConnecting("");
-      loadEvents();
+      loadStatus();
     } catch (e) {
       setConnecting(e?.message || "Could not connect");
     }
@@ -6416,31 +6412,99 @@ function MyTeamTab() {
     } catch {
       /* the status reload shows the truth */
     }
-    setReport(null);
-    setEventId(null);
-    loadEvents();
+    loadStatus();
   };
+  const hasBridge = Boolean(window.api?.connectHltv);
+  const busy = Boolean(connecting) && connecting.endsWith("…");
+  return (
+    <Section title="HLTV account">
+      <div className="myteam-connect">
+        {account === null ? null : account.connected ? (
+          <>
+            <span className="pill ok">{account.username || (account.verifying ? "Verifying…" : "Connected")}</span>
+            {account.days_left != null && <span className="muted">{Math.max(0, Math.round(account.days_left))} days left</span>}
+            <button className="secondary" onClick={disconnectAccount}>
+              Disconnect
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="pill warn">{account.error || "No HLTV account connected"}</span>
+            {(!hasBridge || showPaste) && (
+              <input
+                id="settings-hltv-autologin"
+                type="password"
+                placeholder="HLTV autologin cookie"
+                value={pasted}
+                onChange={(e) => setPasted(e.target.value)}
+                className="myteam-cookie"
+              />
+            )}
+            <button className="primary" onClick={connectAccount} disabled={busy}>
+              {busy ? connecting : hasBridge && !showPaste ? "Connect HLTV account" : "Connect"}
+            </button>
+            {hasBridge && !showPaste && (
+              <button className="secondary" onClick={() => setShowPaste(true)}>
+                Paste cookie
+              </button>
+            )}
+            {connecting && !busy && <span className="muted">{connecting}</span>}
+          </>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+// My Team on a live event page: the user's HLTV fantasy team in THIS event
+// — what HLTV has scored (per player and component) against the
+// valuation's expectation, each player's next match with its predicted
+// points, the round-by-round breakdown and every scored match (a row opens
+// the match). The server reads HLTV in the background; the panel polls
+// while the response says `pending`.
+function MyTeamPanel({ ev, onOpenSettings }) {
+  const eventId = ev?.event_id;
+  const [report, setReport] = useState(null);
+  const [state, setState] = useState("loading"); // loading | ready | none | disconnected | error
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [matchRow, setMatchRow] = useState(null);
+  const poll = useRef(null);
+  const idRef = useRef(null);
   const load = async (id, refresh = false, quiet = false) => {
     if (!id) return;
-    clearTimeout(reportPoll.current);
+    clearTimeout(poll.current);
     if (!quiet) setBusy(true);
     try {
       const d = await api.get(`/my-team/${id}${refresh ? "?refresh=1" : ""}`, 60000);
-      if (eventIdRef.current !== id) return; // the user moved to another event meanwhile
-      if (d?.players) setReport(d);
-      if (d?.pending) reportPoll.current = setTimeout(() => load(id, false, true), 4000);
+      if (idRef.current !== id) return; // the user opened another event meanwhile
+      if (d?.players) {
+        setReport(d);
+        setState("ready");
+      }
+      if (d?.pending) poll.current = setTimeout(() => load(id, false, true), 4000);
       else setBusy(false);
-    } catch {
-      if (eventIdRef.current !== id) return;
-      setReport(null);
+    } catch (e) {
+      if (idRef.current !== id) return;
+      const msg = String(e?.message || "");
       setBusy(false);
+      if (/No team of yours/i.test(msg)) setState("none");
+      else if (/HLTV login|Sign in|no longer accepts/i.test(msg)) {
+        setState("disconnected");
+        setError(msg);
+      } else {
+        setState("error");
+        setError(msg || "Could not read HLTV");
+      }
     }
   };
   useEffect(() => {
-    eventIdRef.current = eventId;
+    idRef.current = eventId;
     setReport(null);
+    setState("loading");
+    setError("");
     load(eventId);
-    return () => clearTimeout(reportPoll.current);
+    return () => clearTimeout(poll.current);
   }, [eventId]);
   const fmt1 = (v) => (v == null || Number.isNaN(Number(v)) ? "-" : Number(v).toFixed(1));
   const signed = (v) => (v == null ? "-" : `${Number(v) > 0 ? "+" : ""}${Number(v)}`);
@@ -6470,229 +6534,190 @@ function MyTeamTab() {
       /* the modal keeps the stored row */
     }
   };
-  if (events === null) return <div className="stack" />;
-  if (!account?.connected) {
-    const hasBridge = Boolean(window.api?.connectHltv);
+  if (!report) {
     return (
       <Section title="My Team">
         <div className="myteam-connect">
-          <span className="pill warn">{account?.error ? account.error : "No HLTV account connected"}</span>
-          {(!hasBridge || showPaste) && (
-            <input
-              id="myteam-autologin"
-              type="password"
-              placeholder="HLTV autologin cookie"
-              value={pasted}
-              onChange={(e) => setPasted(e.target.value)}
-              className="myteam-cookie"
-            />
-          )}
-          <button className="primary" onClick={connectAccount} disabled={Boolean(connecting) && connecting.endsWith("…")}>
-            {connecting && connecting.endsWith("…") ? connecting : hasBridge && !showPaste ? "Connect HLTV account" : "Connect"}
-          </button>
-          {hasBridge && !showPaste && (
-            <button className="secondary" onClick={() => setShowPaste(true)}>
-              Paste cookie
+          {state === "loading" && <span className="pill">Reading…</span>}
+          {state === "none" && <span className="pill">No team in this event</span>}
+          {(state === "disconnected" || state === "error") && <span className="pill warn">{error || "No HLTV account connected"}</span>}
+          {state === "disconnected" && onOpenSettings && (
+            <button className="secondary" onClick={onOpenSettings}>
+              Settings
             </button>
           )}
-          {connecting && !connecting.endsWith("…") && <span className="muted">{connecting}</span>}
+          {state === "error" && (
+            <button className="secondary" onClick={() => load(eventId, true)} disabled={busy}>
+              Refresh
+            </button>
+          )}
         </div>
       </Section>
     );
   }
-  if (events.length === 0) {
-    return (
-      <Section title="My Team">
-        <div className="myteam-connect">
-          <span className="pill ok">{account.username || "Connected"}</span>
-          {!eventsPending && <span className="muted">None</span>}
-          <button className="secondary" onClick={disconnectAccount}>
-            Disconnect
-          </button>
-        </div>
-      </Section>
-    );
-  }
-  const ev = events.find((e) => e.event_id === eventId) || null;
-  const key = report?.key || {};
-  const actualTotal = key.total_points ?? (report?.players || []).reduce((a, p) => a + Number(p.points || 0), 0);
+  const key = report.key || {};
+  const actualTotal = key.total_points ?? (report.players || []).reduce((a, p) => a + Number(p.points || 0), 0);
+  const played = ev?.played ?? (ev?.matches || []).filter((m) => m.winner).length;
+  const total = ev?.total ?? (ev?.matches || []).length;
   return (
     <div className="stack">
-      <div className="tab-bar small">
-        {events.map((e) => (
-          <button key={e.event_id} className={e.event_id === eventId ? "tab active" : "tab"} onClick={() => setEventId(e.event_id)}>
-            {e.name}
-          </button>
-        ))}
-      </div>
-      {report && (
-        <>
-          <Section title={report.team?.team_name || "My Team"}>
-            <div className="live-strip myteam-strip">
-              <div className="topx-tile">
-                <div className="topx-tile-label">Points</div>
-                <div className="topx-tile-value">{actualTotal}</div>
-                <div className="topx-tile-maps">expected {fmt1(report.expected_total)}</div>
-              </div>
-              <div className="topx-tile">
-                <div className="topx-tile-label">Placement</div>
-                <div className="topx-tile-value">{key.placement != null ? Number(key.placement).toLocaleString() : "-"}</div>
-                <div className="topx-tile-maps">{key.league_size != null ? `of ${Number(key.league_size).toLocaleString()} · ${report.team?.league_name || ""}` : report.team?.league_name || ""}</div>
-              </div>
-              <div className="topx-tile">
-                <div className="topx-tile-label">Roles · boosters</div>
-                <div className="topx-tile-value">
-                  {key.roles_assigned ?? "-"} · {key.boosters_assigned ?? "-"}
-                </div>
-                <div className="topx-tile-maps">{ev ? `${ev.status === "live" ? "Live" : ev.status === "upcoming" ? "Upcoming" : "Finished"} · ${ev.played ?? 0}${ev.total ? ` / ${ev.total}` : ""} matches` : ""}</div>
-              </div>
-              <div className="topx-tile">
-                <div className="topx-tile-label">Account</div>
-                <div className="topx-tile-value">{report.account || account.username || "-"}</div>
-                <div className="topx-tile-maps">
-                  read {report.read_at ? new Date(report.read_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-"}
-                  <button className="secondary" onClick={() => load(eventId, true)} disabled={busy}>
-                    {busy ? "Reading…" : "Refresh"}
-                  </button>
-                  <button className="secondary" onClick={disconnectAccount}>
-                    Disconnect
-                  </button>
-                </div>
-              </div>
+      <Section title={report.team?.team_name || "My Team"}>
+        <div className="live-strip myteam-strip">
+          <div className="topx-tile">
+            <div className="topx-tile-label">Points</div>
+            <div className="topx-tile-value">{actualTotal}</div>
+            <div className="topx-tile-maps">expected {fmt1(report.expected_total)}</div>
+          </div>
+          <div className="topx-tile">
+            <div className="topx-tile-label">Placement</div>
+            <div className="topx-tile-value">{key.placement != null ? Number(key.placement).toLocaleString() : "-"}</div>
+            <div className="topx-tile-maps">{key.league_size != null ? `of ${Number(key.league_size).toLocaleString()} · ${report.team?.league_name || ""}` : report.team?.league_name || ""}</div>
+          </div>
+          <div className="topx-tile">
+            <div className="topx-tile-label">Roles · boosters</div>
+            <div className="topx-tile-value">
+              {key.roles_assigned ?? "-"} · {key.boosters_assigned ?? "-"}
             </div>
-            <table className="myteam-table">
-              <thead>
-                <tr>
-                  <th>Player</th>
-                  <th>Role</th>
-                  <th>Booster</th>
-                  <th className="num">Rating</th>
-                  <th className="num">Team</th>
-                  <th className="num">Role pts</th>
-                  <th className="num">Booster pts</th>
-                  <th className="num strong">Points</th>
-                  <th className="num">Expected</th>
-                  <th>Next match</th>
-                  <th className="num">Predicted</th>
+            <div className="topx-tile-maps">{ev ? `${ev.status === "live" ? "Live" : ev.status === "upcoming" ? "Upcoming" : "Finished"} · ${played}${total ? ` / ${total}` : ""} matches` : ""}</div>
+          </div>
+          <div className="topx-tile">
+            <div className="topx-tile-label">Account</div>
+            <div className="topx-tile-value">{report.account || "-"}</div>
+            <div className="topx-tile-maps">
+              read {report.read_at ? new Date(report.read_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-"}
+              <button className="secondary" onClick={() => load(eventId, true)} disabled={busy}>
+                {busy ? "Reading…" : "Refresh"}
+              </button>
+            </div>
+          </div>
+        </div>
+        <table className="myteam-table">
+          <thead>
+            <tr>
+              <th>Player</th>
+              <th>Role</th>
+              <th>Booster</th>
+              <th className="num">Rating</th>
+              <th className="num">Team</th>
+              <th className="num">Role pts</th>
+              <th className="num">Booster pts</th>
+              <th className="num strong">Points</th>
+              <th className="num">Expected</th>
+              <th>Next match</th>
+              <th className="num">Predicted</th>
+            </tr>
+          </thead>
+          <tbody>
+            {report.players.map((p) => {
+              const a = p.actual || {};
+              const x = p.expected || null;
+              const n = p.next_match || null;
+              return (
+                <tr key={p.player_id || p.name}>
+                  <td>
+                    <strong>{p.name}</strong>
+                    <span className="muted"> {p.team || ""}</span>
+                  </td>
+                  <td>{p.role ? <span className="pill">{p.role}</span> : <span className="muted">{x?.role ? `(${x.role})` : "-"}</span>}</td>
+                  <td>{p.booster ? <span className="pill">{p.booster}</span> : <span className="muted">-</span>}</td>
+                  <td className="num">{signed(a.rating_points)}</td>
+                  <td className="num">{signed(a.team_points)}</td>
+                  <td className="num">{signed(a.role_points)}</td>
+                  <td className="num">{signed(a.booster_points)}</td>
+                  <td className="num strong">{p.points ?? "-"}</td>
+                  <td className="num">{x ? fmt1(x.total) : "-"}</td>
+                  <td>
+                    {n ? (
+                      <span>
+                        <strong>{n.opponent}</strong>
+                        <span className="muted"> · {n.status === "live" ? "live" : when(n.start_at)} · Bo{n.bo}</span>
+                      </span>
+                    ) : (
+                      <span className="muted">-</span>
+                    )}
+                  </td>
+                  <td className="num" title={n?.predicted ? `rating ${n.predicted.rating} (${signed(n.predicted.rating_points)}) · win ${Math.round((n.predicted.win_probability || 0) * 100)}% (${signed(n.predicted.win_points)}) · role ${signed(n.predicted.role_points)} · booster ${signed(n.predicted.booster_points)}` : ""}>
+                    {n?.predicted ? fmt1(n.predicted.total) : "-"}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {report.players.map((p) => {
-                  const a = p.actual || {};
-                  const x = p.expected || null;
-                  const n = p.next_match || null;
-                  return (
-                    <tr key={p.player_id || p.name}>
-                      <td>
-                        <strong>{p.name}</strong>
-                        <span className="muted"> {p.team || ""}</span>
-                      </td>
-                      <td>{p.role ? <span className="pill">{p.role}</span> : <span className="muted">{x?.role ? `(${x.role})` : "-"}</span>}</td>
-                      <td>{p.booster ? <span className="pill">{p.booster}</span> : <span className="muted">-</span>}</td>
-                      <td className="num">{signed(a.rating_points)}</td>
-                      <td className="num">{signed(a.team_points)}</td>
-                      <td className="num">{signed(a.role_points)}</td>
-                      <td className="num">{signed(a.booster_points)}</td>
-                      <td className="num strong">{p.points ?? "-"}</td>
-                      <td className="num">{x ? fmt1(x.total) : "-"}</td>
-                      <td>
-                        {n ? (
-                          <span>
-                            <strong>{n.opponent}</strong>
-                            <span className="muted"> · {n.status === "live" ? "live" : when(n.start_at)} · Bo{n.bo}</span>
-                          </span>
-                        ) : (
-                          <span className="muted">-</span>
-                        )}
-                      </td>
-                      <td className="num" title={n?.predicted ? `rating ${n.predicted.rating} (${signed(n.predicted.rating_points)}) · win ${Math.round((n.predicted.win_probability || 0) * 100)}% (${signed(n.predicted.win_points)}) · role ${signed(n.predicted.role_points)} · booster ${signed(n.predicted.booster_points)}` : ""}>
-                        {n?.predicted ? fmt1(n.predicted.total) : "-"}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </Section>
-          {(report.rounds || []).length > 0 && (
-            <Section title="Rounds">
-              <table className="myteam-rounds">
-                <thead>
-                  <tr>
-                    <th>Round</th>
-                    <th>Status</th>
-                    <th className="num">Rating</th>
-                    <th className="num">Team</th>
-                    <th className="num">Role</th>
-                    <th className="num">Booster</th>
-                    <th className="num">Subtotal</th>
-                    <th className="num">Placement</th>
-                    <th className="num strong">Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {report.rounds.map((r) => (
-                    <tr key={r.name}>
-                      <td>{r.name}</td>
-                      <td>
-                        <span className={`pill${r.status === "LIVE" ? " ok" : ""}`}>{r.status === "ENDED" ? "Ended" : r.status === "LIVE" ? "Live" : "TBA"}</span>
-                      </td>
-                      <td className="num">{signed(r.rating_points)}</td>
-                      <td className="num">{signed(r.team_points)}</td>
-                      <td className="num">{signed(r.role_points)}</td>
-                      <td className="num">{signed(r.booster_points)}</td>
-                      <td className="num">{signed(r.subtotal)}</td>
-                      <td className="num">{r.placement != null ? Number(r.placement).toLocaleString() : "-"}</td>
-                      <td className="num strong">{r.total ?? "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Section>
-          )}
-          {(report.tracker || []).length > 0 && (
-            <Section title="Matches">
-              <table className="myteam-matches">
-                <thead>
-                  <tr>
-                    <th>Player</th>
-                    <th>Opponent</th>
-                    <th>Result</th>
-                    <th className="num">Rating</th>
-                    <th className="num">Team</th>
-                    <th className="num">Role</th>
-                    <th className="num">Booster</th>
-                    <th className="num strong">Points</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {report.tracker.map((t, i) => (
-                    <tr
-                      key={`${t.player_id}-${i}`}
-                      onClick={() => openMatch(t)}
-                    >
-                      <td>
-                        <strong>{t.name}</strong>
-                      </td>
-                      <td>{t.opponent || <span className="muted">-</span>}</td>
-                      <td>
-                        <span className={`pill${t.result === "WON" ? " ok" : t.result === "LOST" ? " warn" : ""}`}>{t.result ? t.result.charAt(0) + t.result.slice(1).toLowerCase() : "-"}</span>
-                      </td>
-                      <td className="num">{signed(t.rating_points)}</td>
-                      <td className="num">{signed(t.team_points)}</td>
-                      <td className="num">{signed(t.role_points)}</td>
-                      <td className="num">{signed(t.booster_points)}</td>
-                      <td className="num strong">{t.points ?? "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Section>
-          )}
-          {matchRow && <MatchDetailModal row={matchRow} teams={teamRows} players={[]} onClose={() => setMatchRow(null)} />}
-        </>
+              );
+            })}
+          </tbody>
+        </table>
+      </Section>
+      {(report.rounds || []).length > 0 && (
+        <Section title="Rounds">
+          <table className="myteam-rounds">
+            <thead>
+              <tr>
+                <th>Round</th>
+                <th>Status</th>
+                <th className="num">Rating</th>
+                <th className="num">Team</th>
+                <th className="num">Role</th>
+                <th className="num">Booster</th>
+                <th className="num">Subtotal</th>
+                <th className="num">Placement</th>
+                <th className="num strong">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.rounds.map((r) => (
+                <tr key={r.name}>
+                  <td>{r.name}</td>
+                  <td>
+                    <span className={`pill${r.status === "LIVE" ? " ok" : ""}`}>{r.status === "ENDED" ? "Ended" : r.status === "LIVE" ? "Live" : "TBA"}</span>
+                  </td>
+                  <td className="num">{signed(r.rating_points)}</td>
+                  <td className="num">{signed(r.team_points)}</td>
+                  <td className="num">{signed(r.role_points)}</td>
+                  <td className="num">{signed(r.booster_points)}</td>
+                  <td className="num">{signed(r.subtotal)}</td>
+                  <td className="num">{r.placement != null ? Number(r.placement).toLocaleString() : "-"}</td>
+                  <td className="num strong">{r.total ?? "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
       )}
-      {!report && busy && <div className="stack" />}
+      {(report.tracker || []).length > 0 && (
+        <Section title="Matches">
+          <table className="myteam-matches">
+            <thead>
+              <tr>
+                <th>Player</th>
+                <th>Opponent</th>
+                <th>Result</th>
+                <th className="num">Rating</th>
+                <th className="num">Team</th>
+                <th className="num">Role</th>
+                <th className="num">Booster</th>
+                <th className="num strong">Points</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.tracker.map((t, i) => (
+                <tr key={`${t.player_id}-${i}`} onClick={() => openMatch(t)}>
+                  <td>
+                    <strong>{t.name}</strong>
+                  </td>
+                  <td>{t.opponent || <span className="muted">-</span>}</td>
+                  <td>
+                    <span className={`pill${t.result === "WON" ? " ok" : t.result === "LOST" ? " warn" : ""}`}>{t.result ? t.result.charAt(0) + t.result.slice(1).toLowerCase() : "-"}</span>
+                  </td>
+                  <td className="num">{signed(t.rating_points)}</td>
+                  <td className="num">{signed(t.team_points)}</td>
+                  <td className="num">{signed(t.role_points)}</td>
+                  <td className="num">{signed(t.booster_points)}</td>
+                  <td className="num strong">{t.points ?? "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      )}
+      {matchRow && <MatchDetailModal row={matchRow} teams={teamRows} players={[]} onClose={() => setMatchRow(null)} />}
     </div>
   );
 }
@@ -12616,8 +12641,8 @@ export default function App() {
       />
     ),
     devlab: <DevLabTab />,
-    live: <LiveTab />,
-    myteam: <MyTeamTab />,
+    live: <LiveTab onOpenSettings={() => setActive("settings")} />,
+    settings: <SettingsTab />,
     tournament: (
       <TournamentTab
         key={`tournament-${viewEventId || "current"}`}

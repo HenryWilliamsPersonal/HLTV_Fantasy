@@ -191,12 +191,6 @@ def connect_account(user_key: str, cookies: List[Dict[str, Any]]) -> Dict[str, A
     return status_for(user_key)
 
 
-def events_for(user_key: str, event_ids: List[int], max_age: float = 3600.0) -> Dict[str, Any]:
-    """Background wrapper of my_teams_for over the current events."""
-    key = _job_key("events", user_key, ",".join(str(int(e)) for e in event_ids))
-    return run_in_background(key, lambda: my_teams_for([int(e) for e in event_ids], user_key, max_age), max_age)
-
-
 def report_for(event_id: int, user_key: str, refresh: bool = False) -> Dict[str, Any]:
     """Background wrapper of team_report; refresh drops the cached report
     and re-reads the pages."""
@@ -309,7 +303,7 @@ def _fetch_many(urls: List[str], max_age: float, user_key: str) -> Dict[str, str
         pages = {}
         for url in stale:
             driver.get(url)
-            time.sleep(1.5)
+            time.sleep(0.5)
             html = driver.page_source or ""
             pages[url] = html
             try:
@@ -377,7 +371,9 @@ def parse_team_page(html: str) -> Dict[str, Any]:
         if 'assign-role-button assigned' in block:
             role = _block_field(block, "assign-role-text")
         booster_text = _block_field(block, "assign-booster-button")
-        booster = "" if _norm(booster_text) in ("addbooster", "noupcomingmatchnomatches", "nomatches", "noupcomingmatch", "") else booster_text
+        # "Add booster", "No booster assigned", "No upcoming match" and the
+        # like all mean none; anything else is the booster's name.
+        booster = "" if re.search(r"(add|no)\s*booster|no\s*(upcoming|match)", booster_text, re.I) or not booster_text.strip() else booster_text
         upcoming = _block_field(block, "upcoming-match")
         players.append({
             "player_id": int(pid.group(1)) if pid else None,
@@ -532,7 +528,7 @@ def team_report(event_id: int, user_key: str, max_age: float = REFRESH) -> Optio
     from backend.data.player_db import get_player
     from backend.data.team_db import get_all_teams
     from backend.routes.groups import _GROUPS_STATE
-    from backend.services import event_rosters, live_pages
+    from backend.services import event_rosters, live_pages, live_state
 
     eid = int(event_id)
     teams = my_teams_for([eid], user_key, max_age).get(eid) or []
@@ -561,6 +557,13 @@ def team_report(event_id: int, user_key: str, max_age: float = REFRESH) -> Optio
     all_teams = {int(t["team_id"]): t for t in get_all_teams()}
     ranks = {tid: int(t.get("hltv_rank") or 999) for tid, t in all_teams.items()}
     names = {tid: str(t.get("name") or tid) for tid, t in all_teams.items()}
+    # The next matches come from the event's live pages; right after a start
+    # nothing has read them yet, so ask for the event (which reads them).
+    if not live_pages.cached(eid):
+        try:
+            live_state.live_event(eid)
+        except Exception:  # noqa: BLE001 - the report still has HLTV's own numbers
+            logger.warning("Could not read the live pages for event %s", eid, exc_info=True)
     pending = [m for m in live_pages.cached(eid) if m.get("status") in ("live", "upcoming")]
     pending.sort(key=lambda m: (m.get("start_at") or 0.0))
 

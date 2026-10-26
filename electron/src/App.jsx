@@ -6329,6 +6329,7 @@ function MyTeamTab() {
   const [matchRow, setMatchRow] = useState(null);
   const [connecting, setConnecting] = useState("");
   const [pasted, setPasted] = useState("");
+  const [showPaste, setShowPaste] = useState(false); // the pasted-cookie route while the sign-in window exists
   const loadEvents = () => {
     setEvents(null);
     api
@@ -6352,12 +6353,13 @@ function MyTeamTab() {
   useEffect(loadEvents, []);
   // Connect: the app opens hltv.org in a window of its own, the user signs in
   // there, and the session cookies come back to be verified and stored by
-  // the server for this user. Without the bridge, a pasted autologin cookie.
+  // the server for this user. Without the bridge, or when the user chose to
+  // paste it, an autologin cookie copied from their own browser.
   const connectAccount = async () => {
     setConnecting("Signing in…");
     try {
       let payload = null;
-      if (window.api?.connectHltv) {
+      if (window.api?.connectHltv && !(showPaste && pasted.trim())) {
         const r = await window.api.connectHltv();
         if (r?.status === "ok" && Array.isArray(r.cookies)) payload = { cookies: r.cookies };
         else if (r?.status === "busy") {
@@ -6448,7 +6450,7 @@ function MyTeamTab() {
       <Section title="My Team">
         <div className="myteam-connect">
           <span className="pill warn">{account?.error ? account.error : "No HLTV account connected"}</span>
-          {!hasBridge && (
+          {(!hasBridge || showPaste) && (
             <input
               id="myteam-autologin"
               type="password"
@@ -6459,8 +6461,13 @@ function MyTeamTab() {
             />
           )}
           <button className="primary" onClick={connectAccount} disabled={Boolean(connecting) && connecting.endsWith("…")}>
-            {connecting && connecting.endsWith("…") ? connecting : "Connect HLTV account"}
+            {connecting && connecting.endsWith("…") ? connecting : hasBridge && !showPaste ? "Connect HLTV account" : "Connect"}
           </button>
+          {hasBridge && !showPaste && (
+            <button className="secondary" onClick={() => setShowPaste(true)}>
+              Paste cookie
+            </button>
+          )}
           {connecting && !connecting.endsWith("…") && <span className="muted">{connecting}</span>}
         </div>
       </Section>

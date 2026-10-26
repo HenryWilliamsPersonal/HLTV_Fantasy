@@ -349,10 +349,26 @@ app.whenReady().then(async () => {
     };
   });
   // My Team: sign in to HLTV in a window of its own (a separate cookie
-  // partition, a plain Chrome user agent so hltv.org treats it as a browser)
-  // and hand the session cookies to the renderer once HLTV has set them.
+  // partition) and hand the session cookies to the renderer once HLTV has
+  // set them. The window presents itself as plain Chrome of the SAME major
+  // version as the app's Chromium: Cloudflare compares the user agent with
+  // the browser's client hints and re-challenges forever when they disagree
+  // (a made-up Chrome version looped on "Just a moment..."). hltv.org has no
+  // sign-in page (GET /login is 405); the sign-in form is a popup on every
+  // page, so the window loads the front page and opens that popup itself.
   const HLTV_PARTITION = "persist:hltv-login";
-  const HLTV_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+  const HLTV_UA = (() => {
+    const major = String(process.versions.chrome || "0").split(".")[0];
+    const os = process.platform === "darwin" ? "Macintosh; Intel Mac OS X 10_15_7" : process.platform === "linux" ? "X11; Linux x86_64" : "Windows NT 10.0; Win64; x64";
+    return `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+  })();
+  const HLTV_OPEN_SIGNIN = `(() => {
+    const open = document.querySelector(".navsignin");
+    if (open) open.click();
+    const field = document.querySelector(".login-dialog input[name=username]");
+    if (field) field.focus();
+    return Boolean(open);
+  })()`;
   let hltvWindow = null;
   ipcMain.handle("hltv-connect", async () => {
     if (hltvWindow && !hltvWindow.isDestroyed()) {
@@ -370,11 +386,26 @@ app.whenReady().then(async () => {
       webPreferences: { partition: HLTV_PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false },
     });
     hltvWindow = win;
-    win.loadURL("https://www.hltv.org/login");
+    win.webContents.setUserAgent(HLTV_UA);
+    let signinOpened = false;
+    win.webContents.on("did-finish-load", async () => {
+      if (signinOpened || win.isDestroyed()) return;
+      try {
+        const url = win.webContents.getURL();
+        if (!/^https:\/\/www\.hltv\.org\/?(\?.*)?$/.test(url)) return;
+        const list = await ses.cookies.get({ domain: "hltv.org", name: "autologin" });
+        if (list.length) return;
+        signinOpened = true;
+        await win.webContents.executeJavaScript(HLTV_OPEN_SIGNIN, true);
+      } catch (e) {
+        ulog("warn", "hltv-connect", `sign-in popup: ${e?.message || e}`);
+      }
+    });
+    win.loadURL("https://www.hltv.org/");
     const cookiesNow = async () => {
       const list = await ses.cookies.get({ domain: "hltv.org" });
       return list
-        .filter((c) => ["autologin", "PHPSESSID", "cf_clearance", "_cfuvid", "__cflb"].includes(c.name))
+        .filter((c) => ["autologin", "PHPSESSID"].includes(c.name))
         .map((c) => ({ name: c.name, value: c.value, domain: c.domain || ".hltv.org", path: c.path || "/", expiry: c.expirationDate ? Math.floor(c.expirationDate) : undefined, secure: Boolean(c.secure), httpOnly: Boolean(c.httpOnly) }));
     };
     return new Promise((resolve) => {

@@ -6858,12 +6858,26 @@ function LiveEventBody({ ev }) {
       /* the modal keeps the stored row */
     }
   };
+  // A board match opens the same scoreboard as its row: the played, live or
+  // upcoming match between those two teams (a Swiss pair meets once).
+  const pairKey = (a, b) => [Number(a), Number(b)].sort((x, y) => x - y).join("-");
+  const matchByPair = useMemo(() => {
+    const out = {};
+    [...(ev.matches || []), ...(ev.live_matches || []).map((m) => ({ ...m, score_a: m.maps_a, score_b: m.maps_b })), ...(ev.upcoming_matches || [])].forEach((m) => {
+      if (m.url && !out[pairKey(m.a, m.b)]) out[pairKey(m.a, m.b)] = m;
+    });
+    return out;
+  }, [ev]);
+  const openBoardMatch = (m) => {
+    const found = matchByPair[pairKey(m.a, m.b)];
+    if (found) openResult(found);
+  };
   return (
     <div className="stack">
       {ev.group_format === "swiss" && ev.swiss && (
         <div className="card sub">
           <h3>Swiss Stage</h3>
-          <SwissBoard walk={ev.swiss} teams={teamRows} teamLookup={teamLookup} picks={ev.swiss.picks || {}} onPick={() => {}} readOnly />
+          <SwissBoard walk={ev.swiss} teams={teamRows} teamLookup={teamLookup} picks={ev.swiss.picks || {}} onPick={() => {}} readOnly onOpen={openBoardMatch} />
         </div>
       )}
       {ev.group_format === "bracket" && ev.bracket && (
@@ -6908,24 +6922,29 @@ function LiveEventBody({ ev }) {
       {(ev.live_matches || []).length > 0 && (
         <div className="card sub">
           <h3>In play</h3>
-          <table className="live-results">
+          <table className="live-results clickable">
             <thead>
               <tr>
+                <th className="tight"></th>
                 <th>Match</th>
                 <th className="num">Map</th>
-                <th className="num">Maps</th>
               </tr>
             </thead>
             <tbody>
               {ev.live_matches.map((m) => (
-                <tr key={m.match_id}>
+                <tr key={m.match_id} onClick={() => openResult({ ...m, score_a: m.maps_a, score_b: m.maps_b })}>
+                  <td className="tight">
+                    <span className="pill ok">Live</span>
+                  </td>
                   <td>
                     <div className="live-match">
                       <span className="live-side win">
                         <TeamLogo hltvTeamId={hltvId(m.a)} name={teamLookup[m.a]} size={22} />
                         {teamLookup[m.a] || m.a}
                       </span>
-                      <span className="live-score live">LIVE</span>
+                      <span className="live-score live">
+                        {m.maps_a ?? 0}–{m.maps_b ?? 0}
+                      </span>
                       <span className="live-side right win">
                         {teamLookup[m.b] || m.b}
                         <TeamLogo hltvTeamId={hltvId(m.b)} name={teamLookup[m.b]} size={22} />
@@ -6934,9 +6953,6 @@ function LiveEventBody({ ev }) {
                   </td>
                   <td className="num">
                     {m.map_a ?? "-"}–{m.map_b ?? "-"}
-                  </td>
-                  <td className="num">
-                    {m.maps_a ?? 0}–{m.maps_b ?? 0}
                   </td>
                 </tr>
               ))}
@@ -10434,7 +10450,7 @@ function PickerBoard({ columns, teamLookup, onPick, readOnly = false }) {
 // each match a logo-vs-logo card (click a side to make it the winner), the
 // rounds still to come as unknown cards, and the finishing records on the
 // right: qualified in green, eliminated in red, filled as teams get there.
-function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false }) {
+function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false, onOpen = null }) {
   const hltvIdByTeamId = {};
   (teams || []).forEach((t) => {
     hltvIdByTeamId[Number(t.team_id)] = t.hltv_team_id;
@@ -10446,6 +10462,9 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false }
     const [bw, bl] = String(b).split("-").map(Number);
     return bw - aw || al - bl;
   };
+  // Read-only with onOpen: a known match opens (the whole card is the
+  // target, so its sides stay enabled and let the click through).
+  const openable = readOnly && typeof onOpen === "function";
   const side = (tid, m, known) => {
     const picked = Number(picks[m.key] || 0);
     const cls = known && picked ? (picked === Number(tid) ? " won" : " lost") : "";
@@ -10454,7 +10473,8 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false }
         key={`${m.key}-${tid ?? "tbd"}`}
         type="button"
         className={`sw-side${cls}`}
-        disabled={!known || readOnly}
+        disabled={!known || (readOnly && !openable)}
+        tabIndex={openable ? -1 : undefined}
         title={known ? name(tid) : "TBD"}
         onClick={() => known && !readOnly && onPick(m.key, tid)}
       >
@@ -10536,7 +10556,11 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false }
               <div className="sw-pool" key={`${col.key}-${p.pool}`}>
                 <div className="sw-pool-title">{rec(p.pool)}</div>
                 {p.matches.map((m) => (
-                  <div className={`sw-match${m.status === "live" ? " live" : ""}`} key={m.key}>
+                  <div
+                    className={`sw-match${m.status === "live" ? " live" : ""}${openable && m.known ? " openable" : ""}`}
+                    key={m.key}
+                    onClick={() => openable && m.known && onOpen(m)}
+                  >
                     {side(m.a, m, m.known)}
                     {m.status === "live" ? (
                       <span className="sw-vs sw-live">{m.maps_a != null ? `${m.maps_a}–${m.maps_b}` : "live"}</span>

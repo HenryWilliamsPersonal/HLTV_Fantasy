@@ -3332,8 +3332,8 @@ button:disabled {
 .sw-col-title { font-family: var(--display); font-stretch: condensed; font-weight: 800; font-size: 16px; color: #f2f5f9; text-align: center; }
 .sw-pool { display: flex; flex-direction: column; gap: 6px; }
 .sw-pool-title { font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 15px; letter-spacing: 0.04em; color: #8fa3bf; }
-.sw-match { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 4px; padding: 6px 8px; background: #171c24; border: 1px solid #2c3441; border-radius: 8px; min-width: 170px; }
-.sw-side { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 2px; background: none; border: 2px solid transparent; border-radius: 8px; color: #c3cddb; cursor: pointer; min-width: 62px; }
+.sw-match { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; padding: 8px 10px; background: #171c24; border: 1px solid #2c3441; border-radius: 8px; min-width: 186px; }
+.sw-side { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 5px 6px; background: none; border: 2px solid transparent; border-radius: 8px; color: #c3cddb; cursor: pointer; min-width: 66px; }
 .sw-side:disabled { cursor: default; }
 .sw-side:hover:not(:disabled) { border-color: #3a4452; }
 .sw-side.won { border-color: #ff6b1a; background: rgba(255, 107, 26, 0.14); color: #f2f5f9; }
@@ -3431,6 +3431,11 @@ button:disabled {
 .live-group h3 { margin-top: 0; }
 .live-group table { margin: 0; }
 .live-results td, .live-results th { vertical-align: middle; }
+/* tables are table-layout: fixed, so the header cells size the columns: the
+   numeric and status columns stay narrow and the match takes the rest */
+.live-results th.num { width: 96px; }
+.live-results th.tight { width: 84px; }
+.live-results td.num, .live-results td.tight { white-space: nowrap; }
 .live-results:not(.clickable) tbody tr { cursor: default; }
 .live-match { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; }
 .live-side { display: inline-flex; align-items: center; gap: 8px; color: #8fa3bf; }
@@ -3441,6 +3446,12 @@ button:disabled {
 .sw-board.readonly .sw-side { cursor: default; }
 .sw-board.readonly .sw-side:disabled { opacity: 1; }
 .sw-board.readonly .sw-side.lost:disabled { opacity: 0.35; }
+.sw-board.readonly .sw-side:hover:not(.won) { border-color: transparent; }
+/* a played or live match on a live event page opens its scoreboard */
+.sw-board.readonly .sw-match.openable { cursor: pointer; }
+.sw-board.readonly .sw-match.openable .sw-side { cursor: pointer; }
+.sw-board.readonly .sw-match.openable:hover { border-color: #3a4452; background: #1b212b; }
+.sw-board.readonly .sw-match.openable.live:hover { border-color: #ff8a47; }
 .pb-bracket .gsl-pick button:disabled.active { opacity: 1; }
 .live-group .table-player-cell span { max-width: none; white-space: normal; overflow: visible; text-overflow: clip; }
 .live-group td.num, .live-group th.num { width: 48px; text-align: right; }

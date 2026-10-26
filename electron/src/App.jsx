@@ -10083,27 +10083,41 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false }
 // each team's record odds and qualify chance from the stored run.
 function SwissStageView({ results, teams, teamLookup, excludeSet = null, teamPlayerIds = null, onToggleTeam = null }) {
   const sw = results?.swiss || null;
-  // The stage as it stands — results so far, the pairings HLTV has made,
-  // live scores — from the Live page's state, refreshed while this is open.
-  const liveId = Number(sw?.event_id || results?.event_id || 0) || null;
-  const [live, setLive] = useState(null);
+  // The simulator: the board starts from the results played so far; pick
+  // winners and the engine draws the rounds that follow (the same board and
+  // route as the Completed Swiss picker on the Top 5 tab).
+  const simId = Number(sw?.event_id || results?.event_id || 0) || null;
+  const [simPicks, setSimPicks] = useState({});
+  const [simWalk, setSimWalk] = useState(null);
+  const simQuery = async (body) => {
+    try {
+      const d = await api.post("/groups/swiss/pairings", body, 30000);
+      if (d && Array.isArray(d.rounds)) {
+        setSimWalk(d);
+        if (d.picks) setSimPicks(d.picks);
+      }
+    } catch {
+      /* the board keeps what it has */
+    }
+  };
   useEffect(() => {
-    if (!liveId) return undefined;
-    let on = true;
-    const load = () =>
-      api
-        .get(`/live/events/${liveId}`, 60000)
-        .then((d) => {
-          if (on && d?.event) setLive(d.event);
-        })
-        .catch(() => {});
-    load();
-    const t = setInterval(load, 30000);
-    return () => {
-      on = false;
-      clearInterval(t);
-    };
-  }, [liveId]);
+    if (!simId) return undefined;
+    setSimPicks({});
+    setSimWalk(null);
+    simQuery({ actual: true });
+    return undefined;
+  }, [simId, sw?.seed]);
+  const simPick = (key, tid) => {
+    const round = Number(String(key).match(/^r(\d+)_/)?.[1] || 0);
+    const next = {};
+    Object.entries(simPicks).forEach(([k, v]) => {
+      const r = Number(String(k).match(/^r(\d+)_/)?.[1] || 0);
+      if (r <= round && k !== key) next[k] = v;
+    });
+    next[key] = tid;
+    setSimPicks(next);
+    simQuery({ swiss_picks: next });
+  };
   if (!sw) {
     return (
       <div className="card sub">
@@ -10127,13 +10141,23 @@ function SwissStageView({ results, teams, teamLookup, excludeSet = null, teamPla
   };
   return (
     <>
-      {live?.swiss && (
+      {simWalk && (
         <div className="card sub group-card">
           <div className="group-card-head">
-            <h3>Swiss Stage</h3>
-            {live.status === "live" && <span className="pill ok">Live</span>}
+            <h3>Swiss Simulator</h3>
           </div>
-          <SwissBoard walk={live.swiss} teams={teams} teamLookup={teamLookup} picks={live.swiss.picks || {}} onPick={() => {}} readOnly />
+          <SwissBoard walk={simWalk} teams={teams} teamLookup={teamLookup} picks={simPicks} onPick={simPick} />
+          <div className="actions">
+            <button className="secondary" onClick={() => simQuery({ actual: true })}>
+              Actual results
+            </button>
+            <button className="secondary" onClick={() => simQuery({ swiss_picks: simPicks, favourites: true })}>
+              Favourites win
+            </button>
+            <button className="secondary" onClick={() => simQuery({ swiss_picks: {} })}>
+              Clear
+            </button>
+          </div>
         </div>
       )}
       <div className="card sub group-card">
@@ -10820,6 +10844,18 @@ function GroupsTab({
   const fillSwissFavourites = async () => {
     try {
       const d = await api.post("/groups/swiss/pairings", { swiss_picks: swissPicks, favourites: true }, 30000);
+      if (d?.picks) {
+        setSwissPicks(d.picks);
+        setSwissWalk(d);
+        setCompletedResult(null);
+      }
+    } catch {
+      // the board keeps the picks it has
+    }
+  };
+  const fillSwissActual = async () => {
+    try {
+      const d = await api.post("/groups/swiss/pairings", { actual: true }, 60000);
       if (d?.picks) {
         setSwissPicks(d.picks);
         setSwissWalk(d);
@@ -11830,6 +11866,9 @@ function GroupsTab({
             </div>
             {renderTop5Filters()}
             <div className="actions">
+              <button className="secondary" onClick={fillSwissActual} disabled={!swissWalk}>
+                Actual results
+              </button>
               <button className="secondary" onClick={fillSwissFavourites} disabled={!swissWalk}>
                 Favourites win
               </button>

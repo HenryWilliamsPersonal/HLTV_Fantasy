@@ -2553,6 +2553,45 @@ def swiss_pairings(payload: dict | None = None, event_id: Optional[int] = None):
     seeds = {int(t): int(v) for t, v in (sw.get("seeds") or {}).items()}
     bo3_mode = str(sw.get("bo3_mode") or "elim_qual")
     picks = {str(k): int(v) for k, v in (body.get("swiss_picks") or {}).items() if v}
+    if body.get("actual"):
+        # The results played so far as picks: each finished match is matched
+        # by its pair of teams to the engine's pairing of the same round, one
+        # round at a time (a round is only paired once the one before is
+        # decided). An actual pairing the engine did not draw is left out and
+        # counted, so the board shows the engine's draw from there.
+        from backend.services import live_state
+
+        try:
+            entry = live_state.live_event(int(key))
+        except Exception:  # noqa: BLE001
+            entry = None
+        finished: Dict[int, list] = {}
+        for rd in ((entry or {}).get("swiss") or {}).get("rounds") or []:
+            for m in rd.get("matches") or []:
+                if m.get("winner") is not None:
+                    finished.setdefault(int(rd["round"]), []).append((frozenset((int(m["a"]), int(m["b"]))), int(m["winner"])))
+        picks = {}
+        unmatched = 0
+        for r in range(1, swiss_engine.ROUNDS + 1):
+            actual = finished.get(r) or []
+            if not actual:
+                break
+            walked = swiss_engine.walk(team_ids, seeds, bo3_mode, picks)
+            if len(walked["rounds"]) < r:
+                unmatched += len(actual)
+                break
+            by_pair = {frozenset((int(m["a"]), int(m["b"]))): m["key"] for m in walked["rounds"][r - 1]["matches"]}
+            for pair, winner in actual:
+                k = by_pair.get(pair)
+                if k:
+                    picks[k] = winner
+                else:
+                    unmatched += 1
+        walked = swiss_engine.walk(team_ids, seeds, bo3_mode, picks)
+        walked["picks"] = picks
+        walked["actual_applied"] = len(picks)
+        walked["actual_unmatched"] = unmatched
+        return walked
     if not body.get("favourites"):
         return swiss_engine.walk(team_ids, seeds, bo3_mode, picks)
     # "favourites win": every match still open goes to the side the run's

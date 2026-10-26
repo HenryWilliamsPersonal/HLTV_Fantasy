@@ -237,13 +237,22 @@ def refresh_due(event_id: int, status: str, start_at: float, now: Optional[float
     return age is None or age >= interval
 
 
-def refresh(event_id: int, hltv_event_id: int, hltv_event_url: str, to_tid: Callable[[Optional[int]], Optional[int]]) -> List[Dict[str, Any]]:
-    """Read the pages now (one reader per event at a time) and cache the result."""
+def refresh(event_id: int, hltv_event_id: int, hltv_event_url: str, to_tid: Callable[[Optional[int]], Optional[int]], wait: float = 90.0) -> List[Dict[str, Any]]:
+    """Read the pages now (one reader per event at a time) and cache the
+    result. While another thread is already reading this event's pages, wait
+    for it (up to `wait` seconds) and return what it stored."""
     eid = int(event_id)
-    with _LOCK:
-        if eid in _INFLIGHT:
-            return list((_CACHE.get(eid) or {}).get("matches") or [])
-        _INFLIGHT.add(eid)
+    deadline = time.time() + float(wait)
+    while True:
+        with _LOCK:
+            if eid not in _INFLIGHT:
+                _INFLIGHT.add(eid)
+                break
+        if time.time() >= deadline:
+            return cached(eid)
+        time.sleep(0.5)
+        if cache_age(eid) is not None and cache_age(eid) < 5.0:
+            return cached(eid)
     try:
         matches = fetch_event_matches(int(hltv_event_id), hltv_event_url, to_tid)
         with _LOCK:
@@ -267,4 +276,4 @@ def refresh_in_background(event_id: int, hltv_event_id: int, hltv_event_url: str
     with _LOCK:
         if int(event_id) in _INFLIGHT:
             return
-    threading.Thread(target=refresh, args=(int(event_id), int(hltv_event_id), hltv_event_url, to_tid), name=f"live-pages-{event_id}", daemon=True).start()
+    threading.Thread(target=refresh, args=(int(event_id), int(hltv_event_id), hltv_event_url, to_tid, 0.0), name=f"live-pages-{event_id}", daemon=True).start()

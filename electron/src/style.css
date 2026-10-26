@@ -3437,6 +3437,16 @@ button:disabled {
 .live-results th.tight { width: 84px; }
 .live-results td.num, .live-results td.tight { white-space: nowrap; }
 .live-results:not(.clickable) tbody tr { cursor: default; }
+/* compact live tables: the columns hug their content (auto layout) so the
+   two teams, the score and the map sit next to each other, aligned down
+   the rows, instead of being spread across the card */
+.live-results.compact { width: auto; table-layout: auto; min-width: 0; }
+.live-results.compact th, .live-results.compact td { padding-right: 32px; }
+.live-results.compact td.live-a { text-align: right; white-space: nowrap; }
+.live-results.compact td.live-mid { text-align: center; padding-left: 0; padding-right: 0; }
+.live-results.compact td.live-b { text-align: left; white-space: nowrap; }
+.live-results.compact td.live-mid .live-score { min-width: 48px; }
+.live-results.compact td.num { text-align: left; }
 .live-match { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; }
 .live-side { display: inline-flex; align-items: center; gap: 8px; color: #8fa3bf; }
 .live-side.right { justify-content: flex-end; }

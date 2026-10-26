@@ -6863,7 +6863,7 @@ function LiveEventBody({ ev }) {
   const pairKey = (a, b) => [Number(a), Number(b)].sort((x, y) => x - y).join("-");
   const matchByPair = useMemo(() => {
     const out = {};
-    [...(ev.matches || []), ...(ev.live_matches || []).map((m) => ({ ...m, score_a: m.maps_a, score_b: m.maps_b })), ...(ev.upcoming_matches || [])].forEach((m) => {
+    [...(ev.matches || []), ...(ev.live_matches || []).map((m) => ({ ...m, score_a: m.maps_a, score_b: m.maps_b }))].forEach((m) => {
       if (m.url && !out[pairKey(m.a, m.b)]) out[pairKey(m.a, m.b)] = m;
     });
     return out;
@@ -6872,6 +6872,11 @@ function LiveEventBody({ ev }) {
     const found = matchByPair[pairKey(m.a, m.b)];
     if (found) openResult(found);
   };
+  // The board (Swiss or bracket) already shows every result; the results
+  // table only stands in for events without one.
+  const boardShown = Boolean((ev.group_format === "swiss" && ev.swiss) || (ev.group_format === "bracket" && ev.bracket));
+  const today = new Date().toDateString();
+  const upcomingToday = (ev.upcoming_matches || []).filter((m) => m.start_at && new Date(Number(m.start_at) * 1000).toDateString() === today);
   return (
     <div className="stack">
       {ev.group_format === "swiss" && ev.swiss && (
@@ -6922,34 +6927,32 @@ function LiveEventBody({ ev }) {
       {(ev.live_matches || []).length > 0 && (
         <div className="card sub">
           <h3>In play</h3>
-          <table className="live-results clickable">
+          <table className="live-results clickable compact">
             <thead>
               <tr>
-                <th className="tight"></th>
-                <th>Match</th>
+                <th colSpan={3}>Match</th>
                 <th className="num">Map</th>
               </tr>
             </thead>
             <tbody>
               {ev.live_matches.map((m) => (
                 <tr key={m.match_id} onClick={() => openResult({ ...m, score_a: m.maps_a, score_b: m.maps_b })}>
-                  <td className="tight">
-                    <span className="pill ok">Live</span>
+                  <td className="live-a">
+                    <span className="live-side win">
+                      <TeamLogo hltvTeamId={hltvId(m.a)} name={teamLookup[m.a]} size={22} />
+                      {teamLookup[m.a] || m.a}
+                    </span>
                   </td>
-                  <td>
-                    <div className="live-match">
-                      <span className="live-side win">
-                        <TeamLogo hltvTeamId={hltvId(m.a)} name={teamLookup[m.a]} size={22} />
-                        {teamLookup[m.a] || m.a}
-                      </span>
-                      <span className="live-score live">
-                        {m.maps_a ?? 0}–{m.maps_b ?? 0}
-                      </span>
-                      <span className="live-side right win">
-                        {teamLookup[m.b] || m.b}
-                        <TeamLogo hltvTeamId={hltvId(m.b)} name={teamLookup[m.b]} size={22} />
-                      </span>
-                    </div>
+                  <td className="live-mid">
+                    <span className="live-score live">
+                      {m.maps_a ?? 0}–{m.maps_b ?? 0}
+                    </span>
+                  </td>
+                  <td className="live-b">
+                    <span className="live-side win">
+                      {teamLookup[m.b] || m.b}
+                      <TeamLogo hltvTeamId={hltvId(m.b)} name={teamLookup[m.b]} size={22} />
+                    </span>
                   </td>
                   <td className="num">
                     {m.map_a ?? "-"}–{m.map_b ?? "-"}
@@ -6960,32 +6963,34 @@ function LiveEventBody({ ev }) {
           </table>
         </div>
       )}
-      {(ev.upcoming_matches || []).length > 0 && (
+      {upcomingToday.length > 0 && (
         <div className="card sub">
-          <h3>Upcoming</h3>
-          <table className="live-results">
+          <h3>Upcoming today</h3>
+          <table className="live-results compact">
             <thead>
               <tr>
                 <th>Start</th>
-                <th>Match</th>
+                <th colSpan={3}>Match</th>
               </tr>
             </thead>
             <tbody>
-              {ev.upcoming_matches.map((m) => (
+              {upcomingToday.map((m) => (
                 <tr key={m.match_id}>
-                  <td>{m.start_at ? `${dm(m.start_at)} ${hhmm(m.start_at)}` : "-"}</td>
-                  <td>
-                    <div className="live-match">
-                      <span className="live-side">
-                        <TeamLogo hltvTeamId={hltvId(m.a)} name={teamLookup[m.a]} size={22} />
-                        {teamLookup[m.a] || m.a}
-                      </span>
-                      <span className="live-score muted">vs</span>
-                      <span className="live-side right">
-                        {teamLookup[m.b] || m.b}
-                        <TeamLogo hltvTeamId={hltvId(m.b)} name={teamLookup[m.b]} size={22} />
-                      </span>
-                    </div>
+                  <td className="num">{hhmm(m.start_at)}</td>
+                  <td className="live-a">
+                    <span className="live-side">
+                      <TeamLogo hltvTeamId={hltvId(m.a)} name={teamLookup[m.a]} size={22} />
+                      {teamLookup[m.a] || m.a}
+                    </span>
+                  </td>
+                  <td className="live-mid">
+                    <span className="live-score muted">vs</span>
+                  </td>
+                  <td className="live-b">
+                    <span className="live-side">
+                      {teamLookup[m.b] || m.b}
+                      <TeamLogo hltvTeamId={hltvId(m.b)} name={teamLookup[m.b]} size={22} />
+                    </span>
                   </td>
                 </tr>
               ))}
@@ -6993,7 +6998,7 @@ function LiveEventBody({ ev }) {
           </table>
         </div>
       )}
-      {results.length > 0 && (
+      {results.length > 0 && !boardShown && (
         <div className="card sub">
           <h3>Results</h3>
           <table className="live-results clickable">

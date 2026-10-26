@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from backend.routes import players, teams, playoff, groups, admin, events, schedule, assets, live
+from backend.routes import players, teams, playoff, groups, admin, events, schedule, assets, live, my_team
 from backend.services.backend_port import APP_ID, HOST, PORT_FILE, select_port, write_port_info
 from backend.data.event_db import ensure_event_schema
 from backend.data.player_db import ensure_schema
@@ -49,6 +49,7 @@ ROUTERS = (
     (schedule.router, "/schedule", "schedule"),
     (assets.router, "/assets", "assets"),
     (live.router, "/live", "live"),
+    (my_team.router, "/my-team", "my-team"),
     (auth_routes.router, "/auth", "auth"),
 )
 

@@ -3450,3 +3450,12 @@ button:disabled {
 .dev-flags td, .dev-flags th { vertical-align: top; }
 .dev-flags .secondary { padding: 4px 12px; font-size: 11px; }
 
+/* My Team */
+.myteam-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+.myteam-strip .topx-tile-value { font-size: 28px; font-variant-numeric: tabular-nums; }
+.myteam-strip .secondary { padding: 4px 10px; font-size: 11px; margin-top: 4px; }
+.myteam-table td, .myteam-rounds td, .myteam-matches td { vertical-align: middle; font-variant-numeric: tabular-nums; }
+.myteam-table tbody tr, .myteam-rounds tbody tr { cursor: default; }
+.myteam-table .pill, .myteam-rounds .pill, .myteam-matches .pill { font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; font-size: 12px; padding: 3px 9px; white-space: nowrap; }
+@media (max-width: 1100px) { .myteam-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+

@@ -320,6 +320,7 @@ const ALL_TABS = [
   { key: "events", label: "Events" },
   { key: "tournament", label: "Tournament" },
   { key: "live", label: "Live" },
+  { key: "myteam", label: "My Team" },
   { key: "devlab", label: "Dev Lab" },
   { key: "scheduling", label: "Scheduling" },
   { key: "users", label: "Users" },
@@ -6315,6 +6316,258 @@ function LiveTab() {
   );
 }
 
+// My Team: the HLTV account's fantasy team in each current event — what
+// HLTV has scored (per player and component) against the valuation's
+// expectation, each player's next match with its predicted points, the
+// round-by-round breakdown and every scored match (a row opens the match).
+function MyTeamTab() {
+  const [events, setEvents] = useState(null);
+  const [eventId, setEventId] = useState(null);
+  const [report, setReport] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [matchRow, setMatchRow] = useState(null);
+  useEffect(() => {
+    api
+      .get("/my-team/events", 120000)
+      .then((d) => {
+        const list = Array.isArray(d?.events) ? d.events : [];
+        setEvents(list);
+        if (list.length && !eventId) setEventId((list.find((e) => e.status === "live") || list[0]).event_id);
+      })
+      .catch(() => setEvents([]));
+  }, []);
+  const load = async (id, refresh = false) => {
+    if (!id) return;
+    setBusy(true);
+    try {
+      const d = await api.get(`/my-team/${id}${refresh ? "?refresh=1" : ""}`, 180000);
+      if (d?.players) setReport(d);
+    } catch {
+      setReport(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => {
+    setReport(null);
+    load(eventId);
+  }, [eventId]);
+  const fmt1 = (v) => (v == null || Number.isNaN(Number(v)) ? "-" : Number(v).toFixed(1));
+  const signed = (v) => (v == null ? "-" : `${Number(v) > 0 ? "+" : ""}${Number(v)}`);
+  const when = (ts) => {
+    if (!(Number(ts) > 0)) return "";
+    const d = new Date(Number(ts) * 1000);
+    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+  const teamRows = useMemo(() => (report?.players || []).map((p) => ({ team_id: p.team_id, name: p.team })), [report]);
+  // A scored match opens its scoreboard: the stored row when the nightly
+  // import has it, else the page's scoreboards read on demand.
+  const openMatch = async (t) => {
+    const url = String(t.match_url || "");
+    if (!url) return;
+    const own = (report?.players || []).find((p) => p.player_id === t.player_id) || {};
+    const base = { match_url: url, team1: own.team || t.name, team2: t.opponent || "", score1: null, score2: null };
+    setMatchRow(base);
+    if (PUBLIC_BUILD) return;
+    try {
+      const d = await api.get(`/events/hltv-results/match-details?match_url=${encodeURIComponent(url)}`, 60000);
+      const stored = d?.stored || {};
+      const next = { ...base, ...stored, maps_json: JSON.stringify(Array.isArray(d?.maps) ? d.maps : []) };
+      if (!next.player_stats_json && Array.isArray(d?.player_stats) && d.player_stats.length > 0) next.player_stats_json = JSON.stringify(d.player_stats);
+      if (!next.map_player_stats_json && d?.map_player_stats && Object.keys(d.map_player_stats).length > 0) next.map_player_stats_json = JSON.stringify(d.map_player_stats);
+      setMatchRow((cur) => (cur && cur.match_url === url ? next : cur));
+    } catch {
+      /* the modal keeps the stored row */
+    }
+  };
+  if (events === null) return <div className="stack" />;
+  if (events.length === 0) {
+    return (
+      <Section title="My Team">
+        <p className="muted">None</p>
+      </Section>
+    );
+  }
+  const ev = events.find((e) => e.event_id === eventId) || null;
+  const key = report?.key || {};
+  const actualTotal = key.total_points ?? (report?.players || []).reduce((a, p) => a + Number(p.points || 0), 0);
+  return (
+    <div className="stack">
+      <div className="tab-bar small">
+        {events.map((e) => (
+          <button key={e.event_id} className={e.event_id === eventId ? "tab active" : "tab"} onClick={() => setEventId(e.event_id)}>
+            {e.name}
+          </button>
+        ))}
+      </div>
+      {report && (
+        <>
+          <Section title={report.team?.team_name || "My Team"}>
+            <div className="live-strip myteam-strip">
+              <div className="topx-tile">
+                <div className="topx-tile-label">Points</div>
+                <div className="topx-tile-value">{actualTotal}</div>
+                <div className="topx-tile-maps">expected {fmt1(report.expected_total)}</div>
+              </div>
+              <div className="topx-tile">
+                <div className="topx-tile-label">Placement</div>
+                <div className="topx-tile-value">{key.placement != null ? Number(key.placement).toLocaleString() : "-"}</div>
+                <div className="topx-tile-maps">{key.league_size != null ? `of ${Number(key.league_size).toLocaleString()} · ${report.team?.league_name || ""}` : report.team?.league_name || ""}</div>
+              </div>
+              <div className="topx-tile">
+                <div className="topx-tile-label">Roles · boosters</div>
+                <div className="topx-tile-value">
+                  {key.roles_assigned ?? "-"} · {key.boosters_assigned ?? "-"}
+                </div>
+                <div className="topx-tile-maps">{ev ? `${ev.status === "live" ? "Live" : ev.status === "upcoming" ? "Upcoming" : "Finished"} · ${ev.played ?? 0}${ev.total ? ` / ${ev.total}` : ""} matches` : ""}</div>
+              </div>
+              <div className="topx-tile">
+                <div className="topx-tile-label">Read</div>
+                <div className="topx-tile-value">{report.read_at ? new Date(report.read_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-"}</div>
+                <div className="topx-tile-maps">
+                  <button className="secondary" onClick={() => load(eventId, true)} disabled={busy}>
+                    {busy ? "Reading…" : "Refresh"}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <table className="myteam-table">
+              <thead>
+                <tr>
+                  <th>Player</th>
+                  <th>Role</th>
+                  <th>Booster</th>
+                  <th className="num">Rating</th>
+                  <th className="num">Team</th>
+                  <th className="num">Role pts</th>
+                  <th className="num">Booster pts</th>
+                  <th className="num strong">Points</th>
+                  <th className="num">Expected</th>
+                  <th>Next match</th>
+                  <th className="num">Predicted</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.players.map((p) => {
+                  const a = p.actual || {};
+                  const x = p.expected || null;
+                  const n = p.next_match || null;
+                  return (
+                    <tr key={p.player_id || p.name}>
+                      <td>
+                        <strong>{p.name}</strong>
+                        <span className="muted"> {p.team || ""}</span>
+                      </td>
+                      <td>{p.role ? <span className="pill">{p.role}</span> : <span className="muted">{x?.role ? `(${x.role})` : "-"}</span>}</td>
+                      <td>{p.booster ? <span className="pill">{p.booster}</span> : <span className="muted">-</span>}</td>
+                      <td className="num">{signed(a.rating_points)}</td>
+                      <td className="num">{signed(a.team_points)}</td>
+                      <td className="num">{signed(a.role_points)}</td>
+                      <td className="num">{signed(a.booster_points)}</td>
+                      <td className="num strong">{p.points ?? "-"}</td>
+                      <td className="num">{x ? fmt1(x.total) : "-"}</td>
+                      <td>
+                        {n ? (
+                          <span>
+                            <strong>{n.opponent}</strong>
+                            <span className="muted"> · {n.status === "live" ? "live" : when(n.start_at)} · Bo{n.bo}</span>
+                          </span>
+                        ) : (
+                          <span className="muted">-</span>
+                        )}
+                      </td>
+                      <td className="num" title={n?.predicted ? `rating ${n.predicted.rating} (${signed(n.predicted.rating_points)}) · win ${Math.round((n.predicted.win_probability || 0) * 100)}% (${signed(n.predicted.win_points)}) · role ${signed(n.predicted.role_points)} · booster ${signed(n.predicted.booster_points)}` : ""}>
+                        {n?.predicted ? fmt1(n.predicted.total) : "-"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Section>
+          {(report.rounds || []).length > 0 && (
+            <Section title="Rounds">
+              <table className="myteam-rounds">
+                <thead>
+                  <tr>
+                    <th>Round</th>
+                    <th>Status</th>
+                    <th className="num">Rating</th>
+                    <th className="num">Team</th>
+                    <th className="num">Role</th>
+                    <th className="num">Booster</th>
+                    <th className="num">Subtotal</th>
+                    <th className="num">Placement</th>
+                    <th className="num strong">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.rounds.map((r) => (
+                    <tr key={r.name}>
+                      <td>{r.name}</td>
+                      <td>
+                        <span className={`pill${r.status === "LIVE" ? " ok" : ""}`}>{r.status === "ENDED" ? "Ended" : r.status === "LIVE" ? "Live" : "TBA"}</span>
+                      </td>
+                      <td className="num">{signed(r.rating_points)}</td>
+                      <td className="num">{signed(r.team_points)}</td>
+                      <td className="num">{signed(r.role_points)}</td>
+                      <td className="num">{signed(r.booster_points)}</td>
+                      <td className="num">{signed(r.subtotal)}</td>
+                      <td className="num">{r.placement != null ? Number(r.placement).toLocaleString() : "-"}</td>
+                      <td className="num strong">{r.total ?? "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Section>
+          )}
+          {(report.tracker || []).length > 0 && (
+            <Section title="Matches">
+              <table className="myteam-matches">
+                <thead>
+                  <tr>
+                    <th>Player</th>
+                    <th>Opponent</th>
+                    <th>Result</th>
+                    <th className="num">Rating</th>
+                    <th className="num">Team</th>
+                    <th className="num">Role</th>
+                    <th className="num">Booster</th>
+                    <th className="num strong">Points</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.tracker.map((t, i) => (
+                    <tr
+                      key={`${t.player_id}-${i}`}
+                      onClick={() => openMatch(t)}
+                    >
+                      <td>
+                        <strong>{t.name}</strong>
+                      </td>
+                      <td>{t.opponent || <span className="muted">-</span>}</td>
+                      <td>
+                        <span className={`pill${t.result === "WON" ? " ok" : t.result === "LOST" ? " warn" : ""}`}>{t.result ? t.result.charAt(0) + t.result.slice(1).toLowerCase() : "-"}</span>
+                      </td>
+                      <td className="num">{signed(t.rating_points)}</td>
+                      <td className="num">{signed(t.team_points)}</td>
+                      <td className="num">{signed(t.role_points)}</td>
+                      <td className="num">{signed(t.booster_points)}</td>
+                      <td className="num strong">{t.points ?? "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Section>
+          )}
+          {matchRow && <MatchDetailModal row={matchRow} teams={teamRows} players={[]} onClose={() => setMatchRow(null)} />}
+        </>
+      )}
+      {!report && busy && <div className="stack" />}
+    </div>
+  );
+}
+
 function LiveEventBody({ ev }) {
   const teamLookup = useMemo(() => {
     const m = {};
@@ -12235,6 +12488,7 @@ export default function App() {
     ),
     devlab: <DevLabTab />,
     live: <LiveTab />,
+    myteam: <MyTeamTab />,
     tournament: (
       <TournamentTab
         key={`tournament-${viewEventId || "current"}`}

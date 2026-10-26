@@ -8642,49 +8642,45 @@ function SchedulingTab({ notify, players, refresh }) {
           <div className="sch-row-name">{label}</div>
           <div className="sch-row-sub">{TASK_SUB[task]}</div>
         </td>
-        <td>
+        <td className="sch-col-switch">
           <label className="switch" title={on ? "Enabled" : "Disabled"}>
             <input type="checkbox" aria-label={`Run ${label} nightly`} checked={on} onChange={(e) => patchConfig({ [`do_${task}`]: e.target.checked })} disabled={saveBusy} />
             <span className="switch-track" />
           </label>
         </td>
         <td>
-          <div className="sch-row-when" title={Number(last) > 0 ? new Date(Number(last) * 1000).toLocaleString() : ""}>
-            {relTime(last)}
+          <div className="sch-row-top">
+            {pill}
+            <span className="sch-row-when" title={Number(last) > 0 ? new Date(Number(last) * 1000).toLocaleString() : ""}>
+              {relTime(last)}
+            </span>
           </div>
-          <div className="sch-row-sub">{run ? `${fmtDur(run.finished_at - run.started_at)} · ${run.trigger}` : "-"}</div>
+          <div className="sch-row-sub">{run ? `${fmtDur(run.finished_at - run.started_at)} · ${run.trigger}` : "\u00a0"}</div>
         </td>
-        <td>{pill}</td>
         <td>
           {setting ? (
-            <span className="sch-row-setting">
+            <label className="sch-row-setting">
               <span className="sch-row-sub">{setting[0]}</span>
               {setting[1]}
               <span className="sch-row-sub">{setting[2]}</span>
-            </span>
-          ) : (
-            <span className="sch-row-sub">-</span>
-          )}
+            </label>
+          ) : null}
         </td>
         <td>
           {covLines.length > 0 ? (
             <div className="sch-row-data">
               {covLines.map(([name, done, total, missing]) => (
-                <div className="sch-row-line" key={name}>
-                  <span className="sch-row-sub">{name}</span>
-                  <span>
-                    <strong>{done == null ? "-" : Number(done).toLocaleString()}</strong>
-                    {total != null ? <span className="sch-row-sub"> / {Number(total).toLocaleString()}</span> : null}
-                    {Number(missing) > 0 ? <span className="warn"> · {Number(missing).toLocaleString()} missing</span> : null}
-                  </span>
-                </div>
+                <span className="sch-row-stat" key={name}>
+                  <span className="sch-row-sub">{name} </span>
+                  <strong>{done == null ? "-" : Number(done).toLocaleString()}</strong>
+                  {total != null ? <span className="sch-row-sub"> / {Number(total).toLocaleString()}</span> : null}
+                  {Number(missing) > 0 ? <span className="warn"> · {Number(missing).toLocaleString()} missing</span> : null}
+                </span>
               ))}
             </div>
-          ) : (
-            <span className="sch-row-sub">-</span>
-          )}
+          ) : null}
         </td>
-        <td className="num">
+        <td className="sch-col-run">
           <button className="secondary" aria-label={`Run ${label} now`} onClick={() => runNow(task)} disabled={runBusy || state.running}>
             Run
           </button>
@@ -8763,12 +8759,11 @@ function SchedulingTab({ notify, players, refresh }) {
           <thead>
             <tr>
               <th>Task</th>
-              <th>Nightly</th>
-              <th>Last ok</th>
-              <th>Status</th>
+              <th className="sch-col-switch">Nightly</th>
+              <th>Last run</th>
               <th>Setting</th>
               <th>Data</th>
-              <th />
+              <th className="sch-col-run" />
             </tr>
           </thead>
           <tbody>{["events", "rankings", "team_data", "matches", "map_model"].map(taskRow)}</tbody>

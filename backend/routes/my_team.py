@@ -1,6 +1,8 @@
 """The My Team page: each app user's own HLTV fantasy team per event
 (services/my_team). A signed-in app user is keyed "user:<id>"; the server
-operator, who has no app session locally, is "operator"."""
+operator, who has no app session locally, is "operator". The browser reads
+run in the background: a response carries `pending` while one is under way
+and the page asks again."""
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Request
@@ -53,23 +55,16 @@ def _cookies_from(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 @router.get("/session")
 def get_session(request: Request) -> dict:
-    return my_team.account_status(_user_key(request))
+    return my_team.status_for(_user_key(request))
 
 
 @router.post("/session")
 def connect_session(request: Request, payload: Dict[str, Any]) -> dict:
-    """Connect the user's HLTV account: the cookies are verified by signing
-    the shared browser in with them for a moment, then stored for the user."""
+    """Connect the user's HLTV account: the cookies are stored at once and
+    verified in the background (the status says `verifying` meanwhile)."""
     key = _user_key(request)
     cookies = _cookies_from(payload)
-    try:
-        username = my_team.with_personal_session(lambda _driver, name: name, cookies=cookies)
-    except my_team.PersonalSessionError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 - browser failures
-        raise HTTPException(status_code=502, detail=f"Could not verify the HLTV login: {exc}") from exc
-    my_team.save_account(key, cookies, str(username or ""))
-    return {"status": "ok", **my_team.account_status(key)}
+    return {"status": "ok", **my_team.connect_account(key, cookies)}
 
 
 @router.delete("/session")
@@ -82,31 +77,37 @@ def disconnect_session(request: Request) -> dict:
 @router.get("/events")
 def list_my_team_events(request: Request) -> dict:
     """The current events (live, upcoming, recent) in which the user's
-    account has a team, with the account's connection state."""
+    account has a team, with the account's connection state. `pending`
+    while the login is being verified or the events are being read."""
     key = _user_key(request)
-    status = my_team.account_status(key)
+    status = my_team.status_for(key)
     if not status.get("connected"):
-        return {**status, "events": []}
+        return {**status, "events": [], "pending": False}
+    if status.get("verifying"):
+        return {**status, "events": [], "pending": True}
     current = live_state.live_events()
-    try:
-        teams_by_event = my_team.my_teams_for([int(ev["event_id"]) for ev in current], key, max_age=3600.0)
-    except my_team.PersonalSessionError as exc:
-        return {**status, "connected": False, "error": str(exc), "events": []}
+    job = my_team.events_for(key, [int(ev["event_id"]) for ev in current])
+    if job.get("error") and job.get("value") is None:
+        return {**status, "connected": False, "error": job["error"], "events": [], "pending": False}
+    teams_by_event = job.get("value") or {}
     out = []
     for ev in current:
         teams = teams_by_event.get(int(ev["event_id"])) or []
         if teams:
             out.append({**live_state.summary(ev), "team_name": teams[0]["team_name"], "league_name": teams[0]["league_name"]})
-    return {**status, "events": out}
+    return {**status, "events": out, "pending": bool(job.get("pending"))}
 
 
 @router.get("/{event_id}")
 def get_my_team(request: Request, event_id: int, refresh: bool = False) -> dict:
+    """The report, or {pending: true} while it is being read (a stale report
+    comes with pending: true while a refresh is under way)."""
     key = _user_key(request)
-    try:
-        report = my_team.team_report(int(event_id), key, max_age=0.0 if refresh else my_team.REFRESH)
-    except my_team.PersonalSessionError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if not report:
-        raise HTTPException(status_code=404, detail="No team of yours in this event")
-    return report
+    job = my_team.report_for(int(event_id), key, refresh=refresh)
+    if job.get("value"):
+        return {**job["value"], "pending": bool(job.get("pending"))}
+    if job.get("pending"):
+        return {"pending": True}
+    if job.get("error"):
+        raise HTTPException(status_code=409, detail=str(job["error"]))
+    raise HTTPException(status_code=404, detail="No team of yours in this event")

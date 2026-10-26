@@ -82,22 +82,129 @@ def cookies_for(user_key: str) -> List[Dict[str, Any]]:
     return cookies
 
 
-def save_account(user_key: str, cookies: List[Dict[str, Any]], username: str) -> Dict[str, Any]:
-    from backend.data import hltv_accounts
-
+def _forget_cached(user_key: str) -> None:
     with _LOCK:
         for k in [k for k in _CACHE if k[0] == user_key]:
             _CACHE.pop(k, None)
+        for k in [k for k in _RESULTS if k.split("|")[1:2] == [user_key]]:
+            _RESULTS.pop(k, None)
+
+
+def save_account(user_key: str, cookies: List[Dict[str, Any]], username: str) -> Dict[str, Any]:
+    from backend.data import hltv_accounts
+
+    _forget_cached(user_key)
     return hltv_accounts.save(user_key, cookies, username)
 
 
 def forget_account(user_key: str) -> bool:
     from backend.data import hltv_accounts
 
-    with _LOCK:
-        for k in [k for k in _CACHE if k[0] == user_key]:
-            _CACHE.pop(k, None)
+    _forget_cached(user_key)
     return hltv_accounts.delete(user_key)
+
+
+# ---- Background reads. A browser read takes 30-90 s (the shared browser
+# may be busy first), longer than a public request may last (the tunnel
+# cuts at 100 s), so the routes answer at once with what is cached and
+# start the read in a thread; the page polls while `pending`.
+_RESULTS: Dict[str, Dict[str, Any]] = {}  # job key -> {"value", "at", "error"}
+_JOBS: Dict[str, threading.Thread] = {}
+_ERROR_RETRY = 60.0
+
+
+def _job_key(kind: str, user_key: str, *parts: Any) -> str:
+    return "|".join([kind, user_key, *[str(p) for p in parts]])
+
+
+def run_in_background(key: str, fn, max_age: float) -> Dict[str, Any]:
+    """{"value", "pending", "error"}: fn's cached result when younger than
+    max_age (an error is kept for a minute); otherwise the stale one, or
+    None, with pending=True while one thread per key computes a fresh one."""
+    now = time.time()
+    with _LOCK:
+        hit = _RESULTS.get(key)
+        if hit and now - float(hit["at"]) < (_ERROR_RETRY if hit.get("error") else max_age):
+            return {"value": hit.get("value"), "pending": False, "error": hit.get("error")}
+        thread = _JOBS.get(key)
+        if thread is None or not thread.is_alive():
+
+            def work() -> None:
+                try:
+                    value, err = fn(), None
+                except PersonalSessionError as exc:
+                    value, err = None, str(exc)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("My Team background read failed (%s)", key, exc_info=True)
+                    value, err = None, f"Could not read HLTV: {exc}"
+                with _LOCK:
+                    _RESULTS[key] = {"value": value, "at": time.time(), "error": err}
+                    _JOBS.pop(key, None)
+
+            thread = threading.Thread(target=work, name=f"my-team:{key}", daemon=True)
+            _JOBS[key] = thread
+            thread.start()
+    return {"value": hit.get("value") if hit else None, "pending": True, "error": hit.get("error") if hit else None}
+
+
+def _job_running(key: str) -> bool:
+    with _LOCK:
+        t = _JOBS.get(key)
+    return t is not None and t.is_alive()
+
+
+def status_for(user_key: str) -> Dict[str, Any]:
+    """The account's connection state plus whether its login is still being
+    verified, and the verification's error once a login was rejected."""
+    st = account_status(user_key)
+    key = _job_key("verify", user_key)
+    st["verifying"] = _job_running(key)
+    with _LOCK:
+        hit = _RESULTS.get(key)
+    if hit and hit.get("error") and not st.get("connected"):
+        st["error"] = hit["error"]
+    return st
+
+
+def connect_account(user_key: str, cookies: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Store the cookies now and verify them with HLTV in the background: the
+    account name arrives on a later status read; a rejected login removes
+    the row and leaves its error on the status."""
+    from backend.data import hltv_accounts
+
+    previous = account(user_key) or {}
+    save_account(user_key, cookies, str(previous.get("username") or ""))
+
+    def verify() -> str:
+        try:
+            username = with_personal_session(lambda _driver, name: name, cookies=cookies)
+        except PersonalSessionError:
+            forget_account(user_key)
+            raise
+        hltv_accounts.save(user_key, cookies, str(username or ""))
+        return str(username or "")
+
+    key = _job_key("verify", user_key)
+    with _LOCK:
+        _RESULTS.pop(key, None)
+    run_in_background(key, verify, 0.0)
+    return status_for(user_key)
+
+
+def events_for(user_key: str, event_ids: List[int], max_age: float = 3600.0) -> Dict[str, Any]:
+    """Background wrapper of my_teams_for over the current events."""
+    key = _job_key("events", user_key, ",".join(str(int(e)) for e in event_ids))
+    return run_in_background(key, lambda: my_teams_for([int(e) for e in event_ids], user_key, max_age), max_age)
+
+
+def report_for(event_id: int, user_key: str, refresh: bool = False) -> Dict[str, Any]:
+    """Background wrapper of team_report; refresh drops the cached report
+    and re-reads the pages."""
+    key = _job_key("report", user_key, int(event_id))
+    if refresh:
+        with _LOCK:
+            _RESULTS.pop(key, None)
+    return run_in_background(key, lambda: team_report(int(event_id), user_key, 0.0 if refresh else REFRESH), REFRESH)
 
 
 def with_personal_session(callback, cookies: Optional[List[Dict[str, Any]]] = None):

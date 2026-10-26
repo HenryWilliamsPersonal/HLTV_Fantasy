@@ -496,12 +496,16 @@ const withViewEvent = (path) => {
 
 const rawApi = window.api || {
   get: (path, timeoutMs) => requestJson(path, {}, timeoutMs),
-  post: (path, body) =>
-    requestJson(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
+  post: (path, body, timeoutMs) =>
+    requestJson(
+      path,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      timeoutMs
+    ),
   delete: (path) =>
     requestJson(path, {
       method: "DELETE",
@@ -6330,27 +6334,44 @@ function MyTeamTab() {
   const [connecting, setConnecting] = useState("");
   const [pasted, setPasted] = useState("");
   const [showPaste, setShowPaste] = useState(false); // the pasted-cookie route while the sign-in window exists
-  const loadEvents = () => {
-    setEvents(null);
+  const [eventsPending, setEventsPending] = useState(false); // the server is still verifying the login or reading the events
+  const eventsPoll = useRef(null);
+  const reportPoll = useRef(null);
+  const eventIdRef = useRef(null);
+  // The server answers at once and reads HLTV in the background; while a
+  // response says `pending` the page asks again a few seconds later.
+  const loadEvents = (quiet = false) => {
+    clearTimeout(eventsPoll.current);
+    if (!quiet) setEvents(null);
     api
-      .get("/my-team/events", 240000)
+      .get("/my-team/events", 60000)
       .then((d) => {
         if (d?.detail && !("connected" in (d || {}))) {
           setAccount({ connected: false, error: String(d.detail) });
           setEvents([]);
+          setEventsPending(false);
           return;
         }
         setAccount({ connected: Boolean(d?.connected), username: d?.username || "", days_left: d?.days_left, error: d?.error || "" });
         const list = Array.isArray(d?.events) ? d.events : [];
         setEvents(list);
-        if (list.length && !eventId) setEventId((list.find((e) => e.status === "live") || list[0]).event_id);
+        setEventsPending(Boolean(d?.pending));
+        if (list.length) setEventId((cur) => cur || (list.find((e) => e.status === "live") || list[0]).event_id);
+        if (d?.pending) eventsPoll.current = setTimeout(() => loadEvents(true), 4000);
       })
       .catch((e) => {
         setAccount({ connected: false, error: e?.message || "" });
         setEvents([]);
+        setEventsPending(false);
       });
   };
-  useEffect(loadEvents, []);
+  useEffect(() => {
+    loadEvents();
+    return () => {
+      clearTimeout(eventsPoll.current);
+      clearTimeout(reportPoll.current);
+    };
+  }, []);
   // Connect: the app opens hltv.org in a window of its own, the user signs in
   // there, and the session cookies come back to be verified and stored by
   // the server for this user. Without the bridge, or when the user chose to
@@ -6399,21 +6420,27 @@ function MyTeamTab() {
     setEventId(null);
     loadEvents();
   };
-  const load = async (id, refresh = false) => {
+  const load = async (id, refresh = false, quiet = false) => {
     if (!id) return;
-    setBusy(true);
+    clearTimeout(reportPoll.current);
+    if (!quiet) setBusy(true);
     try {
-      const d = await api.get(`/my-team/${id}${refresh ? "?refresh=1" : ""}`, 180000);
+      const d = await api.get(`/my-team/${id}${refresh ? "?refresh=1" : ""}`, 60000);
+      if (eventIdRef.current !== id) return; // the user moved to another event meanwhile
       if (d?.players) setReport(d);
+      if (d?.pending) reportPoll.current = setTimeout(() => load(id, false, true), 4000);
+      else setBusy(false);
     } catch {
+      if (eventIdRef.current !== id) return;
       setReport(null);
-    } finally {
       setBusy(false);
     }
   };
   useEffect(() => {
+    eventIdRef.current = eventId;
     setReport(null);
     load(eventId);
+    return () => clearTimeout(reportPoll.current);
   }, [eventId]);
   const fmt1 = (v) => (v == null || Number.isNaN(Number(v)) ? "-" : Number(v).toFixed(1));
   const signed = (v) => (v == null ? "-" : `${Number(v) > 0 ? "+" : ""}${Number(v)}`);
@@ -6478,7 +6505,7 @@ function MyTeamTab() {
       <Section title="My Team">
         <div className="myteam-connect">
           <span className="pill ok">{account.username || "Connected"}</span>
-          <span className="muted">None</span>
+          {!eventsPending && <span className="muted">None</span>}
           <button className="secondary" onClick={disconnectAccount}>
             Disconnect
           </button>

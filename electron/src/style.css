@@ -3213,8 +3213,10 @@ button:disabled {
 
 /* Events table: where each event sits in the valuation lifecycle */
 .valuation-badge { display: inline-block; padding: 3px 9px; font-size: 12px; border: 1px solid #2c3441; color: #c6d0dc; white-space: nowrap; }
-.valuation-badge.ok { border-color: #2f7a4f; color: #7fd8a0; }
-.valuation-badge.pending { border-color: #6b4a1e; color: #ffb27a; }
+.valuation-badge.live { border-color: #1f6f3f; background: #12301f; color: #86efac; }
+.valuation-badge.upcoming { border-color: #92400e; background: #3a2a10; color: #fcd34d; }
+.valuation-badge.finished { border-color: #2c3441; background: #1a2029; color: #8fa3bf; }
+.valuation-badge.off { border-color: #7f1d1d; background: #3b1d24; color: #fca5a5; }
 
 /* Title bar: signed-in user (public build) */
 .titlebar-user { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; -webkit-app-region: no-drag; font-size: 12px; color: #c6d0dc; }

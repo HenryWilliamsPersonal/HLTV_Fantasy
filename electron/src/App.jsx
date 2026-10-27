@@ -6228,6 +6228,19 @@ function PlayoffTab({
 // kind detector reports (kind + group format + combined playoff bracket), so
 // "groups with a combined playoff" reads as exactly that instead of a bare
 // "groups"/"playoff" pick.
+// The Valuation column's word for an event's lifecycle state
+// (event_pipeline.event_status): the long operator label stays as the
+// tooltip. Published means the valuations are there, whatever the stage.
+const valuationLabel = (v) => {
+  if (!v) return "-";
+  if (v.finished) return v.published ? "Finished" : "Not published";
+  if (v.published) return "Published";
+  if (v.status === "manual") return PUBLIC_BUILD ? "Not published" : "Manual";
+  if (v.status === "unsupported") return PUBLIC_BUILD ? "Not published" : "Unsupported";
+  if (v.status === "missing") return "Not published";
+  return "Pending";
+};
+
 const describeEventFormat = (k) => {
   if (!k || !k.kind) return null;
   // The backend now composes an authoritative label from the event page's
@@ -7410,19 +7423,8 @@ function EventsTab({ refreshData, notify, players, teams = [], onOpenPlayer, onO
                       <td>{ev.team_count ?? 0}</td>
                       <td>
                         {ev.valuation ? (
-                          <span
-                            className={`valuation-badge ${ev.valuation.published ? "ok" : "pending"}`}
-                            title={ev.valuation.label}
-                          >
-                            {PUBLIC_BUILD
-                              ? ev.valuation.finished
-                                ? ev.valuation.published
-                                  ? "Finished"
-                                  : "Finished, not published"
-                                : ev.valuation.published
-                                  ? "Published"
-                                  : "Not published yet"
-                              : ev.valuation.label}
+                          <span className={`valuation-badge ${ev.valuation.published ? "ok" : "pending"}`} title={PUBLIC_BUILD ? undefined : ev.valuation.label}>
+                            {valuationLabel(ev.valuation)}
                           </span>
                         ) : (
                           <span className="muted">-</span>

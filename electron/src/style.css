@@ -3441,7 +3441,8 @@ button:disabled {
 .live-score.live { color: #ff8a47; }
 .live-inplay { color: #ff8a47; font-weight: 600; }
 .sw-match.live { border-color: #ff6b1a; }
-.sw-vs.sw-live { color: #ff8a47; font-variant-numeric: tabular-nums; }
+.sw-vs.sw-live { color: #ff8a47; font-variant-numeric: tabular-nums; display: flex; flex-direction: column; align-items: center; gap: 1px; line-height: 1.1; }
+.sw-vs .sw-map { color: #f2f5f9; font-size: 11px; font-weight: 600; text-transform: none; }
 .sw-vs.sw-time { color: #8fa3bf; text-transform: none; font-variant-numeric: tabular-nums; }
 .live-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .live-group h3 { margin-top: 0; }

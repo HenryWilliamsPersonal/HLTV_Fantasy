@@ -7247,6 +7247,7 @@ function LiveEventBody({ ev }) {
   // The board (Swiss or bracket) already shows every result; the results
   // table only stands in for events without one.
   const boardShown = Boolean((ev.group_format === "swiss" && ev.swiss) || (ev.group_format === "bracket" && ev.bracket));
+  const swissShown = Boolean(ev.group_format === "swiss" && ev.swiss);
   const today = new Date().toDateString();
   const upcomingToday = (ev.upcoming_matches || []).filter((m) => m.start_at && new Date(Number(m.start_at) * 1000).toDateString() === today);
   return (
@@ -7296,7 +7297,7 @@ function LiveEventBody({ ev }) {
         </div>
       )}
 
-      {(ev.live_matches || []).length > 0 && (
+      {!swissShown && (ev.live_matches || []).length > 0 && (
         <div className="card sub">
           <h3>In play</h3>
           <table className="live-results clickable compact">
@@ -7335,7 +7336,7 @@ function LiveEventBody({ ev }) {
           </table>
         </div>
       )}
-      {upcomingToday.length > 0 && (
+      {!swissShown && upcomingToday.length > 0 && (
         <div className="card sub">
           <h3>Upcoming today</h3>
           <table className="live-results compact">
@@ -10858,7 +10859,7 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false, 
       title: `Round ${rd.round}`,
       pools: Object.keys(byPool)
         .sort(poolOrder)
-        .map((pool) => ({ pool, matches: byPool[pool].map((m) => ({ key: m.key, a: m.a, b: m.b, known: true, status: m.status || null, start_at: m.start_at || null, maps_a: m.maps_a, maps_b: m.maps_b, score: m.score || null })) })),
+        .map((pool) => ({ pool, matches: byPool[pool].map((m) => ({ key: m.key, a: m.a, b: m.b, known: true, status: m.status || null, start_at: m.start_at || null, maps_a: m.maps_a, maps_b: m.maps_b, map_a: m.map_a, map_b: m.map_b, score: m.score || null })) })),
     });
   });
   (walk?.placeholders || []).forEach((ph) => {
@@ -10927,7 +10928,14 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false, 
                   >
                     {side(m.a, m, m.known)}
                     {m.status === "live" ? (
-                      <span className="sw-vs sw-live">{m.maps_a != null ? `${m.maps_a}–${m.maps_b}` : "live"}</span>
+                      <span className="sw-vs sw-live">
+                        <span>{m.maps_a != null ? `${m.maps_a}–${m.maps_b}` : "live"}</span>
+                        {m.map_a != null && m.map_b != null && (
+                          <span className="sw-map">
+                            {m.map_a}–{m.map_b}
+                          </span>
+                        )}
+                      </span>
                     ) : m.score ? (
                       <span className="sw-vs sw-score">{String(m.score).replace("-", "–")}</span>
                     ) : m.status === "upcoming" && m.start_at ? (

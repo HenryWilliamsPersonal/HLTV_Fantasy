@@ -125,19 +125,29 @@ def migrate_roster_set(result: Dict[str, Any]) -> bool:
     return changed
 
 
+# A stored result bigger than this is not migrated: the migration adds fields
+# to every player of every roster, and SQLite refuses a string over 1 GB
+# ("string or blob too big"), so such a blob could never be saved back — and
+# parsing it costs seconds and gigabytes at every start. (A single-row-era
+# bounty set of 791 MB did exactly that on 2026-10-27; it was deleted.)
+MIGRATE_MAX_BYTES = 400_000_000
+
+
 def migrate_stored_roster_sets() -> Dict[str, int]:
     """Bring every stored roster set (groups, playoff, bounty; every event) up
     to this schema, once: a set whose payload is already marked is not even
-    parsed (the playoff blobs are large)."""
+    parsed (the playoff blobs are large). A set that cannot be migrated is
+    logged and skipped; it never stops the others."""
     from backend.data.db import connect
     from backend.routes import groups, playoff
 
     stores = [groups._GROUPS_BEST_STATE] + [variant["best"] for variant in playoff._STATE_SETS.values()]
     migrated = 0
+    skipped = 0
     for store in stores:
         conn = connect()
         try:
-            rows = conn.execute(f"SELECT singleton_id, payload_json FROM {store.table}").fetchall()
+            rows = conn.execute(f"SELECT singleton_id, payload_json, length({store.result_column}) AS size FROM {store.table}").fetchall()
         except Exception:  # noqa: BLE001 - table not created yet
             rows = []
         finally:
@@ -150,14 +160,24 @@ def migrate_stored_roster_sets() -> Dict[str, int]:
             if int(payload.get("scores_schema") or 0) >= SCHEMA_VERSION:
                 continue
             key = int(row["singleton_id"])
-            latest = store.load(key=key)
-            if not latest:
+            size = int(row["size"] or 0)
+            if size > MIGRATE_MAX_BYTES:
+                logger.warning("Roster scores: %s key %s is %.0f MB, too big to migrate; left as stored", store.table, key, size / 1e6)
+                skipped += 1
                 continue
-            result = latest.get("result") or {}
-            migrate_roster_set(result)
-            new_payload = dict(latest.get("payload") or {})
-            new_payload["scores_schema"] = SCHEMA_VERSION
-            store.save(new_payload, result, key=key)
+            try:
+                latest = store.load(key=key)
+                if not latest:
+                    continue
+                result = latest.get("result") or {}
+                migrate_roster_set(result)
+                new_payload = dict(latest.get("payload") or {})
+                new_payload["scores_schema"] = SCHEMA_VERSION
+                store.save(new_payload, result, key=key)
+            except Exception:  # noqa: BLE001 - one set must not stop the rest
+                logger.warning("Roster scores: could not migrate %s key %s (%.0f MB)", store.table, key, size / 1e6, exc_info=True)
+                skipped += 1
+                continue
             migrated += 1
             logger.info("Roster scores: migrated %s key %s", store.table, key)
-    return {"migrated": migrated}
+    return {"migrated": migrated, "skipped": skipped}

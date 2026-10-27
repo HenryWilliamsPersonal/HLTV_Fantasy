@@ -1115,6 +1115,47 @@ def wipe():
     return {"status": "ok"}
 
 
+@router.post("/field/{event_id}/read")
+def start_field_read(event_id: int, payload: Dict[str, Any] | None = None):
+    """Read every team of the event's fantasy league (services/fantasy_field):
+    league_id and team_id default to a team the app already knows in the
+    event (any connected account's); max_ids caps the id walk."""
+    from backend.data import my_team_cache
+    from backend.data.db import connect
+    from backend.services import fantasy_field
+
+    payload = payload or {}
+    league_id, team_id = payload.get("league_id"), payload.get("team_id")
+    if not league_id or not team_id:
+        conn = connect()
+        try:
+            rows = conn.execute("SELECT team_json FROM my_team_cache WHERE event_id = ? AND team_json IS NOT NULL", (int(event_id),)).fetchall()
+        finally:
+            conn.close()
+        for r in rows:
+            t = my_team_cache._loads(r["team_json"]) or {}
+            if t.get("team_id") and t.get("league_id"):
+                league_id, team_id = league_id or t["league_id"], team_id or t["team_id"]
+                break
+    if not league_id or not team_id:
+        raise HTTPException(status_code=400, detail="league_id and team_id are needed: no team of a connected account is known in this event")
+    return fantasy_field.start_read(int(event_id), int(league_id), int(team_id), int(payload.get("max_ids") or fantasy_field.MAX_IDS))
+
+
+@router.get("/field/{event_id}")
+def get_field_status(event_id: int):
+    from backend.services import fantasy_field
+
+    return fantasy_field.status(int(event_id))
+
+
+@router.post("/field/{event_id}/stop")
+def stop_field_read(event_id: int):
+    from backend.services import fantasy_field
+
+    return {"status": "stopping" if fantasy_field.stop_read(int(event_id)) else "idle"}
+
+
 @router.post("/fetch-page")
 def fetch_page(payload: Dict[str, Any]):
     """Dev helper: fetch one HLTV page through the shared browser — which

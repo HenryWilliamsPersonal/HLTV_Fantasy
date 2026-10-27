@@ -178,10 +178,31 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
             row["total"] += rp + int(wp)
             row["rating_sum"] += float(rating)
 
+    # The field (services/fantasy_field), when it has been read: HLTV's own
+    # rating and team points per player replace the computed ones, plus how
+    # many teams own him and the team where he scored most — with its role
+    # and the boosters it used on him, match by match.
+    from backend.services import fantasy_field
+
+    field = fantasy_field.player_summary(eid) if fantasy_field.status(eid).get("teams_stored") else None
+    field_players = (field or {}).get("players") or {}
     players = []
     for row in rows.values():
         row["rating_avg"] = round(row["rating_sum"] / row["matches"], 2) if row["matches"] else None
         row.pop("rating_sum", None)
+        f = field_players.get(int(row["player_id"]))
+        row["owned"] = int(f["owned"]) if f else 0
+        row["best"] = (f or {}).get("best")
+        if f and f.get("matches"):
+            row["computed_rating_points"], row["computed_win_points"] = row["rating_points"], row["win_points"]
+            row["rating_points"], row["win_points"] = int(f["hltv_rating_points"]), int(f["hltv_win_points"])
+            row["matches"] = max(int(row["matches"]), int(f["matches"]))
+            row["source"] = "hltv"
+        else:
+            row["source"] = "computed"
+        base = int(row["rating_points"]) + int(row["win_points"])
+        row["total"] = int(row["best"]["total"]) if row.get("best") and row["best"].get("total") is not None else base
+        row["base_total"] = base
         players.append(row)
     players.sort(key=lambda r: (-r["total"], -r["rating_points"], r["name"].lower()))
     for i, row in enumerate(players, start=1):
@@ -202,6 +223,7 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
         "players": players,
         "matches_scored": len(finished) - len(missing),
         "matches_pending": len(missing),
-        "components": ["rating", "win"],
+        "components": ["rating", "win"] + (["role", "booster"] if field else []),
+        "field": {k: (field or {}).get(k) for k in ("teams", "league_size", "read_at", "running")} if field else None,
         "read_at": time.time(),
     }

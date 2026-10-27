@@ -7199,6 +7199,12 @@ function LeaderboardPanel({ ev }) {
       {data && (
         <div className="bp-head">
           <span className="pill">{Number(data.matches_scored || 0)} of {Number(data.matches_scored || 0) + Number(data.matches_pending || 0)} matches scored</span>
+          {data.field && (
+            <span className="pill">
+              {Number(data.field.teams || 0).toLocaleString()}
+              {data.field.league_size ? ` of ${Number(data.field.league_size).toLocaleString()}` : ""} teams read
+            </span>
+          )}
         </div>
       )}
       <table className="bp-table lb-table">
@@ -7207,11 +7213,14 @@ function LeaderboardPanel({ ev }) {
             <th className="num tight">#</th>
             <th>Player</th>
             <th>Team</th>
+            {data?.field ? <th className="num">Owned</th> : null}
             <th className="num">Matches</th>
             <th className="num">Rating</th>
             <th className="num">Rating pts</th>
             <th className="num">Win pts</th>
-            <th className="num">Total</th>
+            {data?.field ? <th>Role</th> : null}
+            {data?.field ? <th>Boosters</th> : null}
+            <th className="num">{data?.field ? "Best total" : "Total"}</th>
           </tr>
         </thead>
         <tbody>
@@ -7230,6 +7239,12 @@ function LeaderboardPanel({ ev }) {
                   <span>{p.team}</span>
                 </div>
               </td>
+              {data?.field ? (
+                <td className="num">
+                  {Number(p.owned || 0).toLocaleString()}
+                  {data.field.teams > 0 ? <span className="muted"> {Math.round((100 * Number(p.owned || 0)) / Number(data.field.teams))}%</span> : null}
+                </td>
+              ) : null}
               <td className="num">
                 {p.matches}
                 {p.matches > 0 ? <span className="muted"> ({p.wins}-{p.matches - p.wins})</span> : null}
@@ -7237,6 +7252,28 @@ function LeaderboardPanel({ ev }) {
               <td className="num">{p.rating_avg == null ? "-" : Number(p.rating_avg).toFixed(2)}</td>
               <td className="num">{p.matches > 0 ? signed(p.rating_points) : "-"}</td>
               <td className="num">{p.matches > 0 ? signed(p.win_points) : "-"}</td>
+              {data?.field ? (
+                <td>
+                  {p.best?.role_name ? (
+                    <span>
+                      {p.best.role_name} <span className="muted">{signed(p.best.role_points)}</span>
+                    </span>
+                  ) : (
+                    <span className="muted">-</span>
+                  )}
+                </td>
+              ) : null}
+              {data?.field ? (
+                <td className="lb-boosters">
+                  {p.best && (p.best.boosters || []).some(Boolean) ? (
+                    <span>
+                      {(p.best.boosters || []).map((b) => b || "none").join(", ")} <span className="muted">{signed(p.best.booster_points)}</span>
+                    </span>
+                  ) : (
+                    <span className="muted">-</span>
+                  )}
+                </td>
+              ) : null}
               <td className="num">
                 <strong>{p.matches > 0 ? signed(p.total) : "-"}</strong>
               </td>

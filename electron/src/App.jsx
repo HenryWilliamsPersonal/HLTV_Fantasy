@@ -7049,7 +7049,6 @@ function BoosterPanel({ ev, onOpenSettings }) {
   }
   const players = data.players || [];
   const changes = players.filter((p) => p.change);
-  const anyPlan = players.some((p) => (p.plan || []).length > 0);
   return (
     <div className="stack">
       <Section title="Boosters">
@@ -7124,47 +7123,6 @@ function BoosterPanel({ ev, onOpenSettings }) {
           </tbody>
         </table>
       </Section>
-      {anyPlan && (
-        <Section title="Held back for later">
-          <table className="bp-table">
-            <thead>
-              <tr>
-                <th>Player</th>
-                <th>Round</th>
-                <th>Played</th>
-                <th className="num">Chance</th>
-                <th>Booster</th>
-                <th className="num">Rate (Bo3)</th>
-                <th className="num">Expected</th>
-              </tr>
-            </thead>
-            <tbody>
-              {players
-                .filter((p) => (p.plan || []).length > 0)
-                .flatMap((p) =>
-                  p.plan.map((x) => (
-                    <tr key={`${p.player_id}-${x.slot}`}>
-                      <td>
-                        <strong>{p.name}</strong>
-                      </td>
-                      <td>
-                        {stageName(x.stage)}
-                        {x.bo ? <span className="muted"> · Bo{x.bo}</span> : null}
-                      </td>
-                      <td>{x.condition ? x.condition.charAt(0).toUpperCase() + x.condition.slice(1) : "Always"}</td>
-                      <td className="num">{pct(x.prob)}</td>
-                      <td>
-                        <span className="pill">{x.name}</span>
-                      </td>
-                      <td className="num">{pct(x.rate)}</td>
-                      <td className="num">{fmt1(x.expected * x.prob)}</td>
-                    </tr>
-                  ))
-                )}
-            </tbody>
-          </table>
-        </Section>
-      )}
       {(data.actions || []).length > 0 && (
         <Section title="Applied">
           <table className="bp-table">

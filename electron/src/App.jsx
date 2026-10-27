@@ -7123,34 +7123,6 @@ function BoosterPanel({ ev, onOpenSettings }) {
           </tbody>
         </table>
       </Section>
-      {(data.actions || []).length > 0 && (
-        <Section title="Applied">
-          <table className="bp-table">
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Player</th>
-                <th>Booster</th>
-                <th>Match</th>
-                <th>Result</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.actions.map((x) => (
-                <tr key={x.id}>
-                  <td className="num">{when(x.at)}</td>
-                  <td>{x.player_name || x.player_id}</td>
-                  <td>{x.booster_name || (x.booster_index == null ? "Removed" : x.booster_index)}</td>
-                  <td>{x.opponent ? `vs ${x.opponent}` : x.match_id}</td>
-                  <td>
-                    <span className={`pill${x.ok ? " ok" : " warn"}`}>{x.ok ? (x.trigger === "auto" ? "Set (auto)" : "Set") : x.message || "Failed"}</span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Section>
-      )}
     </div>
   );
 }

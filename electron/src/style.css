@@ -1687,6 +1687,9 @@ button:disabled {
 }
 .group-card-chevron { margin-left: auto; color: #8fa3bf; font-size: 14px; flex: none; }
 .group-brackets { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
+/* the groups share one card: each group is a block with its own heading */
+.group-block + .group-block { margin-top: 20px; padding-top: 16px; border-top: 1px solid #242b35; }
+.group-block-title { font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.05em; color: #f2f5f9; font-size: 17px; margin-top: 12px; }
 .group-bracket-title {
   font-family: var(--display);
   font-stretch: condensed;
@@ -1696,7 +1699,8 @@ button:disabled {
   font-size: 12px;
   margin: 0 0 6px;
 }
-.group-brackets .pb-bracket { padding: 14px 14px 10px; }
+/* inside a group card the bracket needs no box of its own */
+.group-brackets .pb-bracket { padding: 4px 0 6px; border: 0; border-radius: 0; background: none; }
 .group-brackets .pb-round { flex: 1 0 190px; min-width: 190px; }
 .group-brackets .pb-round-title { font-size: 14px; }
 /* 1:1 rounds (lower round 2 / decider): the feeder card sits level with the
@@ -1721,9 +1725,10 @@ button:disabled {
   font-size: 11.5px;
   line-height: 1.25;
 }
-.playoff-place.win { color: #79d69a; }
-.playoff-place.drop { color: #d9a27f; }
-.playoff-place.lose { color: #c97b7b; }
+/* outcome notes: green = goes through, orange = drops to the lower bracket (still alive), red = out */
+.playoff-place.win { color: #3ee07a; }
+.playoff-place.drop { color: #ff8a47; }
+.playoff-place.lose { color: #ff5c5c; }
 
 /* HLTV-style per-team scoreboard in the stored-match modal */
 .modal.match-modal { max-width: 900px; }
@@ -3454,6 +3459,9 @@ button:disabled {
 .live-side.lose { opacity: 0.6; }
 .live-score { font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 17px; min-width: 56px; text-align: center; color: #f2f5f9; font-variant-numeric: tabular-nums; }
 .sw-board.readonly .sw-side { cursor: default; }
+/* on a results board (read-only) the winner is green, not the simulator's orange pick */
+.sw-board.readonly .sw-side.won { border-color: #3ee07a; background: rgba(62, 224, 122, 0.14); }
+.sw-vs.sw-score { color: #f2f5f9; font-size: 14px; font-family: var(--display); font-stretch: condensed; font-weight: 700; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
 .sw-board.readonly .sw-side:disabled { opacity: 1; }
 .sw-board.readonly .sw-side.lost:disabled { opacity: 0.35; }
 .sw-board.readonly .sw-side:hover:not(.won) { border-color: transparent; }
@@ -3550,6 +3558,21 @@ button:disabled {
 .mt-round-place .mt-round-num-value { font-size: 22px; }
 .mt-round-place .mt-round-num-value.strong { color: #ff8a47; }
 .mt-track-time { flex: none; font-weight: 600; font-size: 12.5px; color: #c3cddb; text-align: right; line-height: 1.2; }
+.mt-card-modal { max-width: 560px; }
+/* Boosters panel */
+.bp-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+.bp-head-label { font-weight: 600; color: #e9edf3; }
+.bp-head .bp-apply-all { margin-left: auto; }
+.bp-table th.tight { width: 110px; }
+.bp-table td.tight { white-space: nowrap; text-align: right; }
+.bp-table th.num { width: 96px; }
+.bp-table tbody tr.change td { background: rgba(255, 107, 26, 0.05); }
+.bp-table .secondary { padding: 5px 12px; font-size: 11px; }
+.mt-card-modal .modal-title-wrap h3 { margin: 0 0 2px; font-size: 20px; }
+.mt-card-modal .mt-detail-table { width: 100%; }
+.mt-card-modal .mt-detail-table th, .mt-card-modal .mt-detail-table td { font-size: 15px; padding: 6px 0 6px 16px; }
+.mt-card-modal .mt-detail-table th { font-size: 10.5px; }
+.mt-card-modal .mt-detail-table td.mt-mini-label { font-size: 13px; }
 .mt-round-num { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; min-width: 56px; }
 .mt-round-num-value { font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 19px; color: #e9edf3; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mt-round-num.strong .mt-round-num-value { color: #ff8a47; }

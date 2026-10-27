@@ -1,0 +1,372 @@
+"""Booster advice for the user's HLTV fantasy team in an event, and the
+hands-off mode that sets the advised boosters on HLTV for the rest of it.
+
+HLTV's rule (its own front end): every booster can be used once per team;
+a player carries one booster per match, set before the match starts. The
+advice is the roster-wide assignment of the boosters still free to the
+players' remaining matches that maximises expected booster points
+(5 × the player's trigger rate × the chance his team plays the match),
+with the solver the Top 5 use; the suggestion for now is each player's
+booster on his coming match.
+
+Read as the user from the fantasy front end's own JSON feeds:
+  /fantasy/{eid}/league/{lid}/overview/{tid}/json — the players, each one's
+    coming match (matchId, opponent, startTime, isLive, assignedBooster,
+    canAssignBooster), the booster options with their state (FREE when
+    still unused) and the player tracker;
+  /fantasy/{eid}/league/{lid}/details/{tid}/json — rounds and used boosters.
+Set with POST /fantasy/{eid}/teams/boost {playerId, teamId, leagueId,
+matchId, boostId}, the same call the page makes (boostId null removes).
+HLTV's booster ids are not the engine's 0-17: they are matched by name,
+with HLTV's id order as the fallback.
+"""
+from __future__ import annotations
+
+import html as htmllib
+import json
+import logging
+import re
+import threading
+import time
+from typing import Any, Dict, List, Optional
+
+from backend.services.swiss_booster_assignment import BOOSTER_NAMES, BOOSTER_POINT_VALUE, _max_weight_assignment, parse_booster_rates
+
+logger = logging.getLogger(__name__)
+
+# HLTV's booster ids in the engine's 0..17 order (seen 2026-10-27).
+HLTV_ID_BY_INDEX = [2, 3, 5, 8, 9, 13, 16, 18, 19, 20, 21, 22, 23, 26, 27, 28, 29, 33]
+FEED_MAX_AGE = 120.0
+AUTO_TICK_SECONDS = 300.0
+
+_POST_JS = """
+const [url, body, done] = arguments;
+fetch(url, {method: 'POST', credentials: 'same-origin',
+            headers: {'Accept': 'application/json', 'Content-Type': 'application/json; charset=UTF-8'},
+            body: body})
+  .then((r) => r.text().then((t) => done({status: r.status, text: t.slice(0, 4000)})))
+  .catch((e) => done({status: 0, text: String(e)}));
+"""
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z]", "", str(text or "").lower().replace("mister/miss", "mister"))
+
+
+def _json_from_page(page: str) -> Optional[Dict[str, Any]]:
+    """The JSON a browser shows for a JSON URL (wrapped in <pre>)."""
+    m = re.search(r"<pre[^>]*>(.*?)</pre>", page or "", flags=re.S)
+    raw = htmllib.unescape(m.group(1)) if m else (page or "")
+    try:
+        value = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _index_for(booster: Dict[str, Any]) -> Optional[int]:
+    """The engine's booster index for one of HLTV's booster objects."""
+    want = _norm((booster or {}).get("name"))
+    for idx, name in BOOSTER_NAMES.items():
+        if _norm(name) == want:
+            return int(idx)
+    try:
+        return HLTV_ID_BY_INDEX.index(int((booster or {}).get("id")))
+    except (ValueError, TypeError):
+        return None
+
+
+def _hltv_id(index: int, options: List[Dict[str, Any]]) -> int:
+    for o in options:
+        if o.get("index") == int(index) and o.get("hltv_id") is not None:
+            return int(o["hltv_id"])
+    return int(HLTV_ID_BY_INDEX[int(index)])
+
+
+def _team_of(user_key: str, event_id: int) -> Dict[str, Any]:
+    from backend.data import my_team_cache
+    from backend.services import my_team
+
+    mine = (my_team_cache.get(user_key, int(event_id)) or {}).get("team")
+    if mine:
+        return mine
+    teams = my_team.my_teams_for([int(event_id)], user_key, 3600.0).get(int(event_id)) or []
+    if not teams:
+        raise RuntimeError("No team of yours in this event")
+    my_team_cache.save_team(user_key, int(event_id), teams[0])
+    return teams[0]
+
+
+def _feed_urls(event_id: int, mine: Dict[str, Any]) -> Dict[str, str]:
+    base = f"https://www.hltv.org/fantasy/{int(event_id)}/league/{mine['league_id']}"
+    return {"overview": f"{base}/overview/{mine['team_id']}/json", "details": f"{base}/details/{mine['team_id']}/json"}
+
+
+def feeds(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> Dict[str, Any]:
+    from backend.services import my_team
+
+    mine = _team_of(user_key, event_id)
+    urls = _feed_urls(event_id, mine)
+    pages = my_team._fetch_many([urls["overview"], urls["details"]], max_age, user_key)
+    return {"team": mine, "overview": _json_from_page(pages.get(urls["overview"], "")), "details": _json_from_page(pages.get(urls["details"], ""))}
+
+
+def drop_feeds(event_id: int, user_key: str) -> None:
+    """Forget the cached feeds and reports so the next read is fresh."""
+    from backend.services import my_team
+
+    try:
+        mine = _team_of(user_key, event_id)
+        urls = _feed_urls(event_id, mine)
+        base = f"https://www.hltv.org/fantasy/{int(event_id)}/league/{mine['league_id']}/team/{mine['team_id']}"
+        with my_team._LOCK:
+            for url in (urls["overview"], urls["details"], base, base + "/details"):
+                my_team._CACHE.pop((user_key, url), None)
+            for k in [k for k in my_team._RESULTS if k.split("|")[1:3] == [user_key, str(int(event_id))]]:
+                my_team._RESULTS.pop(k, None)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not drop the cached feeds", exc_info=True)
+
+
+def _booster_obj(b: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not b:
+        return None
+    idx = _index_for(b)
+    return {"index": idx, "hltv_id": b.get("id"), "name": BOOSTER_NAMES.get(idx, b.get("name")) if idx is not None else b.get("name")}
+
+
+def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> Dict[str, Any]:
+    """The advice: per player his coming match, the booster on it, the
+    suggested booster (with its rate and expected points) and the later
+    plan; plus the pool of free boosters."""
+    from backend.data.player_db import get_player
+    from backend.routes.groups import _GROUPS_STATE
+    from backend.services import event_rosters
+
+    eid = int(event_id)
+    f = feeds(eid, user_key, max_age)
+    ov = f.get("overview") or {}
+    if not ov.get("teamOverviewPlayers"):
+        raise RuntimeError("HLTV gave no team data")
+    options = []
+    for o in ov.get("assignableBoostOptions") or []:
+        b = o.get("booster") or {}
+        idx = _index_for(b)
+        options.append({"index": idx, "hltv_id": b.get("id"), "name": BOOSTER_NAMES.get(idx, b.get("name")) if idx is not None else b.get("name"), "state": o.get("state"), "free": str(o.get("state") or "").upper() == "FREE"})
+    free = {o["index"] for o in options if o["free"] and o["index"] is not None}
+
+    results = ((_GROUPS_STATE.load(key=eid) or {}).get("results")) or {}
+    stage_stats = results.get("stage_stats") or {}
+    stage_order = [str(s.get("key")) for s in (stage_stats.get("stages") or []) if s.get("key") and s.get("key") != "padding"]
+    stage_teams = stage_stats.get("teams") or {}
+    team_of_player: Dict[int, int] = {}
+    for tid, pids in (event_rosters.rosters(eid) or {}).items():
+        for pid in pids:
+            team_of_player[int(pid)] = int(tid)
+    for tid, tv in (results.get("teams") or {}).items():
+        for pid in (tv.get("players") or {}):
+            team_of_player.setdefault(int(pid), int(tid))
+
+    finished_by_pid: Dict[int, int] = {}
+    for item in ov.get("playerTrackerItems") or []:
+        if str(item.get("type") or "").endswith("FinishedMatch"):
+            pid = ((item.get("player") or {}).get("fantasyPlayerId") or {}).get("playerId")
+            if pid is not None:
+                finished_by_pid[int(pid)] = finished_by_pid.get(int(pid), 0) + 1
+
+    def play_prob(tid: Optional[int], stage_key: str) -> float:
+        rounds = ((stage_teams.get(str(tid)) or {}).get("rounds") or {}) if tid is not None else {}
+        return float((rounds.get(stage_key) or {}).get("play") or 0.0)
+
+    players: List[Dict[str, Any]] = []
+    columns: List[Dict[str, Any]] = []  # (player, slot) columns for the solver
+    pool = set(free)
+    for p in ov.get("teamOverviewPlayers") or []:
+        pl = p.get("player") or {}
+        pid = (pl.get("fantasyPlayerId") or {}).get("playerId")
+        pid = int(pid) if pid is not None else None
+        name = str(pl.get("name") or "")
+        tid = team_of_player.get(pid) if pid is not None else None
+        row = get_player(pid) if pid is not None else None
+        rates = parse_booster_rates((row or {}).get("boosters_json")) if row else {}
+        um = ((p.get("upcomingMatches") or [None])[0]) or None
+        assigned = _booster_obj(um.get("assignedBooster")) if um else None
+        match = None
+        if um:
+            match = {
+                "match_id": ((um.get("matchId") or {}).get("id")),
+                "opponent": ((um.get("opponent") or {}).get("name")),
+                "start_at": (float(um["startTime"]) / 1000.0) if um.get("startTime") else None,
+                "live": bool(um.get("isLive")),
+                "assignable": bool(um.get("canAssignBooster")) and not bool(um.get("isLive")),
+                "url": um.get("link"),
+            }
+        played = finished_by_pid.get(pid, 0) if pid is not None else 0
+        entry = {
+            "player_id": pid, "name": name, "team_id": tid,
+            "match": match, "assigned": assigned, "played": played,
+            "rates": {int(k): float(v) for k, v in rates.items()},
+            "suggestion": None, "plan": [],
+        }
+        players.append(entry)
+        # a booster already on the coming match may still be changed: it is in the pool
+        if assigned and assigned.get("index") is not None and match and match["assignable"]:
+            pool.add(int(assigned["index"]))
+        if not match or not rates:
+            continue
+        # slot 0 = the coming match; later slots = the rounds after it,
+        # weighted by the chance of playing them given the current round
+        here = stage_order[played] if played < len(stage_order) else None
+        base_prob = play_prob(tid, here) if here else 0.0
+        if match["assignable"]:
+            columns.append({"player_id": pid, "slot": 0, "prob": 1.0, "stage": here})
+        for k in range(played + 1, len(stage_order)):
+            prob = play_prob(tid, stage_order[k])
+            rel = (prob / base_prob) if base_prob > 0 else prob
+            if rel > 0.01:
+                columns.append({"player_id": pid, "slot": k - played, "prob": min(1.0, rel), "stage": stage_order[k]})
+
+    boosters = sorted(pool)
+    rates_of = {p["player_id"]: p["rates"] for p in players}
+    if boosters and columns:
+        weights = [[float(col["prob"]) * float(rates_of.get(col["player_id"], {}).get(b, 0.0)) * BOOSTER_POINT_VALUE for col in columns] for b in boosters]
+        for b_row, c, w in _max_weight_assignment(weights):
+            if w <= 1e-9:
+                continue
+            col = columns[c]
+            b = boosters[b_row]
+            entry = next(p for p in players if p["player_id"] == col["player_id"])
+            rate = float(rates_of.get(col["player_id"], {}).get(b, 0.0))
+            item = {"index": b, "hltv_id": _hltv_id(b, options), "name": BOOSTER_NAMES.get(b), "rate": round(rate, 3), "expected": round(rate * BOOSTER_POINT_VALUE, 2), "prob": round(float(col["prob"]), 3), "stage": col["stage"]}
+            if col["slot"] == 0:
+                entry["suggestion"] = item
+            else:
+                entry["plan"].append({**item, "slot": col["slot"]})
+    for p in players:
+        p["plan"].sort(key=lambda x: x["slot"])
+        s, a = p.get("suggestion"), p.get("assigned")
+        p["change"] = bool(s and p["match"] and p["match"]["assignable"] and (not a or a.get("index") != s["index"]))
+    return {
+        "event_id": eid,
+        "team": f["team"],
+        "players": players,
+        "pool": [o for o in options],
+        "free_count": len(free),
+        "read_at": time.time(),
+    }
+
+
+def apply(event_id: int, user_key: str, assignments: List[Dict[str, Any]], trigger: str = "manual") -> List[Dict[str, Any]]:
+    """Set boosters on HLTV as the user: assignments = [{player_id, match_id,
+    booster_index}] (booster_index None removes). Each result carries ok and
+    HLTV's answer; every attempt is logged."""
+    from backend.data import my_team_settings
+    from backend.services import my_team
+
+    eid = int(event_id)
+    mine = _team_of(user_key, eid)
+    f = feeds(eid, user_key, FEED_MAX_AGE)
+    options = []
+    for o in ((f.get("overview") or {}).get("assignableBoostOptions") or []):
+        b = o.get("booster") or {}
+        options.append({"index": _index_for(b), "hltv_id": b.get("id")})
+    names = {p["player_id"]: p for p in suggestions(eid, user_key, FEED_MAX_AGE)["players"]} if assignments else {}
+    url = f"https://www.hltv.org/fantasy/{eid}/teams/boost"
+
+    def run(driver, _username):
+        out = []
+        for a in assignments:
+            idx = a.get("booster_index")
+            # the ids are objects, as in HLTV's own feeds (FantasyPlayerId
+            # {playerId}, FantasyTeamId {id}, LeagueId {id}, MatchId {id})
+            body = {
+                "playerId": {"playerId": int(a["player_id"])}, "teamId": {"id": int(mine["team_id"])}, "leagueId": {"id": int(mine["league_id"])},
+                "matchId": {"id": int(a["match_id"])}, "boostId": (_hltv_id(int(idx), options) if idx is not None else None),
+            }
+            try:
+                driver.set_script_timeout(30)
+                res = driver.execute_async_script(_POST_JS, url, json.dumps(body)) or {}
+            except Exception as exc:  # noqa: BLE001
+                res = {"status": 0, "text": str(exc)}
+            status = int(res.get("status") or 0)
+            text = str(res.get("text") or "")
+            error = None
+            try:
+                parsed = json.loads(text) if text else {}
+                error = parsed.get("error") if isinstance(parsed, dict) else None
+            except Exception:  # noqa: BLE001
+                parsed = {}
+            ok = 200 <= status < 300 and not error
+            out.append({"player_id": int(a["player_id"]), "match_id": int(a["match_id"]), "booster_index": idx, "ok": ok, "status": status, "message": str(error or ("" if ok else text[:200]))})
+        return out
+
+    results = my_team.with_personal_session(run, cookies=my_team.cookies_for(user_key), verify=True) or []
+    for r in results:
+        p = names.get(r["player_id"]) or {}
+        my_team_settings.add_action(
+            user_key, eid, trigger=trigger, player_id=r["player_id"], player_name=p.get("name"), match_id=r["match_id"],
+            opponent=((p.get("match") or {}).get("opponent")), booster_index=r["booster_index"],
+            booster_name=BOOSTER_NAMES.get(int(r["booster_index"])) if r["booster_index"] is not None else None,
+            ok=r["ok"], message=r["message"],
+        )
+    drop_feeds(eid, user_key)
+    return results
+
+
+def apply_suggestions(event_id: int, user_key: str, trigger: str = "manual") -> List[Dict[str, Any]]:
+    """Set every suggested booster whose match can still take one and that
+    differs from what is on it."""
+    sug = suggestions(int(event_id), user_key, 0.0)
+    todo = [
+        {"player_id": p["player_id"], "match_id": p["match"]["match_id"], "booster_index": p["suggestion"]["index"]}
+        for p in sug["players"]
+        if p.get("change") and p.get("match") and p["match"].get("match_id") is not None
+    ]
+    if not todo:
+        return []
+    return apply(int(event_id), user_key, todo, trigger=trigger)
+
+
+# ---- auto mode: a loop that applies the advice for everyone who switched it on
+_stop = threading.Event()
+_thread: Optional[threading.Thread] = None
+
+
+def auto_tick() -> None:
+    from backend.data import my_team_settings
+    from backend.services import live_state
+
+    pairs = my_team_settings.auto_pairs()
+    if not pairs:
+        return
+    current = {int(e["event_id"]): e.get("status") for e in live_state.live_events()}
+    for user_key, eid in pairs:
+        if current.get(int(eid)) not in ("live", "upcoming"):
+            continue
+        try:
+            done = apply_suggestions(int(eid), user_key, trigger="auto")
+            if done:
+                logger.info("Auto boosters for %s in event %s: %s", user_key, eid, [(d["player_id"], d["booster_index"], d["ok"]) for d in done])
+        except Exception:  # noqa: BLE001
+            logger.warning("Auto boosters failed for %s in event %s", user_key, eid, exc_info=True)
+
+
+def _loop() -> None:
+    while not _stop.wait(AUTO_TICK_SECONDS):
+        try:
+            auto_tick()
+        except Exception:  # noqa: BLE001
+            logger.exception("Booster auto tick failed")
+
+
+def start() -> None:
+    global _thread
+    if _thread is not None and _thread.is_alive():
+        return
+    _stop.clear()
+    _thread = threading.Thread(target=_loop, name="booster-auto", daemon=True)
+    _thread.start()
+
+
+def stop() -> None:
+    _stop.set()

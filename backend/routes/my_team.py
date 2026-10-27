@@ -74,6 +74,81 @@ def disconnect_session(request: Request) -> dict:
     return {"status": "ok", "connected": False}
 
 
+def _connected_key(request: Request) -> str:
+    key = _user_key(request)
+    status = my_team.status_for(key)
+    if not status.get("connected"):
+        raise HTTPException(status_code=409, detail=str(status.get("error") or "No HLTV login connected"))
+    return key
+
+
+@router.get("/{event_id}/boosters")
+def get_boosters(request: Request, event_id: int, refresh: bool = False) -> dict:
+    """The booster advice for the user's team in the event (background read,
+    `pending` meanwhile), with the auto-mode flag and the last actions."""
+    from backend.data import my_team_settings
+    from backend.services import booster_advisor
+
+    key = _connected_key(request)
+    job = my_team.run_in_background(
+        my_team._job_key("boosters", key, int(event_id)),
+        lambda: booster_advisor.suggestions(int(event_id), key, 0.0),
+        booster_advisor.FEED_MAX_AGE,
+        force=refresh,
+    )
+    out: Dict[str, Any] = dict(job.get("value") or {})
+    out.update({
+        "pending": bool(job.get("pending")),
+        "error": job.get("error"),
+        "auto": my_team_settings.auto_enabled(key, int(event_id)),
+        "actions": my_team_settings.actions(key, int(event_id)),
+    })
+    return out
+
+
+@router.post("/{event_id}/boosters/apply")
+def apply_boosters(request: Request, event_id: int, payload: Dict[str, Any]) -> dict:
+    """Set boosters on HLTV: {assignments: [{player_id, match_id,
+    booster_index}]} or {all: true} for every suggestion that differs."""
+    from backend.services import booster_advisor
+
+    key = _connected_key(request)
+    try:
+        if (payload or {}).get("all"):
+            results = booster_advisor.apply_suggestions(int(event_id), key)
+        else:
+            assignments = [a for a in ((payload or {}).get("assignments") or []) if a.get("player_id") is not None and a.get("match_id") is not None]
+            if not assignments:
+                raise HTTPException(status_code=400, detail="Nothing to assign")
+            results = booster_advisor.apply(int(event_id), key, assignments)
+    except my_team.PersonalSessionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not set the boosters: {exc}") from exc
+    with my_team._LOCK:
+        my_team._RESULTS.pop(my_team._job_key("boosters", key, int(event_id)), None)
+    return {"status": "ok", "results": results}
+
+
+@router.post("/{event_id}/boosters/auto")
+def set_auto_boosters(request: Request, event_id: int, payload: Dict[str, Any]) -> dict:
+    """Switch auto mode: the app sets the advised boosters on HLTV for the
+    rest of the event, starting now."""
+    import threading
+
+    from backend.data import my_team_settings
+    from backend.services import booster_advisor
+
+    key = _connected_key(request)
+    enabled = bool((payload or {}).get("enabled"))
+    my_team_settings.set_auto(key, int(event_id), enabled)
+    if enabled:
+        threading.Thread(target=lambda: booster_advisor.apply_suggestions(int(event_id), key, trigger="auto"), name=f"booster-auto-{key}", daemon=True).start()
+    return {"status": "ok", "auto": enabled}
+
+
 @router.get("/{event_id}")
 def get_my_team(request: Request, event_id: int, refresh: bool = False) -> dict:
     """The user's team in the event, or {pending: true} while it is being

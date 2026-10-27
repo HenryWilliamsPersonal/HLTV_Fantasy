@@ -62,6 +62,7 @@ PUBLIC_ROUTES: List[Tuple[str, str]] = [
     # My Team: each signed-in user's own HLTV account (routes require a user)
     ("GET", r"/my-team(/.*)?"),
     ("POST", r"/my-team/session"),
+    ("POST", r"/my-team/\d+/boosters/(apply|auto)"),
     ("DELETE", r"/my-team/session"),
 ]
 

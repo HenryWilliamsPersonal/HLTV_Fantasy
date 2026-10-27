@@ -6303,6 +6303,7 @@ const LIVE_GROUPS = [
 const LIVE_EVENT_SUBTABS = [
   { key: "event", label: "Event" },
   { key: "myteam", label: "My Team" },
+  { key: "boosters", label: "Boosters" },
 ];
 
 function LiveTab({ onOpenSettings }) {
@@ -6376,7 +6377,7 @@ function LiveTab({ onOpenSettings }) {
             </button>
           ))}
         </div>
-        {sub === "myteam" ? <MyTeamPanel ev={ev} onOpenSettings={onOpenSettings} /> : detail ? <LiveEventBody ev={detail} /> : null}
+        {sub === "myteam" ? <MyTeamPanel ev={ev} onOpenSettings={onOpenSettings} /> : sub === "boosters" ? <BoosterPanel ev={ev} onOpenSettings={onOpenSettings} /> : detail ? <LiveEventBody ev={detail} /> : null}
       </div>
     );
   }
@@ -6565,6 +6566,7 @@ function MyTeamPanel({ ev, onOpenSettings }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [matchRow, setMatchRow] = useState(null);
+  const [cardDetail, setCardDetail] = useState(null); // the match card whose breakdown is open
   const poll = useRef(null);
   const idRef = useRef(null);
   const load = async (id, refresh = false, quiet = false) => {
@@ -6690,11 +6692,10 @@ function MyTeamPanel({ ev, onOpenSettings }) {
     return null;
   };
   const resultWord = (t) => (t.result === "WON" ? "Won" : t.result === "LOST" ? "Lost" : t.result === "NEXT" ? "Next match" : t.result ? t.result.charAt(0) + t.result.slice(1).toLowerCase() : "-");
-  // One player's match card: portrait, name and result on top; underneath a
-  // small table of the match's points by component (rating, team, role,
-  // booster, total) — actual, the model's expectation for the round, and
-  // the difference. A coming match shows only the expectation. A played
-  // card opens the scoreboard.
+  // One player's match card: portrait, name and result; on the right the
+  // points scored, the model's expectation for the round and the difference
+  // (a coming match: its start time and the expectation). Clicking a card
+  // opens the breakdown by component (rating, team, role, booster).
   const COMPS = [
     ["rating", "Rating"],
     ["team", "Team"],
@@ -6706,12 +6707,11 @@ function MyTeamPanel({ ev, onOpenSettings }) {
   const diffClass = (v) => (v == null ? "" : Number(v) < 0 ? " neg" : Number(v) > 0 ? " pos" : "");
   const trackCard = (t, i) => {
     const played = t.result === "WON" || t.result === "LOST";
-    const exp = t.expected_parts || null;
-    const diff = t.difference_parts || null;
+    const openable = Boolean(t.expected_parts) || played;
     return (
-      <div className={`mt-track${played && t.match_url ? " clickable" : ""}${t.result === "NEXT" ? " next" : ""}`} key={`${t.player_id}-${i}`} onClick={() => played && openMatch(t)}>
+      <div className={`mt-track${openable ? " clickable" : ""}${t.result === "NEXT" ? " next" : ""}`} key={`${t.player_id}-${i}`} onClick={() => openable && setCardDetail(t)}>
         <div className="mt-track-top">
-          <PlayerPhoto playerId={t.player_id} name={t.name} size={48} className="mt-track-photo" />
+          <PlayerPhoto playerId={t.player_id} name={t.name} size={56} className="mt-track-photo" />
           <div className="mt-track-text">
             <div className="mt-track-name">{t.name}</div>
             <div className={`mt-track-result${t.result === "WON" ? " won" : t.result === "LOST" ? " lost" : ""}`}>
@@ -6722,56 +6722,90 @@ function MyTeamPanel({ ev, onOpenSettings }) {
             </div>
           </div>
           {t.result === "NEXT" ? (
-            <div className="mt-track-time">{(t.start_text || "").replace(" - ", "\n").split("\n").map((part, k) => <div key={k}>{part}</div>)}</div>
+            <div className="mt-track-pts">
+              <div className="mt-track-time">{(t.start_text || "").replace(" - ", "\n").split("\n").map((part, k) => <div key={k}>{part}</div>)}</div>
+              {t.expected != null && <div className="mt-track-exp">exp {fmt1(t.expected)}</div>}
+            </div>
           ) : (
-            <div className={`mt-track-points${Number(t.points) < 0 ? " neg" : ""}`}>{t.points ?? 0} pts</div>
+            <div className="mt-track-pts">
+              <div className={`mt-track-points${Number(t.points) < 0 ? " neg" : ""}`}>{t.points ?? 0} pts</div>
+              {t.expected != null && <div className="mt-track-exp">exp {fmt1(t.expected)}</div>}
+              {t.difference != null && <div className={`mt-track-diff${diffClass(t.difference)}`}>{signed(t.difference)}</div>}
+            </div>
           )}
         </div>
-        <table className="mt-mini">
-          <thead>
-            <tr>
-              <th></th>
-              {COMPS.map(([k, label]) => (
-                <th key={k} className={k === "total" ? "strong" : ""}>
-                  {label}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {played && (
-              <tr>
-                <td className="mt-mini-label">Actual</td>
-                {COMPS.map(([k]) => (
-                  <td key={k} className={k === "total" ? "strong" : ""}>
-                    {signed(actualOf(t, k))}
-                  </td>
-                ))}
-              </tr>
-            )}
-            <tr>
-              <td className="mt-mini-label">Expected</td>
-              {COMPS.map(([k]) => (
-                <td key={k} className={k === "total" ? "strong" : ""}>
-                  {exp && exp[k] != null ? fmt1(exp[k]) : "-"}
-                </td>
-              ))}
-            </tr>
-            {played && diff && (
-              <tr>
-                <td className="mt-mini-label">Diff</td>
-                {COMPS.map(([k]) => (
-                  <td key={k} className={`${diffClass(diff[k])}${k === "total" ? " strong" : ""}`}>
-                    {diff[k] != null ? signed(diff[k]) : "-"}
-                  </td>
-                ))}
-              </tr>
-            )}
-          </tbody>
-        </table>
       </div>
     );
   };
+  // The card's breakdown: the match's points by component against the
+  // model's expectation for the round.
+  const cardDetailModal = cardDetail && (
+    <div className="modal-backdrop" onClick={() => setCardDetail(null)}>
+      <div className="modal mt-card-modal" onClick={(e) => e.stopPropagation()}>
+        <header className="modal-header">
+          <div className="modal-title-wrap">
+            <PlayerPhoto playerId={cardDetail.player_id} name={cardDetail.name} size={44} />
+            <div>
+              <h3>{cardDetail.name}</h3>
+              <div className={`mt-track-result${cardDetail.result === "WON" ? " won" : cardDetail.result === "LOST" ? " lost" : ""}`}>
+                {cardDetail.opponent_hltv_team_id ? <TeamLogo hltvTeamId={cardDetail.opponent_hltv_team_id} name={cardDetail.opponent} size={18} /> : null}
+                {resultWord(cardDetail)}
+                {cardDetail.opponent ? ` ${cardDetail.result === "NEXT" ? "·" : "vs"} ${cardDetail.opponent}` : ""}
+                {cardDetail.result === "NEXT" && cardDetail.start_text ? ` · ${cardDetail.start_text}` : ""}
+              </div>
+            </div>
+          </div>
+          <button className="close" onClick={() => setCardDetail(null)} aria-label="Close">
+            ×
+          </button>
+        </header>
+        <div className="modal-body">
+          <table className="mt-mini mt-detail-table">
+            <thead>
+              <tr>
+                <th></th>
+                {COMPS.map(([k, label]) => (
+                  <th key={k} className={k === "total" ? "strong" : ""}>
+                    {label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(cardDetail.result === "WON" || cardDetail.result === "LOST") && (
+                <tr>
+                  <td className="mt-mini-label">Actual</td>
+                  {COMPS.map(([k]) => (
+                    <td key={k} className={k === "total" ? "strong" : ""}>
+                      {signed(actualOf(cardDetail, k))}
+                    </td>
+                  ))}
+                </tr>
+              )}
+              <tr>
+                <td className="mt-mini-label">Expected</td>
+                {COMPS.map(([k]) => (
+                  <td key={k} className={k === "total" ? "strong" : ""}>
+                    {cardDetail.expected_parts && cardDetail.expected_parts[k] != null ? fmt1(cardDetail.expected_parts[k]) : "-"}
+                  </td>
+                ))}
+              </tr>
+              {cardDetail.difference_parts && (
+                <tr>
+                  <td className="mt-mini-label">Difference</td>
+                  {COMPS.map(([k]) => (
+                    <td key={k} className={`${diffClass(cardDetail.difference_parts[k])}${k === "total" ? " strong" : ""}`}>
+                      {cardDetail.difference_parts[k] != null ? signed(cardDetail.difference_parts[k]) : "-"}
+                    </td>
+                  ))}
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
   return (
     <div className="stack">
       <Section title={report.team?.team_name || "My Team"}>
@@ -6925,6 +6959,252 @@ function MyTeamPanel({ ev, onOpenSettings }) {
         </Section>
       )}
       {matchRow && <MatchDetailModal row={matchRow} teams={teamRows} players={[]} onClose={() => setMatchRow(null)} />}
+      {cardDetailModal}
+    </div>
+  );
+}
+
+// Boosters on a live event page: which booster each of the user's players
+// should carry into his coming match (the roster-wide plan over the
+// boosters still free, GET /my-team/{id}/boosters), what is on HLTV now,
+// Apply for one or all, and the auto switch that has the server set them
+// for the rest of the event. The server reads in the background; the
+// panel polls while pending and re-asks when the live stream reports the
+// event changed.
+function BoosterPanel({ ev, onOpenSettings }) {
+  const eventId = ev?.event_id;
+  const [data, setData] = useState(null);
+  const [state, setState] = useState("loading"); // loading | ready | disconnected | error
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState("");
+  const poll = useRef(null);
+  const idRef = useRef(null);
+  const load = async (id, refresh = false, quiet = false) => {
+    if (!id) return;
+    clearTimeout(poll.current);
+    try {
+      const d = await api.get(`/my-team/${id}/boosters${refresh ? "?refresh=1" : ""}`, 60000);
+      if (idRef.current !== id) return;
+      if (Array.isArray(d?.players)) {
+        setData(d);
+        setState("ready");
+      } else if (d?.error) {
+        setError(String(d.error));
+        setState(/HLTV login|Sign in|no longer accepts/i.test(String(d.error)) ? "disconnected" : "error");
+      }
+      if (d?.pending) poll.current = setTimeout(() => load(id, false, true), 4000);
+    } catch (e) {
+      if (idRef.current !== id) return;
+      const msg = String(e?.message || "");
+      setError(msg || "Could not read HLTV");
+      setState(/HLTV login|Sign in|no longer accepts/i.test(msg) ? "disconnected" : "error");
+    }
+  };
+  useEffect(() => {
+    idRef.current = eventId;
+    setData(null);
+    setState("loading");
+    setError("");
+    load(eventId);
+    return () => clearTimeout(poll.current);
+  }, [eventId]);
+  useLiveStream((change) => {
+    if (idRef.current && Number(change.event_id) === Number(idRef.current)) load(idRef.current, false, true);
+  });
+  const applyAll = async () => {
+    setBusy("all");
+    try {
+      await api.post(`/my-team/${eventId}/boosters/apply`, { all: true }, 120000);
+      await load(eventId, true, true);
+    } catch (e) {
+      setError(e?.message || "Could not set the boosters");
+    } finally {
+      setBusy("");
+    }
+  };
+  const applyOne = async (p) => {
+    if (!p?.suggestion || !p?.match) return;
+    setBusy(String(p.player_id));
+    try {
+      await api.post(`/my-team/${eventId}/boosters/apply`, { assignments: [{ player_id: p.player_id, match_id: p.match.match_id, booster_index: p.suggestion.index }] }, 120000);
+      await load(eventId, true, true);
+    } catch (e) {
+      setError(e?.message || "Could not set the booster");
+    } finally {
+      setBusy("");
+    }
+  };
+  const toggleAuto = async (enabled) => {
+    setBusy("auto");
+    try {
+      await api.post(`/my-team/${eventId}/boosters/auto`, { enabled }, 30000);
+      setData((cur) => (cur ? { ...cur, auto: enabled } : cur));
+      if (enabled) poll.current = setTimeout(() => load(eventId, true, true), 8000);
+    } catch (e) {
+      setError(e?.message || "Could not change auto mode");
+    } finally {
+      setBusy("");
+    }
+  };
+  const when = (ts) => {
+    if (!(Number(ts) > 0)) return "";
+    const d = new Date(Number(ts) * 1000);
+    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+  const pct = (v) => (v == null ? "-" : `${Math.round(Number(v) * 100)}%`);
+  const fmt1 = (v) => (v == null || Number.isNaN(Number(v)) ? "-" : Number(v).toFixed(1));
+  const stageName = (s) => (typeof s === "string" && /^r\d+$/.test(s) ? `Round ${s.slice(1)}` : s || "");
+  if (!data) {
+    return (
+      <Section title="Boosters">
+        <div className="myteam-connect">
+          {state === "loading" && <span className="pill">Reading…</span>}
+          {(state === "disconnected" || state === "error") && <span className="pill warn">{error || "No HLTV account connected"}</span>}
+          {state === "disconnected" && onOpenSettings && (
+            <button className="secondary" onClick={onOpenSettings}>
+              Settings
+            </button>
+          )}
+          {state === "error" && (
+            <button className="secondary" onClick={() => load(eventId, true)}>
+              Refresh
+            </button>
+          )}
+        </div>
+      </Section>
+    );
+  }
+  const players = data.players || [];
+  const changes = players.filter((p) => p.change);
+  const anyPlan = players.some((p) => (p.plan || []).length > 0);
+  return (
+    <div className="stack">
+      <Section title="Boosters">
+        <div className="bp-head">
+          <label className="switch" title={data.auto ? "Auto-apply on" : "Auto-apply off"}>
+            <input type="checkbox" checked={Boolean(data.auto)} onChange={(e) => toggleAuto(e.target.checked)} disabled={busy === "auto"} />
+            <span className="switch-track" />
+          </label>
+          <span className="bp-head-label">Auto-apply for the rest of the event</span>
+          <span className="pill">{data.free_count ?? 0} boosters left</span>
+          {data.pending && <span className="pill">Reading…</span>}
+          <button className="primary bp-apply-all" onClick={applyAll} disabled={Boolean(busy) || changes.length === 0}>
+            {busy === "all" ? "Applying…" : changes.length > 0 ? `Apply ${changes.length} suggested` : "Suggestions applied"}
+          </button>
+        </div>
+        {error && <span className="pill warn">{error}</span>}
+        <table className="bp-table">
+          <thead>
+            <tr>
+              <th>Player</th>
+              <th>Next match</th>
+              <th>On HLTV</th>
+              <th>Suggested</th>
+              <th className="num">Rate</th>
+              <th className="num">Expected</th>
+              <th className="tight"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {players.map((p) => {
+              const m = p.match;
+              const s = p.suggestion;
+              const a = p.assigned;
+              return (
+                <tr key={p.player_id || p.name} className={p.change ? "change" : ""}>
+                  <td>
+                    <div className="table-player-cell">
+                      <PlayerPhoto playerId={p.player_id} name={p.name} size={28} />
+                      <strong>{p.name}</strong>
+                    </div>
+                  </td>
+                  <td>
+                    {m ? (
+                      <span>
+                        <strong>{m.opponent || "-"}</strong>
+                        <span className="muted"> · {m.live ? "live" : when(m.start_at)}</span>
+                      </span>
+                    ) : (
+                      <span className="muted">No upcoming match</span>
+                    )}
+                  </td>
+                  <td>{a?.name ? <span className={`pill${p.change ? "" : " ok"}`}>{a.name}</span> : <span className="muted">-</span>}</td>
+                  <td>{s?.name ? <span className={`pill${p.change ? " caution" : " ok"}`}>{s.name}</span> : <span className="muted">-</span>}</td>
+                  <td className="num">{s ? pct(s.rate) : "-"}</td>
+                  <td className="num">{s ? fmt1(s.expected) : "-"}</td>
+                  <td className="tight">
+                    {p.change && (
+                      <button className="secondary" onClick={() => applyOne(p)} disabled={Boolean(busy)}>
+                        {busy === String(p.player_id) ? "Applying…" : "Apply"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Section>
+      {anyPlan && (
+        <Section title="Later rounds">
+          <table className="bp-table">
+            <thead>
+              <tr>
+                <th>Player</th>
+                <th>Plan</th>
+              </tr>
+            </thead>
+            <tbody>
+              {players
+                .filter((p) => (p.plan || []).length > 0)
+                .map((p) => (
+                  <tr key={`plan-${p.player_id}`}>
+                    <td>
+                      <strong>{p.name}</strong>
+                    </td>
+                    <td>
+                      <span className="pills">
+                        {p.plan.map((x) => (
+                          <span className="pill" key={`${p.player_id}-${x.slot}`} title={`${pct(x.rate)} · plays ${pct(x.prob)}`}>
+                            {stageName(x.stage)} · {x.name} · {pct(x.rate)}
+                          </span>
+                        ))}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </Section>
+      )}
+      {(data.actions || []).length > 0 && (
+        <Section title="Applied">
+          <table className="bp-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Player</th>
+                <th>Booster</th>
+                <th>Match</th>
+                <th>Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.actions.map((x) => (
+                <tr key={x.id}>
+                  <td className="num">{when(x.at)}</td>
+                  <td>{x.player_name || x.player_id}</td>
+                  <td>{x.booster_name || (x.booster_index == null ? "Removed" : x.booster_index)}</td>
+                  <td>{x.opponent ? `vs ${x.opponent}` : x.match_id}</td>
+                  <td>
+                    <span className={`pill${x.ok ? " ok" : " warn"}`}>{x.ok ? (x.trigger === "auto" ? "Set (auto)" : "Set") : x.message || "Failed"}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      )}
     </div>
   );
 }
@@ -7406,7 +7686,6 @@ function EventsTab({ refreshData, notify, players, teams = [], onOpenPlayer, onO
                   <tr>
                     <th>Name</th>
                     <th>Fantasy Event</th>
-                    <th>HLTV Event</th>
                     <th>Type</th>
                     <th>Teams</th>
                     <th>Valuation</th>
@@ -7418,7 +7697,6 @@ function EventsTab({ refreshData, notify, players, teams = [], onOpenPlayer, onO
                     <tr key={ev.event_id}>
                       <td>{ev.name || "-"}</td>
                       <td>{ev.event_id}</td>
-                      <td>{ev.hltv_event_id ?? "-"}</td>
                       <td>{describeEventFormat(eventKinds[ev.event_id])?.short || "..."}</td>
                       <td>{ev.team_count ?? 0}</td>
                       <td>
@@ -10607,7 +10885,7 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false, 
       title: `Round ${rd.round}`,
       pools: Object.keys(byPool)
         .sort(poolOrder)
-        .map((pool) => ({ pool, matches: byPool[pool].map((m) => ({ key: m.key, a: m.a, b: m.b, known: true, status: m.status || null, start_at: m.start_at || null, maps_a: m.maps_a, maps_b: m.maps_b })) })),
+        .map((pool) => ({ pool, matches: byPool[pool].map((m) => ({ key: m.key, a: m.a, b: m.b, known: true, status: m.status || null, start_at: m.start_at || null, maps_a: m.maps_a, maps_b: m.maps_b, score: m.score || null })) })),
     });
   });
   (walk?.placeholders || []).forEach((ph) => {
@@ -10677,6 +10955,8 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false, 
                     {side(m.a, m, m.known)}
                     {m.status === "live" ? (
                       <span className="sw-vs sw-live">{m.maps_a != null ? `${m.maps_a}–${m.maps_b}` : "live"}</span>
+                    ) : m.score ? (
+                      <span className="sw-vs sw-score">{String(m.score).replace("-", "–")}</span>
                     ) : m.status === "upcoming" && m.start_at ? (
                       <span className="sw-vs sw-time">{new Date(Number(m.start_at) * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                     ) : (
@@ -12200,34 +12480,36 @@ function GroupsTab({
                 event page, loaded on open and re-synced automatically while any
                 slot is still undecided. */}
             {autofillMessage && <p className="muted">{autofillMessage}</p>}
-            {!PATH_FORMATS.includes(groupFormat) && groupSlots.map((group, g) => {
-              const key = `group-${g}`;
-              const isCollapsed = Boolean(collapsedCards[key]);
-              const summary = group
-                .map((v) => (v ? teamName(v) : "TBD"))
-                .join(" · ");
+            {!PATH_FORMATS.includes(groupFormat) && groupSlots.length > 0 && (() => {
+              // every group in one card, each bracket under its own heading
+              const isCollapsed = Boolean(collapsedCards.groups);
+              const summary = groupSlots.map((group, g) => `Group ${g + 1}: ${group.map((v) => (v ? teamName(v) : "TBD")).join(" · ")}`).join("   ");
               return (
-                <div className="card sub group-card" key={key}>
-                  <button type="button" className="group-card-head collapsible" onClick={() => toggleCard(key)}>
-                    <h3>Group {g + 1}</h3>
+                <div className="card sub group-card">
+                  <button type="button" className="group-card-head collapsible" onClick={() => toggleCard("groups")}>
+                    <h3>{groupSlots.length > 1 ? "Groups" : "Group"}</h3>
                     {isCollapsed && <span className="group-card-summary">{summary}</span>}
                     <span className="group-card-chevron" aria-hidden="true">
                       {isCollapsed ? "▸" : "▾"}
                     </span>
                   </button>
-                  {!isCollapsed && (
-                    <GroupBracketVisual
-                      format={groupFormat}
-                      slotIds={group}
-                      nameOf={(v) => (v ? teamName(v) : "")}
-                      hltvIdByTeamId={hltvIdByTeamId}
-                      combined={combinedPlayoffs}
-                      bo={groupBo}
-                    />
-                  )}
+                  {!isCollapsed &&
+                    groupSlots.map((group, g) => (
+                      <div className="group-block" key={`group-${g}`}>
+                        {groupSlots.length > 1 && <div className="group-block-title">Group {g + 1}</div>}
+                        <GroupBracketVisual
+                          format={groupFormat}
+                          slotIds={group}
+                          nameOf={(v) => (v ? teamName(v) : "")}
+                          hltvIdByTeamId={hltvIdByTeamId}
+                          combined={combinedPlayoffs}
+                          bo={groupBo}
+                        />
+                      </div>
+                    ))}
                 </div>
               );
-            })}
+            })()}
             {combinedPlayoffs && combinedAllowed && (
               <div className="card sub group-card">
                 <button type="button" className="group-card-head collapsible" onClick={() => toggleCard("playoff")}>

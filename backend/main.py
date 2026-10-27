@@ -21,7 +21,7 @@ from backend.services.scheduler import scheduler
 from backend.services.public_access import PublicAccessMiddleware, admin_token
 from backend.routes import auth as auth_routes
 from backend.data.auth_db import ensure_auth_schema
-from backend.services import live_watch, roster_scores
+from backend.services import booster_advisor, live_watch, roster_scores
 
 SCHEMA_INITIALIZERS = (
     ensure_schema,
@@ -76,6 +76,11 @@ async def _lifespan(app: FastAPI):
         live_watch.start()
     except Exception:
         logging.getLogger(__name__).warning("Could not start the live watch", exc_info=True)
+    # Sets the advised boosters on HLTV for users who switched auto mode on.
+    try:
+        booster_advisor.start()
+    except Exception:
+        logging.getLogger(__name__).warning("Could not start the booster auto loop", exc_info=True)
     # Warm the heavy in-process caches off the request path: the stored groups
     # run (~1 s blob parse) and every event's format detection (~1 s burst).
     import threading
@@ -113,6 +118,7 @@ async def _lifespan(app: FastAPI):
 
     threading.Thread(target=_warm, name="cache-warmup", daemon=True).start()
     yield
+    booster_advisor.stop()
     live_watch.stop()
     scheduler.stop()
 

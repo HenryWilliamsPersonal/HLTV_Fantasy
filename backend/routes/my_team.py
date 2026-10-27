@@ -114,12 +114,7 @@ def get_boosters(request: Request, event_id: int, refresh: bool = False) -> dict
     from backend.services import booster_advisor
 
     key = _connected_key(request)
-    job = my_team.run_in_background(
-        my_team._job_key("boosters", key, int(event_id)),
-        lambda: booster_advisor.suggestions(int(event_id), key, 0.0),
-        booster_advisor.FEED_MAX_AGE,
-        force=refresh,
-    )
+    job = booster_advisor.advice_for(int(event_id), key, refresh=refresh)
     out: Dict[str, Any] = dict(job.get("value") or {})
     auto_all = my_team_settings.auto_all_enabled(key)
     out.update({

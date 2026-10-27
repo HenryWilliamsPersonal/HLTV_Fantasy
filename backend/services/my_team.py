@@ -268,7 +268,7 @@ def with_personal_session(callback, cookies: Optional[List[Dict[str, Any]]] = No
                 except Exception:  # noqa: BLE001
                     logger.warning("Could not restore the scraper's %s cookie", c.get("name"))
 
-    return run_hltv_browser_session(ENTRY_URL, session, wait_text=None, timeout_ms=60000)
+    return run_hltv_browser_session(ENTRY_URL, session, wait_text=None, timeout_ms=60000, priority=True)
 
 ROLE_INDEX_BY_NAME = {
     "main awp": 0, "support": 1, "attacker": 2, "leader": 3, "stathunter": 4, "entry fragger": 5,
@@ -301,10 +301,13 @@ def _points(text: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def _fetch_many(urls: List[str], max_age: float, user_key: str) -> Dict[str, str]:
+def _fetch_many(urls: List[str], max_age: float, user_key: str, follow=None) -> Dict[str, str]:
     """The pages, from the in-memory cache (per user) when younger than
     max_age; the stale ones are read in one visit of the shared browser
-    signed in as that user's HLTV account (each archived as a page snapshot)."""
+    signed in as that user's HLTV account (each archived as a page snapshot).
+    `follow(pages)` may name more (url, max_age) pairs once the batch is
+    read — a feed whose URL comes from another feed — read in the same visit
+    unless the cache has them."""
     from backend.data.page_snapshots import save_page_snapshot
 
     out: Dict[str, str] = {}
@@ -322,30 +325,57 @@ def _fetch_many(urls: List[str], max_age: float, user_key: str) -> Dict[str, str
     from backend.services import hltv_session
 
     cookies = cookies_for(user_key)
-    # The login is checked on the first HTML page read (its navigation bar
-    # names the account); a batch of JSON pages alone gets the front-page
-    # check instead, since JSON carries no navigation bar.
-    html_urls = [u for u in stale if not u.endswith("/json")]
+    # The login is checked once per visit, on the first page read: an HTML
+    # page's navigation bar names the account; a feed that came back as JSON
+    # is proof enough (HLTV answers a signed-out feed request with its sign-in
+    # page, not JSON), and one that did not gets the front-page check — so a
+    # feed read costs no page beyond the feeds themselves.
+    followed = [follow]
+
+    def looks_like_json(html: str) -> bool:
+        return bool(re.search(r"<pre[^>]*>\s*[\[{]", html or "", flags=re.S)) or (html or "").lstrip()[:1] in ("{", "[")
+
+    def check_login(driver, url: str, html: str) -> None:
+        if url.endswith("/json"):
+            if looks_like_json(html):
+                return
+            driver.get("https://www.hltv.org/")
+            time.sleep(1.0)
+        if not hltv_session.is_logged_in(driver):
+            raise PersonalSessionError("HLTV no longer accepts the personal login; hand it over again")
 
     def read(driver, _username):
         pages = {}
-        checked = not html_urls
-        for url in stale:
+        checked = False
+        queue = list(stale)
+        while queue:
+            url = queue.pop(0)
             driver.get(url)
             time.sleep(0.5)
             html = driver.page_source or ""
-            if not checked and url in html_urls:
+            if not checked:
+                check_login(driver, url, html)
                 checked = True
-                if not hltv_session.is_logged_in(driver):
-                    raise PersonalSessionError("HLTV no longer accepts the personal login; hand it over again")
             pages[url] = html
             try:
                 save_page_snapshot(url, html, kind="fantasy-mine")
             except Exception:  # noqa: BLE001
                 pass
+            if not queue and followed[0] is not None:
+                more, followed[0] = followed[0]({**out, **pages}) or [], None
+                now2 = time.time()
+                with _LOCK:
+                    for u, age in more:
+                        hit = _CACHE.get((user_key, u))
+                        if hit and now2 - float(hit["at"]) < float(age):
+                            out[u] = str(hit["html"])
+                        elif u not in pages:
+                            queue.append(u)
         return pages
 
-    pages = with_personal_session(read, cookies=cookies, verify=not html_urls) or {}
+    t0 = time.time()
+    pages = with_personal_session(read, cookies=cookies, verify=False) or {}
+    logger.info("Personal read for %s: %d page(s) in %.1f s", user_key, len(pages), time.time() - t0)
     with _LOCK:
         for url, html in pages.items():
             _CACHE[(user_key, url)] = {"at": time.time(), "html": html}
@@ -718,7 +748,7 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
     # nothing has read them yet, so ask for the event (which reads them).
     if not live_pages.cached(eid):
         try:
-            live_state.live_event(eid)
+            live_state.live_event(eid, fetch_if_missing=False)  # the live watch reads the pages; the report never waits for them
         except Exception:  # noqa: BLE001 - the report still has HLTV's own numbers
             logger.warning("Could not read the live pages for event %s", eid, exc_info=True)
     pending = [m for m in live_pages.cached(eid) if m.get("status") in ("live", "upcoming")]

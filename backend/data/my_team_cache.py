@@ -1,7 +1,8 @@
 """Each app user's My Team state per event, kept across server restarts so
 an opened event page shows the last report at once while a fresh read runs
 in the background: which team is theirs (it never changes, so the draft
-page is read once per event) and the last report with its read time."""
+page is read once per event), the last report with its read time, and the
+last booster advice with its read time."""
 from __future__ import annotations
 
 import json
@@ -31,6 +32,10 @@ def _ensure() -> None:
             )
             """
         )
+        have = {r[1] for r in conn.execute("PRAGMA table_info(my_team_cache)")}
+        for col, typ in (("boosters_json", "TEXT"), ("boosters_at", "REAL")):
+            if col not in have:
+                conn.execute(f"ALTER TABLE my_team_cache ADD COLUMN {col} {typ}")
         conn.commit()
     finally:
         conn.close()
@@ -87,6 +92,36 @@ def save_report(user_key: str, event_id: int, team: Dict[str, Any], report: Dict
                 team_json = excluded.team_json, report_json = excluded.report_json, read_at = excluded.read_at
             """,
             (str(user_key), int(event_id), json.dumps(team), json.dumps(report), float(read_at or time.time())),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_boosters(user_key: str, event_id: int) -> Optional[Dict[str, Any]]:
+    """{"advice", "read_at"} or None."""
+    _ensure()
+    conn = connect()
+    try:
+        row = conn.execute("SELECT boosters_json, boosters_at FROM my_team_cache WHERE user_key = ? AND event_id = ?", (str(user_key), int(event_id))).fetchone()
+    finally:
+        conn.close()
+    advice = _loads(row["boosters_json"]) if row else None
+    if not advice:
+        return None
+    return {"advice": advice, "read_at": float(row["boosters_at"] or 0.0)}
+
+
+def save_boosters(user_key: str, event_id: int, advice: Dict[str, Any], read_at: Optional[float] = None) -> None:
+    _ensure()
+    conn = connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO my_team_cache (user_key, event_id, boosters_json, boosters_at) VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_key, event_id) DO UPDATE SET boosters_json = excluded.boosters_json, boosters_at = excluded.boosters_at
+            """,
+            (str(user_key), int(event_id), json.dumps(advice), float(read_at or time.time())),
         )
         conn.commit()
     finally:

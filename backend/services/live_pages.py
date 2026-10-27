@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 LIVE_REFRESH = 300.0  # a live event with no match in play
 LIVE_MATCH_REFRESH = 60.0  # a live event with a match in play
+OVERVIEW_REFRESH = 300.0  # the event overview (pairings, pools): rounds are drawn minutes apart
 UPCOMING_REFRESH = 3600.0
 UPCOMING_WINDOW = 2 * 86400.0
 # Change tracking for the live stream (routes/live.py): a counter bumped by
@@ -191,17 +192,26 @@ def parse_matches_page(html: str) -> Dict[int, Dict[str, Any]]:
     return out
 
 
-def fetch_event_matches(hltv_event_id: int, hltv_event_url: str, to_tid: Callable[[Optional[int]], Optional[int]]) -> List[Dict[str, Any]]:
-    """Read both pages now and return the merged match list (also cached by
-    the caller). Raises on a fetch failure."""
+def fetch_event_matches(hltv_event_id: int, hltv_event_url: str, to_tid: Callable[[Optional[int]], Optional[int]], overview_entries: Optional[Dict[int, Dict[str, Any]]] = None, on_overview: Optional[Callable[[Dict[int, Dict[str, Any]]], None]] = None):
+    """Read the pages now: (the merged match list, the overview's own
+    entries). The overview (pairings, pools) changes when a round is drawn,
+    so `refresh` hands back its entries for OVERVIEW_REFRESH and only the
+    matches page (live scores, today's results) is read in between. Raises
+    on a fetch failure; HLTVBrowserBusy when a personal read is waiting."""
+    import copy
+
     from backend.services.hltv_browser import fetch_hltv_html
 
-    overview_url = str(hltv_event_url or "") or f"https://www.hltv.org/events/{int(hltv_event_id)}/-"
-    overview = fetch_hltv_html(overview_url)
-    matches_page = fetch_hltv_html(f"https://www.hltv.org/events/{int(hltv_event_id)}/matches")
-    merged = parse_swiss(overview, to_tid)
-    for mid, entry in parse_brackets(overview, to_tid).items():
-        merged.setdefault(mid, entry)
+    if overview_entries is None:
+        overview_url = str(hltv_event_url or "") or f"https://www.hltv.org/events/{int(hltv_event_id)}/-"
+        overview = fetch_hltv_html(overview_url, yield_to_priority=True)
+        overview_entries = parse_swiss(overview, to_tid)
+        for mid, entry in parse_brackets(overview, to_tid).items():
+            overview_entries.setdefault(mid, entry)
+        if on_overview is not None:
+            on_overview(overview_entries)  # kept even if the matches page is refused below
+    matches_page = fetch_hltv_html(f"https://www.hltv.org/events/{int(hltv_event_id)}/matches", yield_to_priority=True)
+    merged = copy.deepcopy(overview_entries)
     page = parse_matches_page(matches_page)
     for mid, info in page.items():
         entry = merged.get(mid)
@@ -220,7 +230,7 @@ def fetch_event_matches(hltv_event_id: int, hltv_event_url: str, to_tid: Callabl
                 entry["map_a"], entry["map_b"] = info.get("map_a"), info.get("map_b")
             if info.get("start_at") and not entry.get("start_at"):
                 entry["start_at"] = info["start_at"]
-    return sorted(merged.values(), key=lambda e: (e.get("start_at") or 0.0, e["match_id"]))
+    return sorted(merged.values(), key=lambda e: (e.get("start_at") or 0.0, e["match_id"])), overview_entries
 
 
 def cached(event_id: int) -> List[Dict[str, Any]]:
@@ -286,13 +296,27 @@ def refresh(event_id: int, hltv_event_id: int, hltv_event_url: str, to_tid: Call
         time.sleep(0.5)
         if cache_age(eid) is not None and cache_age(eid) < 5.0:
             return cached(eid)
+    from backend.services.hltv_browser import HLTVBrowserBusy
+
     try:
-        matches = fetch_event_matches(int(hltv_event_id), hltv_event_url, to_tid)
+        with _LOCK:
+            ov = (_CACHE.get(eid) or {}).get("overview")
+        fresh = bool(ov) and (time.time() - float(ov["at"])) < OVERVIEW_REFRESH
+
+        def keep_overview(entries: Dict[int, Dict[str, Any]]) -> None:
+            with _LOCK:
+                cur = _CACHE.get(eid) or {"fetched_at": 0.0, "matches": []}
+                cur["overview"] = {"at": time.time(), "entries": entries}
+                _CACHE[eid] = cur
+
+        matches, entries = fetch_event_matches(int(hltv_event_id), hltv_event_url, to_tid, overview_entries=ov["entries"] if fresh else None, on_overview=keep_overview)
         with _LOCK:
             _note_change(eid, matches)
-            _CACHE[eid] = {"fetched_at": time.time(), "matches": matches}
-        logger.info("Live pages read for event %s: %d matches (%d live)", eid, len(matches), sum(1 for m in matches if m["status"] == "live"))
+            _CACHE[eid] = {"fetched_at": time.time(), "matches": matches, "overview": ov if fresh else {"at": time.time(), "entries": entries}}
+        logger.info("Live pages read for event %s: %d matches (%d live)%s", eid, len(matches), sum(1 for m in matches if m["status"] == "live"), "" if fresh else " with the overview")
         return matches
+    except HLTVBrowserBusy:
+        return cached(eid)  # a personal read is waiting for the browser: the next tick tries again
     except Exception:  # noqa: BLE001
         logger.warning("Live pages read failed for event %s", eid, exc_info=True)
         with _LOCK:

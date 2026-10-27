@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 # HLTV's booster ids in the engine's 0..17 order (seen 2026-10-27).
 HLTV_ID_BY_INDEX = [2, 3, 5, 8, 9, 13, 16, 18, 19, 20, 21, 22, 23, 26, 27, 28, 29, 33]
 FEED_MAX_AGE = 120.0
+RATES_MAX_AGE = 600.0  # HLTV's trigger rates move with maps played, not minutes
 AUTO_TICK_SECONDS = 300.0
 EXPECTED_MAPS = {1: 1.0, 2: 2.0, 3: 2.4, 5: 3.9}
 
@@ -178,26 +179,39 @@ def _feed_urls(event_id: int, mine: Dict[str, Any]) -> Dict[str, str]:
     return {"overview": f"{base}/overview/{mine['team_id']}/json", "details": f"{base}/details/{mine['team_id']}/json"}
 
 
+def _rates_url(event_id: int, mine: Dict[str, Any], draft_id: int) -> str:
+    return f"https://www.hltv.org/fantasy/{int(event_id)}/league/{mine['league_id']}/overview/{mine['team_id']}/draft/{int(draft_id)}/triggerrates/json"
+
+
 def feeds(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> Dict[str, Any]:
+    """The team's overview and details feeds, plus HLTV's trigger rates (their
+    URL carries the draft id the overview names), all in ONE visit of the
+    personal browser session; each from the cache when young enough."""
     from backend.services import my_team
 
     mine = _team_of(user_key, event_id)
     urls = _feed_urls(event_id, mine)
-    pages = my_team._fetch_many([urls["overview"], urls["details"]], max_age, user_key)
+
+    def follow(pages: Dict[str, str]):
+        draft_id = (((_json_from_page(pages.get(urls["overview"], "")) or {}).get("draftId") or {}).get("id"))
+        return [(_rates_url(event_id, mine, int(draft_id)), max(float(max_age), RATES_MAX_AGE))] if draft_id is not None else []
+
+    pages = my_team._fetch_many([urls["overview"], urls["details"]], max_age, user_key, follow=follow)
     overview = _json_from_page(pages.get(urls["overview"], ""))
     rates = None
     draft_id = ((overview or {}).get("draftId") or {}).get("id")
     if draft_id is not None:
-        rates_url = f"https://www.hltv.org/fantasy/{int(event_id)}/league/{mine['league_id']}/overview/{mine['team_id']}/draft/{int(draft_id)}/triggerrates/json"
-        try:
-            rates = _json_from_page(my_team._fetch_many([rates_url], max(max_age, 600.0), user_key).get(rates_url, ""))
-        except Exception:  # noqa: BLE001 - the stored rates stand in
-            logger.warning("Could not read HLTV's trigger rates", exc_info=True)
+        rates = _json_from_page(pages.get(_rates_url(event_id, mine, int(draft_id)), ""))
+        if rates is None:
+            logger.warning("HLTV's trigger rates did not come back as JSON; the stored rates stand in")
     return {"team": mine, "overview": overview, "details": _json_from_page(pages.get(urls["details"], "")), "trigger_rates": rates}
 
 
 def drop_feeds(event_id: int, user_key: str) -> None:
-    """Forget the cached feeds and reports so the next read is fresh."""
+    """After a booster was set: forget the overview feed and the team page
+    (the only pages that show boosters) and the computed reports, so the
+    next read re-reads just those; the details feed and the trigger rates
+    stay cached (they change when matches finish, not when a booster does)."""
     from backend.services import my_team
 
     try:
@@ -205,12 +219,35 @@ def drop_feeds(event_id: int, user_key: str) -> None:
         urls = _feed_urls(event_id, mine)
         base = f"https://www.hltv.org/fantasy/{int(event_id)}/league/{mine['league_id']}/team/{mine['team_id']}"
         with my_team._LOCK:
-            for url in (urls["overview"], urls["details"], base, base + "/details"):
+            for url in (urls["overview"], base):
                 my_team._CACHE.pop((user_key, url), None)
             for k in [k for k in my_team._RESULTS if k.split("|")[1:3] == [user_key, str(int(event_id))]]:
                 my_team._RESULTS.pop(k, None)
     except Exception:  # noqa: BLE001
         logger.warning("Could not drop the cached feeds", exc_info=True)
+
+
+def advice_for(event_id: int, user_key: str, refresh: bool = False) -> Dict[str, Any]:
+    """Background wrapper of suggestions: the last advice (from memory, or
+    the one stored across restarts) at once, re-read in the background when
+    older than FEED_MAX_AGE or on refresh (which re-reads the overview feed
+    whatever its age)."""
+    from backend.data import my_team_cache
+    from backend.services import my_team
+
+    eid, key = int(event_id), my_team._job_key("boosters", user_key, int(event_id))
+    with my_team._LOCK:
+        if key not in my_team._RESULTS:
+            stored = my_team_cache.get_boosters(user_key, eid)
+            if stored:
+                my_team._RESULTS[key] = {"value": stored["advice"], "at": float(stored.get("read_at") or 0.0), "error": None}
+    if refresh:
+        try:
+            with my_team._LOCK:
+                my_team._CACHE.pop((user_key, _feed_urls(eid, _team_of(user_key, eid))["overview"]), None)
+        except Exception:  # noqa: BLE001 - no team known yet: the read finds out
+            pass
+    return my_team.run_in_background(key, lambda: suggestions(eid, user_key, FEED_MAX_AGE), FEED_MAX_AGE, force=refresh)
 
 
 def _booster_obj(b: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -237,7 +274,7 @@ def _swiss_odds(event_id: int, results: Dict[str, Any]) -> Optional[Dict[str, An
     if "bo1" in wp and "bo3" not in wp:
         wp["bo3"] = [[leader_role.series_probability(float(p), 2) if i != j else 0.5 for j, p in enumerate(row)] for i, row in enumerate(wp["bo1"])]
     try:
-        entry = live_state.live_event(int(event_id)) or {}
+        entry = live_state.live_event(int(event_id), fetch_if_missing=False) or {}  # never wait for a page read here
     except Exception:  # noqa: BLE001 - the advice still works from the fantasy feeds alone
         logger.warning("Live state unavailable for event %s", event_id, exc_info=True)
         entry = {}
@@ -513,7 +550,7 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
         p["plan"].sort(key=lambda x: x["slot"])
         s, a = p.get("suggestion"), p.get("assigned")
         p["change"] = bool(s and p["match"] and p["match"]["assignable"] and (not a or a.get("index") != s["index"]))
-    return {
+    out = {
         "event_id": eid,
         "team": f["team"],
         "players": players,
@@ -521,6 +558,13 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
         "free_count": len(free),
         "read_at": time.time(),
     }
+    try:
+        from backend.data import my_team_cache
+
+        my_team_cache.save_boosters(user_key, eid, out, out["read_at"])
+    except Exception:  # noqa: BLE001 - the advice still answers
+        logger.warning("Could not store the booster advice", exc_info=True)
+    return out
 
 
 def apply(event_id: int, user_key: str, assignments: List[Dict[str, Any]], trigger: str = "manual") -> List[Dict[str, Any]]:
@@ -583,7 +627,7 @@ def apply(event_id: int, user_key: str, assignments: List[Dict[str, Any]], trigg
 def apply_suggestions(event_id: int, user_key: str, trigger: str = "manual") -> List[Dict[str, Any]]:
     """Set every suggested booster whose match can still take one and that
     differs from what is on it."""
-    sug = suggestions(int(event_id), user_key, 0.0)
+    sug = suggestions(int(event_id), user_key, FEED_MAX_AGE)
     todo = [
         {"player_id": p["player_id"], "match_id": p["match"]["match_id"], "booster_index": p["suggestion"]["index"]}
         for p in sug["players"]

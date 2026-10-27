@@ -331,11 +331,14 @@ def live_events(now: Optional[float] = None) -> List[Dict[str, Any]]:
     return live_and_next + previous
 
 
-def live_event(event_id: int, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
-    """One event's full state, or None when it has no valuation."""
+def live_event(event_id: int, now: Optional[float] = None, fetch_if_missing: bool = True) -> Optional[Dict[str, Any]]:
+    """One event's full state, or None when it has no valuation. With
+    fetch_if_missing an event whose HLTV pages were never read gets them
+    read now (seconds in the browser); without, the state comes from the
+    database alone and the pages are read in the background."""
     now = float(now or time.time())
     conn = connect()
     try:
-        return _entry(conn, {"event_id": int(event_id)}, now, fetch_if_missing=True)
+        return _entry(conn, {"event_id": int(event_id)}, now, fetch_if_missing=fetch_if_missing)
     finally:
         conn.close()

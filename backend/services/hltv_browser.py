@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import contextlib
 import random
 import threading
 import time
@@ -21,6 +22,38 @@ _WAIT_AFTER_LOAD_MIN = float(os.getenv("HLTV_UC_WAIT_AFTER_LOAD_MIN", os.getenv(
 _WAIT_AFTER_LOAD_MAX = float(os.getenv("HLTV_UC_WAIT_AFTER_LOAD_MAX", "1.0"))
 _DEFAULT_WINDOW_SIZE = (1400, 900)
 _FETCH_LOCK = threading.Lock()
+# Personal reads (a user's My Team / Boosters page) wait on the lock with
+# priority: while one is waiting, background live-page reads that offered to
+# yield are refused (HLTVBrowserBusy) instead of queuing ahead of it.
+_PRIORITY_LOCK = threading.Lock()
+_PRIORITY_WAITING = 0
+
+
+class HLTVBrowserBusy(Exception):
+    """A personal read is waiting for the browser; try again later."""
+
+
+def _priority_waiting() -> bool:
+    with _PRIORITY_LOCK:
+        return _PRIORITY_WAITING > 0
+
+
+@contextlib.contextmanager
+def _browser_turn(priority: bool):
+    global _PRIORITY_WAITING
+    if priority:
+        with _PRIORITY_LOCK:
+            _PRIORITY_WAITING += 1
+    try:
+        _FETCH_LOCK.acquire()
+    finally:
+        if priority:
+            with _PRIORITY_LOCK:
+                _PRIORITY_WAITING -= 1
+    try:
+        yield
+    finally:
+        _FETCH_LOCK.release()
 _LAST_FETCH_TIME = 0.0
 
 # Persistent shared browser: launching and quitting Chrome per fetch costs
@@ -490,8 +523,15 @@ def fetch_hltv_html(
     timeout_ms: int = 45000,
     wait_text: str | None = None,
     reconnect_time: float | None = None,
+    yield_to_priority: bool = False,
 ) -> str:
+    if yield_to_priority and _priority_waiting():
+        raise HLTVBrowserBusy("a personal read is waiting for the browser")
     with _FETCH_LOCK:
+        # checked again once the lock is ours: a read that queued before the
+        # personal one arrived steps aside too (raising releases the lock)
+        if yield_to_priority and _priority_waiting():
+            raise HLTVBrowserBusy("a personal read is waiting for the browser")
         _cancel_idle_timer()
         _wait_for_rate_limit()
         last_error: Exception | None = None
@@ -557,8 +597,9 @@ def run_hltv_browser_session(
     timeout_ms: int = 45000,
     wait_text: str | None = None,
     reconnect_time: float | None = None,
+    priority: bool = False,
 ):
-    with _FETCH_LOCK:
+    with _browser_turn(priority):
         _cancel_idle_timer()
         _wait_for_rate_limit()
         last_error: Exception | None = None

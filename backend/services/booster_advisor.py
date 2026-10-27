@@ -19,6 +19,16 @@ Set with POST /fantasy/{eid}/teams/boost {playerId, teamId, leagueId,
 matchId, boostId}, the same call the page makes (boostId null removes).
 HLTV's booster ids are not the engine's 0-17: they are matched by name,
 with HLTV's id order as the fallback.
+
+Rates: HLTV's own trigger-rates feed for the team
+(/overview/{tid}/draft/{draftId}/triggerrates/json, a rate per booster per
+player, refreshed by HLTV as maps are played) when it answers, else the
+rates stored with the player at import. A rate is per MAP (HLTV counts the
+maps the condition held on), so a series' chance is 1 - (1 - r)^maps with
+the maps a series is expected to run: 1 for a best-of-one, 2.4 for a
+best-of-three, 3.9 for a best-of-five. The coming match's series length
+comes from the Swiss record (swiss_engine.match_bo); later rounds assume
+the stage's usual length.
 """
 from __future__ import annotations
 
@@ -38,6 +48,14 @@ logger = logging.getLogger(__name__)
 HLTV_ID_BY_INDEX = [2, 3, 5, 8, 9, 13, 16, 18, 19, 20, 21, 22, 23, 26, 27, 28, 29, 33]
 FEED_MAX_AGE = 120.0
 AUTO_TICK_SECONDS = 300.0
+EXPECTED_MAPS = {1: 1.0, 2: 2.0, 3: 2.4, 5: 3.9}
+
+
+def match_rate(rate_per_map: float, bo: int) -> float:
+    """The chance a booster triggers at least once in a series."""
+    maps = EXPECTED_MAPS.get(int(bo or 3), 2.4)
+    r = min(1.0, max(0.0, float(rate_per_map)))
+    return 1.0 - (1.0 - r) ** maps
 
 _POST_JS = """
 const [url, body, done] = arguments;
@@ -108,7 +126,16 @@ def feeds(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> Dict[s
     mine = _team_of(user_key, event_id)
     urls = _feed_urls(event_id, mine)
     pages = my_team._fetch_many([urls["overview"], urls["details"]], max_age, user_key)
-    return {"team": mine, "overview": _json_from_page(pages.get(urls["overview"], "")), "details": _json_from_page(pages.get(urls["details"], ""))}
+    overview = _json_from_page(pages.get(urls["overview"], ""))
+    rates = None
+    draft_id = ((overview or {}).get("draftId") or {}).get("id")
+    if draft_id is not None:
+        rates_url = f"https://www.hltv.org/fantasy/{int(event_id)}/league/{mine['league_id']}/overview/{mine['team_id']}/draft/{int(draft_id)}/triggerrates/json"
+        try:
+            rates = _json_from_page(my_team._fetch_many([rates_url], max(max_age, 600.0), user_key).get(rates_url, ""))
+        except Exception:  # noqa: BLE001 - the stored rates stand in
+            logger.warning("Could not read HLTV's trigger rates", exc_info=True)
+    return {"team": mine, "overview": overview, "details": _json_from_page(pages.get(urls["details"], "")), "trigger_rates": rates}
 
 
 def drop_feeds(event_id: int, user_key: str) -> None:
@@ -168,11 +195,47 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
             team_of_player.setdefault(int(pid), int(tid))
 
     finished_by_pid: Dict[int, int] = {}
+    record_by_pid: Dict[int, List[int]] = {}
     for item in ov.get("playerTrackerItems") or []:
         if str(item.get("type") or "").endswith("FinishedMatch"):
             pid = ((item.get("player") or {}).get("fantasyPlayerId") or {}).get("playerId")
             if pid is not None:
                 finished_by_pid[int(pid)] = finished_by_pid.get(int(pid), 0) + 1
+                rec = record_by_pid.setdefault(int(pid), [0, 0])
+                if str(((item.get("match") or {}).get("result") or "")).upper() == "WON":
+                    rec[0] += 1
+                else:
+                    rec[1] += 1
+    # HLTV's live trigger rates per player (per map), keyed by its booster id
+    live_rates: Dict[int, Dict[int, float]] = {}
+    for row_ in ((f.get("trigger_rates") or {}).get("playerTriggerRates") or []):
+        pid_ = (row_.get("playerId") or {}).get("playerId")
+        if pid_ is None:
+            continue
+        by_idx: Dict[int, float] = {}
+        for hid, v in (row_.get("boosterIdToTriggerRate") or {}).items():
+            try:
+                idx = HLTV_ID_BY_INDEX.index(int(hid))
+            except ValueError:
+                continue
+            val = v.get("value") if isinstance(v, dict) else v
+            if val is not None:
+                by_idx[idx] = float(val)
+        if by_idx:
+            live_rates[int(pid_)] = by_idx
+    swiss = results.get("swiss") or {}
+    bo3_mode = str(swiss.get("bo3_mode") or "all")
+
+    def series_len(wins: int, losses: int, known: bool) -> int:
+        """The coming match's series length from the Swiss record; a later
+        round's from the stage's usual length."""
+        from backend.services import swiss_engine
+
+        if results.get("group_format") != "swiss":
+            return 3
+        if known:
+            return int(swiss_engine.match_bo(int(wins), int(losses), bo3_mode))
+        return 3 if bo3_mode == "all" else 1 if bo3_mode == "none" else (3 if wins + losses >= 2 else 1)
 
     def play_prob(tid: Optional[int], stage_key: str) -> float:
         rounds = ((stage_teams.get(str(tid)) or {}).get("rounds") or {}) if tid is not None else {}
@@ -188,7 +251,7 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
         name = str(pl.get("name") or "")
         tid = team_of_player.get(pid) if pid is not None else None
         row = get_player(pid) if pid is not None else None
-        rates = parse_booster_rates((row or {}).get("boosters_json")) if row else {}
+        rates = live_rates.get(pid) or (parse_booster_rates((row or {}).get("boosters_json")) if row else {})
         um = ((p.get("upcomingMatches") or [None])[0]) or None
         assigned = _booster_obj(um.get("assignedBooster")) if um else None
         match = None
@@ -202,10 +265,14 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
                 "url": um.get("link"),
             }
         played = finished_by_pid.get(pid, 0) if pid is not None else 0
+        wins, losses = record_by_pid.get(pid, [0, 0]) if pid is not None else (0, 0)
+        if match:
+            match["bo"] = series_len(wins, losses, True)
         entry = {
             "player_id": pid, "name": name, "team_id": tid,
-            "match": match, "assigned": assigned, "played": played,
+            "match": match, "assigned": assigned, "played": played, "record": [wins, losses],
             "rates": {int(k): float(v) for k, v in rates.items()},
+            "rates_source": "hltv" if pid in live_rates else "stored",
             "suggestion": None, "plan": [],
         }
         players.append(entry)
@@ -219,17 +286,17 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
         here = stage_order[played] if played < len(stage_order) else None
         base_prob = play_prob(tid, here) if here else 0.0
         if match["assignable"]:
-            columns.append({"player_id": pid, "slot": 0, "prob": 1.0, "stage": here})
+            columns.append({"player_id": pid, "slot": 0, "prob": 1.0, "stage": here, "bo": match["bo"]})
         for k in range(played + 1, len(stage_order)):
             prob = play_prob(tid, stage_order[k])
             rel = (prob / base_prob) if base_prob > 0 else prob
             if rel > 0.01:
-                columns.append({"player_id": pid, "slot": k - played, "prob": min(1.0, rel), "stage": stage_order[k]})
+                columns.append({"player_id": pid, "slot": k - played, "prob": min(1.0, rel), "stage": stage_order[k], "bo": series_len(k, 0, False)})
 
     boosters = sorted(pool)
     rates_of = {p["player_id"]: p["rates"] for p in players}
     if boosters and columns:
-        weights = [[float(col["prob"]) * float(rates_of.get(col["player_id"], {}).get(b, 0.0)) * BOOSTER_POINT_VALUE for col in columns] for b in boosters]
+        weights = [[float(col["prob"]) * match_rate(float(rates_of.get(col["player_id"], {}).get(b, 0.0)), int(col["bo"])) * BOOSTER_POINT_VALUE for col in columns] for b in boosters]
         for b_row, c, w in _max_weight_assignment(weights):
             if w <= 1e-9:
                 continue
@@ -237,7 +304,8 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
             b = boosters[b_row]
             entry = next(p for p in players if p["player_id"] == col["player_id"])
             rate = float(rates_of.get(col["player_id"], {}).get(b, 0.0))
-            item = {"index": b, "hltv_id": _hltv_id(b, options), "name": BOOSTER_NAMES.get(b), "rate": round(rate, 3), "expected": round(rate * BOOSTER_POINT_VALUE, 2), "prob": round(float(col["prob"]), 3), "stage": col["stage"]}
+            per_match = match_rate(rate, int(col["bo"]))
+            item = {"index": b, "hltv_id": _hltv_id(b, options), "name": BOOSTER_NAMES.get(b), "rate": round(rate, 3), "match_rate": round(per_match, 3), "bo": int(col["bo"]), "expected": round(per_match * BOOSTER_POINT_VALUE, 2), "prob": round(float(col["prob"]), 3), "stage": col["stage"]}
             if col["slot"] == 0:
                 entry["suggestion"] = item
             else:

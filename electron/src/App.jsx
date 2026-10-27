@@ -7074,6 +7074,7 @@ function BoosterPanel({ ev, onOpenSettings }) {
               <th>On HLTV</th>
               <th>Suggested</th>
               <th className="num">Rate</th>
+              <th className="num">In series</th>
               <th className="num">Expected</th>
               <th className="tight"></th>
             </tr>
@@ -7095,7 +7096,11 @@ function BoosterPanel({ ev, onOpenSettings }) {
                     {m ? (
                       <span>
                         <strong>{m.opponent || "-"}</strong>
-                        <span className="muted"> · {m.live ? "live" : when(m.start_at)}</span>
+                        <span className="muted">
+                          {" "}
+                          · {m.live ? "live" : when(m.start_at)}
+                          {m.bo ? ` · Bo${m.bo}` : ""}
+                        </span>
                       </span>
                     ) : (
                       <span className="muted">No upcoming match</span>
@@ -7104,6 +7109,7 @@ function BoosterPanel({ ev, onOpenSettings }) {
                   <td>{a?.name ? <span className={`pill${p.change ? "" : " ok"}`}>{a.name}</span> : <span className="muted">-</span>}</td>
                   <td>{s?.name ? <span className={`pill${p.change ? " caution" : " ok"}`}>{s.name}</span> : <span className="muted">-</span>}</td>
                   <td className="num">{s ? pct(s.rate) : "-"}</td>
+                  <td className="num">{s ? pct(s.match_rate != null ? s.match_rate : s.rate) : "-"}</td>
                   <td className="num">{s ? fmt1(s.expected) : "-"}</td>
                   <td className="tight">
                     {p.change && (
@@ -7119,33 +7125,40 @@ function BoosterPanel({ ev, onOpenSettings }) {
         </table>
       </Section>
       {anyPlan && (
-        <Section title="Later rounds">
+        <Section title="Held back for later">
           <table className="bp-table">
             <thead>
               <tr>
                 <th>Player</th>
-                <th>Plan</th>
+                <th>Round</th>
+                <th className="num">Chance to play</th>
+                <th>Booster</th>
+                <th className="num">Rate</th>
+                <th className="num">Expected</th>
               </tr>
             </thead>
             <tbody>
               {players
                 .filter((p) => (p.plan || []).length > 0)
-                .map((p) => (
-                  <tr key={`plan-${p.player_id}`}>
-                    <td>
-                      <strong>{p.name}</strong>
-                    </td>
-                    <td>
-                      <span className="pills">
-                        {p.plan.map((x) => (
-                          <span className="pill" key={`${p.player_id}-${x.slot}`} title={`${pct(x.rate)} · plays ${pct(x.prob)}`}>
-                            {stageName(x.stage)} · {x.name} · {pct(x.rate)}
-                          </span>
-                        ))}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                .flatMap((p) =>
+                  p.plan.map((x) => (
+                    <tr key={`${p.player_id}-${x.slot}`}>
+                      <td>
+                        <strong>{p.name}</strong>
+                      </td>
+                      <td>
+                        {stageName(x.stage)}
+                        {x.bo ? <span className="muted"> · Bo{x.bo}</span> : null}
+                      </td>
+                      <td className="num">{pct(x.prob)}</td>
+                      <td>
+                        <span className="pill">{x.name}</span>
+                      </td>
+                      <td className="num">{pct(x.rate)}</td>
+                      <td className="num">{fmt1(x.expected * x.prob)}</td>
+                    </tr>
+                  ))
+                )}
             </tbody>
           </table>
         </Section>

@@ -3541,6 +3541,8 @@ button:disabled {
 .bp-head-label { font-weight: 600; color: #e9edf3; }
 .bp-head .bp-apply-all { margin-left: auto; }
 .bp-head.settings-auto { margin: 16px 0 0; }
+.lb-table td.num strong { color: #ff6b1a; }
+.lb-table th.tight, .lb-table td.tight { width: 36px; color: #8fa3bf; }
 .bp-table th.tight { width: 110px; }
 .bp-table td.tight { white-space: nowrap; text-align: right; }
 .bp-table th.num { width: 96px; }

@@ -6304,6 +6304,7 @@ const LIVE_EVENT_SUBTABS = [
   { key: "event", label: "Event" },
   { key: "myteam", label: "My Team" },
   { key: "boosters", label: "Boosters" },
+  { key: "leaderboard", label: "Leaderboard" },
 ];
 
 function LiveTab({ onOpenSettings }) {
@@ -6373,7 +6374,15 @@ function LiveTab({ onOpenSettings }) {
             </button>
           ))}
         </div>
-        {sub === "myteam" ? <MyTeamPanel ev={ev} onOpenSettings={onOpenSettings} /> : sub === "boosters" ? <BoosterPanel ev={ev} onOpenSettings={onOpenSettings} /> : detail ? <LiveEventBody ev={detail} /> : null}
+        {sub === "myteam" ? (
+          <MyTeamPanel ev={ev} onOpenSettings={onOpenSettings} />
+        ) : sub === "boosters" ? (
+          <BoosterPanel ev={ev} onOpenSettings={onOpenSettings} />
+        ) : sub === "leaderboard" ? (
+          <LeaderboardPanel ev={ev} />
+        ) : detail ? (
+          <LiveEventBody ev={detail} />
+        ) : null}
       </div>
     );
   }
@@ -7144,6 +7153,98 @@ function BoosterPanel({ ev, onOpenSettings }) {
         </table>
       </Section>
     </div>
+  );
+}
+
+// Leaderboard on a live event page: every player in the event scored the
+// way HLTV scores them from the matches played so far — rating and win
+// points to start (services/leaderboard). Re-read when the event's pages
+// change on the server.
+function LeaderboardPanel({ ev }) {
+  const eventId = ev?.event_id;
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const idRef = useRef(null);
+  const poll = useRef(null);
+  const load = async (id) => {
+    if (!id) return;
+    clearTimeout(poll.current);
+    try {
+      const d = await api.get(`/live/events/${id}/leaderboard`, 60000);
+      if (idRef.current !== id) return;
+      setData(d);
+      setError("");
+      // matches whose scoreboards are being read fill in within minutes
+      if (Number(d?.matches_pending || 0) > 0) poll.current = setTimeout(() => load(id), 30000);
+    } catch (e) {
+      if (idRef.current !== id) return;
+      setError(e?.message || "Could not read the leaderboard");
+    }
+  };
+  useEffect(() => {
+    idRef.current = eventId;
+    setData(null);
+    setError("");
+    load(eventId);
+    return () => clearTimeout(poll.current);
+  }, [eventId]);
+  useLiveStream((change) => {
+    if (idRef.current && Number(change.event_id) === Number(idRef.current)) load(idRef.current);
+  });
+  const signed = (v) => (v == null ? "-" : `${Number(v) > 0 ? "+" : ""}${Number(v)}`);
+  const players = data?.players || [];
+  return (
+    <Section title="Leaderboard">
+      {error && <span className="pill warn">{error}</span>}
+      {data && (
+        <div className="bp-head">
+          <span className="pill">{Number(data.matches_scored || 0)} of {Number(data.matches_scored || 0) + Number(data.matches_pending || 0)} matches scored</span>
+        </div>
+      )}
+      <table className="bp-table lb-table">
+        <thead>
+          <tr>
+            <th className="num tight">#</th>
+            <th>Player</th>
+            <th>Team</th>
+            <th className="num">Matches</th>
+            <th className="num">Rating</th>
+            <th className="num">Rating pts</th>
+            <th className="num">Win pts</th>
+            <th className="num">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {players.map((p) => (
+            <tr key={p.player_id}>
+              <td className="num tight">{p.rank}</td>
+              <td>
+                <div className="table-player-cell">
+                  <PlayerPhoto playerId={p.player_id} name={p.name} size={28} />
+                  <strong>{p.name}</strong>
+                </div>
+              </td>
+              <td>
+                <div className="table-player-cell">
+                  <TeamLogo hltvTeamId={p.hltv_team_id} name={p.team} size={20} />
+                  <span>{p.team}</span>
+                </div>
+              </td>
+              <td className="num">
+                {p.matches}
+                {p.matches > 0 ? <span className="muted"> ({p.wins}-{p.matches - p.wins})</span> : null}
+              </td>
+              <td className="num">{p.rating_avg == null ? "-" : Number(p.rating_avg).toFixed(2)}</td>
+              <td className="num">{p.matches > 0 ? signed(p.rating_points) : "-"}</td>
+              <td className="num">{p.matches > 0 ? signed(p.win_points) : "-"}</td>
+              <td className="num">
+                <strong>{p.matches > 0 ? signed(p.total) : "-"}</strong>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
   );
 }
 

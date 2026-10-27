@@ -1,0 +1,207 @@
+"""The event leaderboard: every player in a live event scored the way HLTV
+scores them, from the matches played so far.
+
+To start, two of HLTV's four components (the user's choice, 2026-10-27):
+  rating  (series rating - 1) x 50 per match, halved in a best-of-one,
+          rounded to a point (checked against HLTV's own figures for the
+          user's players: donk 0.84 -> -8, SunPayus 1.47 -> 23, arT 0.68
+          -> -16); the stored rating has two decimals, so a match can be a
+          point off when HLTV's unrounded rating sits on a half;
+  win     +6 for a match won, -3 for a match lost.
+Role and booster points are not scored here yet.
+
+Inputs: the event's matches as the Live page knows them (nightly results
+plus today's finished matches from HLTV's event pages, services/live_state)
+and each match's stored scoreboard (hltv_results.player_stats_json, the
+series rating per player). A finished match whose scoreboard is not stored
+yet — today's, before the nightly import — is read from its match page in
+the background (one page per match, low priority on the shared browser)
+and stored like the import would, so the board fills in minutes.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import math
+import threading
+import time
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from backend.data.db import connect
+
+logger = logging.getLogger(__name__)
+
+RATING_SCALE = 50.0  # (rating - 1) x 50
+WIN_POINTS = 6.0
+LOSS_POINTS = -3.0
+BO1_RATING_FACTOR = 0.5
+
+_LOCK = threading.Lock()
+_INFLIGHT: Set[int] = set()  # events whose missing scoreboards are being read
+_FAILED: Dict[int, float] = {}  # match_id -> when its page read last failed (retry after a while)
+_RETRY_AFTER = 900.0
+
+
+def rating_points(rating: float, bo1: bool) -> int:
+    pts = round((float(rating) - 1.0) * RATING_SCALE * (BO1_RATING_FACTOR if bo1 else 1.0), 6)  # 1.45 - 1 is 0.4499… in floating point
+    return int(math.floor(pts + 0.5)) if pts >= 0 else -int(math.floor(-pts + 0.5))
+
+
+def _scoreboards(match_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """match_id -> {winner, team1, team2, score1, score2, players: [...]} for
+    the matches whose series scoreboard is stored."""
+    if not match_ids:
+        return {}
+    conn = connect()
+    try:
+        rows = conn.execute(
+            f"SELECT match_id, team1, team2, score1, score2, winner, player_stats_json FROM hltv_results "
+            f"WHERE match_id IN ({','.join('?' * len(match_ids))}) AND player_stats_json IS NOT NULL",
+            [int(m) for m in match_ids],
+        ).fetchall()
+    finally:
+        conn.close()
+    out: Dict[int, Dict[str, Any]] = {}
+    for r in rows:
+        try:
+            players = json.loads(r["player_stats_json"] or "[]") or []
+        except Exception:  # noqa: BLE001
+            players = []
+        if not players:
+            continue
+        out[int(r["match_id"])] = {
+            "team1": r["team1"], "team2": r["team2"], "score1": r["score1"], "score2": r["score2"], "winner": r["winner"],
+            "players": players,
+        }
+    return out
+
+
+def _read_missing(event_id: int, matches: List[Dict[str, Any]], team_names: Dict[int, str], event_name: str) -> None:
+    """Read and store the scoreboards of finished matches that have none,
+    one match page each (background thread, one per event at a time)."""
+    from backend.data.event_db import upsert_hltv_results
+    from backend.services.hltv_rankings import get_hltv_match_details
+
+    try:
+        for m in matches:
+            mid = int(m["match_id"])
+            url = str(m.get("url") or "")
+            if "/matches/" not in url:
+                continue
+            with _LOCK:
+                if time.time() - _FAILED.get(mid, 0.0) < _RETRY_AFTER:
+                    continue
+            try:
+                details = get_hltv_match_details(url)
+            except Exception:  # noqa: BLE001
+                logger.warning("Leaderboard: could not read the match page for %s", mid, exc_info=True)
+                with _LOCK:
+                    _FAILED[mid] = time.time()
+                continue
+            players = details.get("player_stats") or []
+            if not players:
+                with _LOCK:
+                    _FAILED[mid] = time.time()
+                continue
+            a, b = team_names.get(int(m["a"]), ""), team_names.get(int(m["b"]), "")
+            winner = team_names.get(int(m["winner"])) if m.get("winner") is not None else None
+            upsert_hltv_results([{
+                "match_url": url, "match_id": mid, "match_date": m.get("date"), "team1": a, "team2": b,
+                "score1": m.get("score_a"), "score2": m.get("score_b"), "winner": winner, "event": event_name,
+                "maps_json": json.dumps(details.get("maps") or []), "veto_json": json.dumps(details.get("veto") or []),
+                "player_stats_json": json.dumps(players), "map_player_stats_json": json.dumps(details.get("map_player_stats") or {}) if details.get("map_player_stats") else None,
+            }])
+            logger.info("Leaderboard: stored the scoreboard of match %s for event %s", mid, event_id)
+    finally:
+        with _LOCK:
+            _INFLIGHT.discard(int(event_id))
+
+
+def _same_team(a: Any, b: Any) -> bool:
+    from backend.data import team_aliases
+
+    return bool(a) and bool(b) and team_aliases.key(str(a)) == team_aliases.key(str(b))
+
+
+def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, Any]:
+    """{players: [{player_id, name, team_id, team, hltv_team_id, price, matches,
+    rating_points, win_points, total}] best first, matches_scored,
+    matches_pending, read_at}."""
+    from backend.data.event_db import get_event_detail
+    from backend.data.player_db import get_player
+    from backend.services import event_rosters, live_state
+
+    eid = int(event_id)
+    entry = live_state.live_event(eid, fetch_if_missing=False) or {}
+    teams = {int(t): v for t, v in (entry.get("teams") or {}).items()}
+    team_names = {t: str(v.get("name") or "") for t, v in teams.items()}
+    finished = [m for m in (entry.get("matches") or []) if m.get("winner") is not None and m.get("match_id")]
+    boards = _scoreboards([int(m["match_id"]) for m in finished])
+    missing = [m for m in finished if int(m["match_id"]) not in boards]
+
+    # every player the event lists, with 0 until he plays
+    detail = get_event_detail(eid) or {}
+    price_of: Dict[int, Any] = {}
+    for t in detail.get("teams") or []:
+        for pid in t.get("player_ids") or []:
+            price_of[int(pid)] = (t.get("prices") or {}).get(str(pid)) if isinstance(t.get("prices"), dict) else None
+    rows: Dict[int, Dict[str, Any]] = {}
+    for tid, pids in (event_rosters.rosters(eid) or {}).items():
+        for pid in pids:
+            p = get_player(int(pid)) or {}
+            rows[int(pid)] = {
+                "player_id": int(pid), "name": str(p.get("name") or pid), "team_id": int(tid), "team": team_names.get(int(tid), ""),
+                "hltv_team_id": (teams.get(int(tid)) or {}).get("hltv_team_id"), "price": p.get("price") if p.get("price") is not None else price_of.get(int(pid)),
+                "matches": 0, "wins": 0, "rating_points": 0, "win_points": 0, "total": 0, "rating_sum": 0.0,
+            }
+
+    for m in finished:
+        board = boards.get(int(m["match_id"]))
+        if not board:
+            continue
+        bo1 = int(m.get("maps") or ((m.get("score_a") or 0) + (m.get("score_b") or 0)) or 0) == 1
+        for ps in board["players"]:
+            pid = ps.get("player_id")
+            rating = ps.get("rating")
+            if pid is None or rating is None:
+                continue
+            row = rows.get(int(pid))
+            if row is None:
+                continue  # a stand-in the fantasy game does not list
+            won = _same_team(ps.get("team"), board.get("winner"))
+            rp = rating_points(float(rating), bo1)
+            wp = WIN_POINTS if won else LOSS_POINTS
+            row["matches"] += 1
+            row["wins"] += 1 if won else 0
+            row["rating_points"] += rp
+            row["win_points"] += int(wp)
+            row["total"] += rp + int(wp)
+            row["rating_sum"] += float(rating)
+
+    players = []
+    for row in rows.values():
+        row["rating_avg"] = round(row["rating_sum"] / row["matches"], 2) if row["matches"] else None
+        row.pop("rating_sum", None)
+        players.append(row)
+    players.sort(key=lambda r: (-r["total"], -r["rating_points"], r["name"].lower()))
+    for i, row in enumerate(players, start=1):
+        row["rank"] = i
+
+    if missing and fetch_missing:
+        with _LOCK:
+            start = eid not in _INFLIGHT
+            if start:
+                _INFLIGHT.add(eid)
+        if start:
+            threading.Thread(
+                target=_read_missing, args=(eid, missing, team_names, str(entry.get("name") or detail.get("name") or "")),
+                name=f"leaderboard-{eid}", daemon=True,
+            ).start()
+    return {
+        "event_id": eid,
+        "players": players,
+        "matches_scored": len(finished) - len(missing),
+        "matches_pending": len(missing),
+        "components": ["rating", "win"],
+        "read_at": time.time(),
+    }

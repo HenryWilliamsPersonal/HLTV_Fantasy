@@ -45,6 +45,17 @@ async def live_stream(request: Request) -> StreamingResponse:
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@router.get("/events/{event_id}/leaderboard")
+def get_live_leaderboard(event_id: int) -> dict:
+    """Every player in the event scored from the matches played so far
+    (rating and win points; services/leaderboard)."""
+    from backend.services import leaderboard
+
+    if not live_state.live_event(int(event_id), fetch_if_missing=False):
+        raise HTTPException(status_code=404, detail="No valuation stored for this event")
+    return leaderboard.event_leaderboard(int(event_id))
+
+
 @router.get("/events/{event_id}")
 def get_live_event(event_id: int) -> dict:
     entry = live_state.live_event(int(event_id))

@@ -82,13 +82,21 @@ h1 {
 .muted { color: #8fa3bf; margin: 0; }
 
 .pills { display: flex; gap: 8px; align-items: center; }
+/* Pills are clipped boxes like the rest of the app, with the text
+   centred: no rounded ends (they never sat centred). */
 .pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
   background: #1a2029;
   border: 1px solid #2c3441;
   color: #c6d0dc;
-  padding: 6px 10px;
-  border-radius: 999px;
+  padding: 5px 10px 4px;
+  border-radius: 0;
+  clip-path: polygon(6px 0, 100% 0, 100% 100%, 0 100%, 0 6px);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 /* Failed/errored state on the Scheduling run-history table. */
@@ -3431,6 +3439,7 @@ button:disabled {
 .live-detail-head .pill { font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; font-size: 12px; padding: 3px 9px; }
 .live-back { padding: 7px 14px; font-size: 12px; white-space: nowrap; }
 .live-score.live { color: #ff8a47; }
+.live-inplay { color: #ff8a47; font-weight: 600; }
 .sw-match.live { border-color: #ff6b1a; }
 .sw-vs.sw-live { color: #ff8a47; font-variant-numeric: tabular-nums; }
 .sw-vs.sw-time { color: #8fa3bf; text-transform: none; font-variant-numeric: tabular-nums; }

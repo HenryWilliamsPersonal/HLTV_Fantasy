@@ -6356,9 +6356,6 @@ function LiveTab({ onOpenSettings }) {
     return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
   };
   const formatOf = (ev) => (ev.group_format === "swiss" ? "Swiss" : ev.group_format === "bracket" ? (ev.kind === "double_elim" ? "Double elimination" : "Single elimination") : "Groups");
-  const statusPill = (status) => (
-    <span className={`pill${status === "live" ? " ok" : ""}`}>{status === "live" ? "Live" : status === "upcoming" ? "Upcoming" : "Finished"}</span>
-  );
   if (events === null) return <div className="stack" />;
   const open = events.find((e) => e.event_id === openId) || null;
   if (openId) {
@@ -6370,7 +6367,6 @@ function LiveTab({ onOpenSettings }) {
             &larr; Back
           </button>
           <h2 className="live-detail-title">{ev?.name || ""}</h2>
-          {statusPill(ev?.status)}
         </div>
         <div className="tab-bar small">
           {LIVE_EVENT_SUBTABS.map((t) => (
@@ -6400,7 +6396,6 @@ function LiveTab({ onOpenSettings }) {
                     <th>Dates</th>
                     <th className="num">Teams</th>
                     <th className="num">Matches</th>
-                    <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -6415,12 +6410,7 @@ function LiveTab({ onOpenSettings }) {
                       <td className="num">
                         {Number(ev.played || 0)}
                         {ev.total ? <span className="muted"> / {ev.total}</span> : null}
-                      </td>
-                      <td>
-                        <span className="pills">
-                          {statusPill(ev.status)}
-                          {Number(ev.live_count || 0) > 0 ? <span className="pill caution">{ev.live_count} in play</span> : null}
-                        </span>
+                        {Number(ev.live_count || 0) > 0 ? <span className="live-inplay"> · {ev.live_count} in play</span> : null}
                       </td>
                     </tr>
                   ))}

@@ -23,12 +23,13 @@ with HLTV's id order as the fallback.
 Rates: HLTV's own trigger-rates feed for the team
 (/overview/{tid}/draft/{draftId}/triggerrates/json, a rate per booster per
 player, refreshed by HLTV as maps are played) when it answers, else the
-rates stored with the player at import. A rate is per MAP (HLTV counts the
-maps the condition held on), so a series' chance is 1 - (1 - r)^maps with
-the maps a series is expected to run: 1 for a best-of-one, 2.4 for a
-best-of-three, 3.9 for a best-of-five. The coming match's series length
-comes from the Swiss record (swiss_engine.match_bo); later rounds assume
-the stage's usual length.
+rates stored with the player at import. HLTV's rate is the chance over a
+BEST-OF-THREE (the user's word, 2026-10-27); a best-of-three is expected
+to run 2.4 maps, so the per-map miss chance is (1 - R)^(1/2.4) and a
+series of m expected maps triggers with 1 - (1 - R)^(m/2.4): 1 map for a
+best-of-one, 3.9 for a best-of-five, R itself for a best-of-three. The
+coming match's series length comes from the Swiss record
+(swiss_engine.match_bo); later rounds assume the stage's usual length.
 """
 from __future__ import annotations
 
@@ -51,11 +52,59 @@ AUTO_TICK_SECONDS = 300.0
 EXPECTED_MAPS = {1: 1.0, 2: 2.0, 3: 2.4, 5: 3.9}
 
 
-def match_rate(rate_per_map: float, bo: int) -> float:
-    """The chance a booster triggers at least once in a series."""
+def match_rate(rate_bo3: float, bo: int) -> float:
+    """The chance a booster triggers in a series of this length, from
+    HLTV's best-of-three rate."""
     maps = EXPECTED_MAPS.get(int(bo or 3), 2.4)
-    r = min(1.0, max(0.0, float(rate_per_map)))
-    return 1.0 - (1.0 - r) ** maps
+    r = min(1.0, max(0.0, float(rate_bo3)))
+    if r >= 1.0:
+        return 1.0
+    return 1.0 - (1.0 - r) ** (maps / EXPECTED_MAPS[3])
+
+
+def swiss_condition(wins: int, losses: int, rounds_ahead: int, target: int = 3) -> str:
+    """On what results a Swiss team plays the match `rounds_ahead` matches
+    after the coming one (1 = the round after next): '' when it always
+    does, else words like 'if they lose the next one' or 'if they split
+    the next two'; '' too when it is not a short sentence."""
+    from itertools import product
+
+    n = int(rounds_ahead)
+    if n <= 0:
+        return ""
+    alive = []
+    for seq in product(("W", "L"), repeat=n):
+        w, l, ok = int(wins), int(losses), True
+        for res in seq:
+            if w >= target or l >= target:
+                ok = False
+                break
+            w, l = (w + 1, l) if res == "W" else (w, l + 1)
+        if ok and w < target and l < target:
+            alive.append(seq)
+    total = 2 ** n
+    if not alive:
+        return "never"
+    if len(alive) == total:
+        return ""
+    word = {1: "one", 2: "two", 3: "three"}.get(n, str(n))
+    if len(alive) == 1:
+        seq = alive[0]
+        if all(r == "W" for r in seq):
+            return f"if they win the next {word}"
+        if all(r == "L" for r in seq):
+            return f"if they lose the next {word}"
+        return ""
+    if len(alive) == total - 1:
+        missing = next(seq for seq in product(("W", "L"), repeat=n) if seq not in alive)
+        if all(r == "W" for r in missing):
+            return f"unless they win the next {word}"
+        if all(r == "L" for r in missing):
+            return f"unless they lose the next {word}"
+        return ""
+    if n == 2 and set(alive) == {("W", "L"), ("L", "W")}:
+        return "if they split the next two"
+    return ""
 
 _POST_JS = """
 const [url, body, done] = arguments;
@@ -306,6 +355,9 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
             rate = float(rates_of.get(col["player_id"], {}).get(b, 0.0))
             per_match = match_rate(rate, int(col["bo"]))
             item = {"index": b, "hltv_id": _hltv_id(b, options), "name": BOOSTER_NAMES.get(b), "rate": round(rate, 3), "match_rate": round(per_match, 3), "bo": int(col["bo"]), "expected": round(per_match * BOOSTER_POINT_VALUE, 2), "prob": round(float(col["prob"]), 3), "stage": col["stage"]}
+            if col["slot"] > 0 and results.get("group_format") == "swiss":
+                w0, l0 = entry.get("record") or [0, 0]
+                item["condition"] = swiss_condition(int(w0), int(l0), int(col["slot"]))
             if col["slot"] == 0:
                 entry["suggestion"] = item
             else:

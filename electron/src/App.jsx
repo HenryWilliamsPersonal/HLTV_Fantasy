@@ -7073,8 +7073,8 @@ function BoosterPanel({ ev, onOpenSettings }) {
               <th>Next match</th>
               <th>On HLTV</th>
               <th>Suggested</th>
-              <th className="num">Rate</th>
-              <th className="num">In series</th>
+              <th className="num">Rate (Bo3)</th>
+              <th className="num">This series</th>
               <th className="num">Expected</th>
               <th className="tight"></th>
             </tr>
@@ -7131,9 +7131,10 @@ function BoosterPanel({ ev, onOpenSettings }) {
               <tr>
                 <th>Player</th>
                 <th>Round</th>
-                <th className="num">Chance to play</th>
+                <th>Played</th>
+                <th className="num">Chance</th>
                 <th>Booster</th>
-                <th className="num">Rate</th>
+                <th className="num">Rate (Bo3)</th>
                 <th className="num">Expected</th>
               </tr>
             </thead>
@@ -7150,6 +7151,7 @@ function BoosterPanel({ ev, onOpenSettings }) {
                         {stageName(x.stage)}
                         {x.bo ? <span className="muted"> · Bo{x.bo}</span> : null}
                       </td>
+                      <td>{x.condition ? x.condition.charAt(0).toUpperCase() + x.condition.slice(1) : "Always"}</td>
                       <td className="num">{pct(x.prob)}</td>
                       <td>
                         <span className="pill">{x.name}</span>

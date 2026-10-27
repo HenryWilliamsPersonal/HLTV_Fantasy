@@ -6727,13 +6727,24 @@ function MyTeamPanel({ ev, onOpenSettings }) {
               {t.expected != null && <div className="mt-track-exp">exp {fmt1(t.expected)}</div>}
             </div>
           ) : (
-            <div className="mt-track-pts">
-              <div className={`mt-track-points${Number(t.points) < 0 ? " neg" : ""}`}>{t.points ?? 0} pts</div>
-              {t.expected != null && <div className="mt-track-exp">exp {fmt1(t.expected)}</div>}
-              {t.difference != null && <div className={`mt-track-diff${diffClass(t.difference)}`}>{signed(t.difference)}</div>}
-            </div>
+            <div className={`mt-track-points${Number(t.points) < 0 ? " neg" : ""}`}>{t.points ?? 0} pts</div>
           )}
         </div>
+        {played && (
+          <div className="event-player-stats ev-mini mt-track-stats">
+            {[
+              ["Rating", t.rating_points],
+              ["Team", t.team_points],
+              ["Role", t.role_points],
+              ["Booster", t.booster_points],
+            ].map(([label, v]) => (
+              <div className="event-player-stat" key={label}>
+                <span className="event-player-mini">{signed(v)}</span>
+                <span className="event-player-stat-label">{label}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   };
@@ -6897,14 +6908,6 @@ function MyTeamPanel({ ev, onOpenSettings }) {
           <div className="mt-rounds">
             {report.rounds.map((r) => {
               const cards = Array.isArray(r.players) ? r.players : [];
-              const rows = [
-                ["This round · expected", r.expected_parts, false],
-                ["This round · actual", r.actual_parts, false],
-                ["Running · expected", r.running_expected_parts, false],
-                ["Running · actual", r.running_actual_parts, true],
-              ];
-              const roundDiff = r.expected_parts && r.actual_parts ? r.actual_parts.total - r.expected_parts.total : null;
-              const runningDiff = r.running_expected_parts && r.running_actual_parts ? r.running_actual_parts.total - r.running_expected_parts.total : null;
               return (
                 <div className={`mt-round${r.status === "LIVE" ? " live" : ""}`} key={r.name}>
                   <div className="mt-round-head">
@@ -6912,40 +6915,18 @@ function MyTeamPanel({ ev, onOpenSettings }) {
                   </div>
                   {cards.length > 0 && <div className="mt-tracker">{cards.map((t, i) => trackCard(t, i))}</div>}
                   <div className="mt-round-foot">
-                    <table className="mt-mini mt-round-table">
-                      <thead>
-                        <tr>
-                          <th></th>
-                          {COMPS.map(([k, label]) => (
-                            <th key={k} className={k === "total" ? "strong" : ""}>
-                              {label}
-                            </th>
-                          ))}
-                          <th className="strong">Diff</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rows.map(([label, parts, isRunningActual]) => (
-                          <tr key={label}>
-                            <td className="mt-mini-label">{label}</td>
-                            {COMPS.map(([k]) => (
-                              <td key={k} className={k === "total" ? "strong" : ""}>
-                                {parts && parts[k] != null ? (label.endsWith("actual") ? signed(parts[k]) : fmt1(parts[k])) : "-"}
-                              </td>
-                            ))}
-                            <td className={`strong${label === "This round · actual" ? diffClass(roundDiff) : isRunningActual ? diffClass(runningDiff) : ""}`}>
-                              {label === "This round · actual" && roundDiff != null ? signed(Math.round(roundDiff * 10) / 10) : isRunningActual && runningDiff != null ? signed(Math.round(runningDiff * 10) / 10) : ""}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    <div className="mt-round-place">
-                      <span className="mt-round-num-value">{r.placement != null ? `${Number(r.placement).toLocaleString()} / ${Number(key.league_size || 0).toLocaleString()}` : "-"}</span>
-                      <span className="mt-round-num-label">Placement</span>
-                      <span className="mt-round-num-value strong">{r.status === "TBA" ? "-" : r.total ?? "-"}</span>
-                      <span className="mt-round-num-label">Total</span>
-                    </div>
+                    {[
+                      ["Expected", r.expected_total != null ? fmt1(r.expected_total) : "-", ""],
+                      ["Actual", r.status === "TBA" ? "-" : signed(r.subtotal), r.difference != null ? diffClass(r.difference) : ""],
+                      ["Placement", r.placement != null ? `${Number(r.placement).toLocaleString()} / ${Number(key.league_size || 0).toLocaleString()}` : "-", ""],
+                      ["Total", r.status === "TBA" ? "-" : r.total ?? "-", " strong"],
+                      ["Expected total", r.running_expected_parts && r.running_expected_parts.total != null ? fmt1(r.running_expected_parts.total) : "-", ""],
+                    ].map(([label, v, cls]) => (
+                      <div className={`mt-round-num${cls}`} key={label}>
+                        <span className="mt-round-num-value">{v}</span>
+                        <span className="mt-round-num-label">{label}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               );

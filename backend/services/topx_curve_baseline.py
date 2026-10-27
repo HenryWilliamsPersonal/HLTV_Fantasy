@@ -1,6 +1,6 @@
 """The Top-X bucket curve the app priced ratings with until 2026-10-19, kept
-only as the baseline the Rating Model study scores the learned model against
-(Dev Lab → Rating Model). Nothing else reads it.
+only as the baseline the Rating Model study (rating_model_study, run by
+hand) scores the learned model against. Nothing else reads it.
 
 Per player: HLTV's cumulative "rating vs top N" tiers become non-overlapping
 bands, each band shrinks toward a population curve (the typical fractional

@@ -1532,21 +1532,6 @@ def delete_my_hltv_session():
     return {"status": "ok", "connected": False}
 
 
-@router.get("/dev-flags")
-def get_dev_flags():
-    """Formats/shapes the app met but refuses to model yet (see services/dev_flags.py)."""
-    from backend.services import dev_flags
-
-    return {"flags": dev_flags.list_flags()}
-
-
-@router.delete("/dev-flags/{key:path}")
-def delete_dev_flag(key: str):
-    from backend.services import dev_flags
-
-    return {"status": "ok", "removed": dev_flags.clear_flag(key)}
-
-
 @router.get("/team-aliases")
 def get_team_aliases():
     """Team renames: an earlier name's results, rankings and map history count

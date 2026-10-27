@@ -55,7 +55,12 @@ def _cookies_from(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 @router.get("/session")
 def get_session(request: Request) -> dict:
-    return my_team.status_for(_user_key(request))
+    from backend.data import my_team_settings
+
+    key = _user_key(request)
+    out = dict(my_team.status_for(key))
+    out["auto_all"] = my_team_settings.auto_all_enabled(key)
+    return out
 
 
 @router.post("/session")
@@ -72,6 +77,25 @@ def disconnect_session(request: Request) -> dict:
     key = _user_key(request)
     my_team.forget_account(key)
     return {"status": "ok", "connected": False}
+
+
+@router.post("/settings")
+def set_my_team_settings(request: Request, payload: Dict[str, Any]) -> dict:
+    """The user's booster settings. auto_all: the app sets the advised
+    boosters on HLTV in every live or upcoming event the user has a team
+    in, without switching it on per event; on → applied at once in a thread."""
+    import threading
+
+    from backend.data import my_team_settings
+    from backend.services import booster_advisor
+
+    key = _user_key(request)
+    if "auto_all" in (payload or {}):
+        enabled = bool(payload["auto_all"])
+        my_team_settings.set_auto_all(key, enabled)
+        if enabled:
+            threading.Thread(target=lambda: booster_advisor.apply_everywhere(key), name=f"booster-auto-all-{key}", daemon=True).start()
+    return {"status": "ok", "auto_all": my_team_settings.auto_all_enabled(key)}
 
 
 def _connected_key(request: Request) -> str:
@@ -97,10 +121,12 @@ def get_boosters(request: Request, event_id: int, refresh: bool = False) -> dict
         force=refresh,
     )
     out: Dict[str, Any] = dict(job.get("value") or {})
+    auto_all = my_team_settings.auto_all_enabled(key)
     out.update({
         "pending": bool(job.get("pending")),
         "error": job.get("error"),
-        "auto": my_team_settings.auto_enabled(key, int(event_id)),
+        "auto": auto_all or my_team_settings.auto_enabled(key, int(event_id)),
+        "auto_all": auto_all,
         "actions": my_team_settings.actions(key, int(event_id)),
     })
     return out

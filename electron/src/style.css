@@ -3247,9 +3247,6 @@ button:disabled {
 .update-modal h1 { margin: 0 0 10px; font-family: var(--display); font-size: 26px; line-height: 1.05; text-transform: uppercase; letter-spacing: 0.02em; color: #f2f5f9; }
 .update-modal p { margin: 0 0 6px; color: #c6d0dc; font-size: 15px; line-height: 1.5; }
 
-/* Rating Lab: the example-player workbench. Inputs sit beside the chart
-   instead of every control stretching across the window. */
-.lab { max-width: 1480px; }
 
 
 /* Tier inputs: label | rating | maps, with the tier name in the broadcast face */
@@ -3286,7 +3283,6 @@ button:disabled {
 
 .mm-bar { height: 8px; background: #0a0c10; border: 1px solid #242b35; overflow: hidden; }
 .mm-bar-fill { height: 100%; background: #ff6b1a; transition: width 0.3s ease; }
-.mm-table th, .mm-table td { padding: 7px 12px; font-variant-numeric: tabular-nums; }
 
 .mm-win { color: #ff8a47; font-weight: 700; }
 /* Database > Players: search + scope side by side */
@@ -3311,32 +3307,7 @@ button:disabled {
 .pb-matches .gsl-pick button { text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pb-round:not(:first-child) .pb-match-wrap:has(> .gsl-match)::before { display: none; }
 
-/* Dev Lab: Rating Model (Top-X curve vs the learned rating model) */
-.rm-head { display: flex; flex-direction: column; gap: 6px; }
-.rm-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.rm-tile .topx-tile-value { font-variant-numeric: tabular-nums; }
-.rm-updated { color: #8fa3bf; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
-.rm-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.rm-legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 4px 0 8px; color: #c3cddb; font-size: 12.5px; }
-.rm-legend i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; vertical-align: -1px; }
-.rm-swatch { display: inline-block; width: 10px; height: 10px; margin-right: 8px; vertical-align: -1px; }
-.rm-table { margin-top: 14px; width: 100%; }
-.rm-table td, .rm-table th { text-align: right; }
-.rm-table td:first-child, .rm-table th:first-child { text-align: left; }
 .card.sub h3 { margin-top: 0; }
-@media (max-width: 1100px) {
-  .rm-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .rm-grid { grid-template-columns: 1fr; }
-}
-.rm-chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.rm-chip {
-  background: #171c24;
-  border: 1px solid #2c3441;
-  border-left: 3px solid #ff6b1a;
-  padding: 6px 10px;
-  font-size: 12.5px;
-  color: #e9edf3;
-}
 
 /* Completed Swiss board: HLTV's record-pool layout in the app's palette */
 .sw-board { display: flex; gap: 22px; align-items: stretch; padding: 16px; border: 1px solid #2c3441; border-radius: 12px; background: #0e1116; overflow-x: auto; }
@@ -3485,11 +3456,6 @@ button:disabled {
 .live-group .table-player-cell span { max-width: none; white-space: normal; overflow: visible; text-overflow: clip; }
 .live-group td.num, .live-group th.num { width: 48px; text-align: right; }
 
-/* Dev Lab: flags */
-.dev-flags td.detail { max-width: 520px; white-space: normal; color: #8fa3bf; font-size: 12.5px; line-height: 1.35; }
-.dev-flags td, .dev-flags th { vertical-align: top; }
-.dev-flags .secondary { padding: 4px 12px; font-size: 11px; }
-
 /* My Team */
 .myteam-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .myteam-strip .topx-tile-value { font-size: 28px; font-variant-numeric: tabular-nums; }
@@ -3574,6 +3540,7 @@ button:disabled {
 .bp-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
 .bp-head-label { font-weight: 600; color: #e9edf3; }
 .bp-head .bp-apply-all { margin-left: auto; }
+.bp-head.settings-auto { margin: 16px 0 0; }
 .bp-table th.tight { width: 110px; }
 .bp-table td.tight { white-space: nowrap; text-align: right; }
 .bp-table th.num { width: 96px; }

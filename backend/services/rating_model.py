@@ -2,7 +2,7 @@
 match, learned from every stored per-map scoreboard.
 
 It replaced the Top-X bucket curve on 2026-10-19. The study
-behind it (rating_model_study, shown on Dev Lab → Rating Model) measured it
+behind it (rating_model_study, run by hand) measured it
 walk-forward against that curve: a lower error every month and no bias
 against weak or unranked opponents, where the curve under-predicted by
 0.067 of rating.

@@ -7,7 +7,7 @@ together, and the steps that only the operator (you) can do.
 
 | Piece | Where | What it does |
 |---|---|---|
-| Public app | `electron/` built by electron-builder | Installed app. Never runs a backend; talks to the hosted one. Hides Events, Dev Lab and Scheduling and every control that scrapes or rewrites stored runs. |
+| Public app | `electron/` built by electron-builder | Installed app. Never runs a backend; talks to the hosted one. Hides Events and Scheduling and every control that scrapes or rewrites stored runs. |
 | Backend access layer | `backend/services/public_access.py` | Requests from this machine (or with the admin token) get everything; everyone else gets the read-only surface only, rate limited. |
 | Website | `site/` → GitHub Pages | Landing page with the download button, plus `api.json`, which tells installed apps where the backend lives. |
 | Release workflow | `.github/workflows/release.yml` | On a `v*` tag: builds the NSIS installer and publishes it and `latest.yml` to a GitHub Release. |
@@ -296,7 +296,7 @@ Setup (Google Cloud Console, once):
 
 Admins: an account with `is_admin` set is treated as the operator wherever
 it signs in from: the installed app shows every operator tab (Events actions,
-Dev Lab, Scheduling, Users) and the API accepts operator routes from its
+Scheduling, Users) and the API accepts operator routes from its
 session, with no rate limits. Grant or revoke on the Users tab (an admin
 cannot demote themselves there) or with
 `POST /admin/users/{id}/admin {"is_admin": true}`. The Users tab lists every

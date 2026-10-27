@@ -3847,78 +3847,6 @@ def _lab_data_signature() -> Dict[str, int]:
     }
 
 
-# The Rating Model lab: the Top-X curve versus a model learned from the
-# stored per-map scoreboards (services/rating_model_study), cached the same
-# way as the map-model evaluation and refreshed when the scoreboards change.
-_RATING_MODEL_LAB_STATE = SingletonState("rating_model_lab_result")
-_RATING_MODEL_LAB_STATE_READY = False
-
-
-def _rating_lab_state() -> SingletonState:
-    global _RATING_MODEL_LAB_STATE_READY
-    if not _RATING_MODEL_LAB_STATE_READY:
-        _RATING_MODEL_LAB_STATE.ensure_table()
-        _RATING_MODEL_LAB_STATE_READY = True
-    return _RATING_MODEL_LAB_STATE
-
-
-def _rating_lab_signature() -> Dict[str, int]:
-    from backend.services import rating_model_study
-
-    conn = event_db_connect()
-    try:
-        row = conn.execute(
-            "SELECT COUNT(*) AS c, COALESCE(MAX(match_id), 0) AS m FROM hltv_results WHERE map_player_stats_json IS NOT NULL"
-        ).fetchone()
-    finally:
-        conn.close()
-    return {"scoreboards": int(row["c"] or 0), "last_match": int(row["m"] or 0), "version": int(rating_model_study.STUDY_VERSION)}
-
-
-@router.get("/hltv-results/rating-model-lab/latest")
-def get_rating_model_lab_latest():
-    """The cached last study, with whether the scoreboards changed since."""
-    saved = _rating_lab_state().load()
-    if not saved or not saved.get("result"):
-        return {"exists": False}
-    payload = saved.get("payload") or {}
-    then = payload.get("signature") or {}
-    now = _rating_lab_signature()
-    changes = {k: int(now.get(k, 0)) - int(then.get(k, 0)) for k in now if int(now.get(k, 0)) != int(then.get(k, 0))}
-    return {
-        "exists": True,
-        "computed_at": float(payload.get("computed_at") or saved.get("updated_at") or 0.0),
-        "stale": bool(changes),
-        "changes": changes,
-        "result": saved.get("result"),
-    }
-
-
-def evaluate_rating_model() -> Dict[str, Any]:
-    """Run the walk-forward study (about 90 s) and cache it for the page."""
-    from backend.services import rating_model_study
-
-    signature = _rating_lab_signature()
-    conn = event_db_connect()
-    try:
-        result = rating_model_study.run_study(conn)
-    finally:
-        conn.close()
-    computed_at = time.time()
-    _rating_lab_state().save({"computed_at": computed_at, "signature": signature}, result)
-    return result
-
-
-def ensure_rating_model_evaluation() -> Dict[str, Any]:
-    """Re-run the study when there is none or the scoreboards it uses changed
-    (startup and the nightly map-model task)."""
-    latest = get_rating_model_lab_latest()
-    if latest.get("exists") and not latest.get("stale"):
-        return {"evaluated": False, "summary": (latest.get("result") or {}).get("summary") or {}}
-    result = evaluate_rating_model()
-    return {"evaluated": True, "summary": result.get("summary") or {}}
-
-
 # Fantasy games that cover only one stage of a tournament are named after it in
 # HLTV's fantasy nav ("Group Stage - BLAST Open Porto 2026", "Playoffs - ...",
 # Majors' "Stage 1 - ..."); a whole-tournament game just carries the event name.
@@ -4130,14 +4058,7 @@ def _detect_event_tournament_kind(event: Dict[str, Any]) -> Dict[str, Any]:
                 reject_unsupported_combined_shape(fmt, len(group_brackets), int(event.get("event_id") or 0) or None)
         else:
             combined_shape = f"{kind} + {playoff_stage['label']}"
-            from backend.services import dev_flags
-
-            dev_flags.flag(
-                key=f"combined:{kind}",
-                kind="combined_playoff_shape",
-                detail=f"{combined_shape}: one fantasy game scoring a {kind} stage plus its playoff is not modelled.",
-                event_id=int(event.get("event_id") or 0) or None,
-            )
+            logger.warning("Event %s: %s — one fantasy game scoring a %s stage plus its playoff is not modelled", event.get("event_id"), combined_shape, kind)
 
     return {
         "kind": kind,

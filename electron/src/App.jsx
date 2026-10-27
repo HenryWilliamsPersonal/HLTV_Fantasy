@@ -10,7 +10,6 @@ import {
   Pie,
   PieChart,
   Rectangle,
-  ReferenceLine,
   ResponsiveContainer,
   Scatter,
   Tooltip,
@@ -320,7 +319,6 @@ const ALL_TABS = [
   { key: "events", label: "Events" },
   { key: "tournament", label: "Tournament" },
   { key: "live", label: "Live" },
-  { key: "devlab", label: "Dev Lab" },
   { key: "scheduling", label: "Scheduling" },
   { key: "users", label: "Users" },
   { key: "settings", label: "Settings" },
@@ -6433,6 +6431,8 @@ function SettingsTab() {
 // verifies a new login in the background; the status polls meanwhile.
 function HltvAccountSettings() {
   const [account, setAccount] = useState(null); // {connected, username, days_left, verifying, error}
+  const [autoAll, setAutoAll] = useState(false); // boosters set by the app in every event
+  const [autoBusy, setAutoBusy] = useState(false);
   const [connecting, setConnecting] = useState("");
   const [pasted, setPasted] = useState("");
   const [showPaste, setShowPaste] = useState(false); // the pasted-cookie route while the sign-in window exists
@@ -6443,6 +6443,7 @@ function HltvAccountSettings() {
       .get("/my-team/session", 30000)
       .then((d) => {
         setAccount({ connected: Boolean(d?.connected), username: d?.username || "", days_left: d?.days_left, verifying: Boolean(d?.verifying), error: d?.error || "" });
+        setAutoAll(Boolean(d?.auto_all));
         if (d?.verifying) poll.current = setTimeout(loadStatus, 3000);
       })
       .catch((e) => setAccount({ connected: false, error: e?.message || "" }));
@@ -6497,6 +6498,17 @@ function HltvAccountSettings() {
     }
     loadStatus();
   };
+  const toggleAutoAll = async (enabled) => {
+    setAutoBusy(true);
+    try {
+      await api.post("/my-team/settings", { auto_all: enabled }, 30000);
+      setAutoAll(enabled);
+    } catch {
+      /* the next status load shows the truth */
+    } finally {
+      setAutoBusy(false);
+    }
+  };
   const hasBridge = Boolean(window.api?.connectHltv);
   const busy = Boolean(connecting) && connecting.endsWith("…");
   return (
@@ -6535,6 +6547,15 @@ function HltvAccountSettings() {
           </>
         )}
       </div>
+      {account?.connected && (
+        <div className="bp-head settings-auto">
+          <label className="switch" title={autoAll ? "Auto-apply on" : "Auto-apply off"}>
+            <input type="checkbox" checked={Boolean(autoAll)} onChange={(e) => toggleAutoAll(e.target.checked)} disabled={autoBusy} />
+            <span className="switch-track" />
+          </label>
+          <span className="bp-head-label">Auto-apply boosters in every event</span>
+        </div>
+      )}
     </Section>
   );
 }
@@ -7048,7 +7069,7 @@ function BoosterPanel({ ev, onOpenSettings }) {
       <Section title="Boosters">
         <div className="bp-head">
           <label className="switch" title={data.auto ? "Auto-apply on" : "Auto-apply off"}>
-            <input type="checkbox" checked={Boolean(data.auto)} onChange={(e) => toggleAuto(e.target.checked)} disabled={busy === "auto"} />
+            <input type="checkbox" checked={Boolean(data.auto)} onChange={(e) => toggleAuto(e.target.checked)} disabled={busy === "auto" || Boolean(data.auto_all)} />
             <span className="switch-track" />
           </label>
           <span className="bp-head-label">Auto-apply for the rest of the event</span>
@@ -7358,103 +7379,6 @@ function LiveEventBody({ ev }) {
       )}
       {matchRow && <MatchDetailModal row={matchRow} teams={teamRows} players={[]} onClose={() => setMatchRow(null)} />}
     </div>
-  );
-}
-
-// Dev Lab: the rating-model study and the flags — formats and shapes the
-// app met but refuses to model yet (services/dev_flags.py).
-const DEV_LAB_SUBTABS = [
-  { key: "rating", label: "Rating Model" },
-  { key: "flags", label: "Flags" },
-];
-function DevLabTab() {
-  const [sub, setSub] = useState("rating");
-  return (
-    <div className="stack">
-      <div className="tab-bar small">
-        {DEV_LAB_SUBTABS.map((t) => (
-          <button key={t.key} className={sub === t.key ? "tab active" : "tab"} onClick={() => setSub(t.key)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-      {sub === "rating" ? <RatingModelLabTab /> : <DevFlagsTab />}
-    </div>
-  );
-}
-
-function DevFlagsTab() {
-  const [flags, setFlags] = useState(null);
-  const [busy, setBusy] = useState("");
-  const load = async () => {
-    try {
-      const d = await api.get("/admin/dev-flags", 30000);
-      setFlags(Array.isArray(d?.flags) ? d.flags : []);
-    } catch {
-      setFlags((prev) => prev || []);
-    }
-  };
-  useEffect(() => {
-    load();
-  }, []);
-  const clear = async (key) => {
-    setBusy(key);
-    try {
-      await api.delete(`/admin/dev-flags/${encodeURIComponent(key)}`);
-      setFlags((prev) => (prev || []).filter((f) => f.key !== key));
-    } catch {
-      /* the row stays; the next load shows the truth */
-    } finally {
-      setBusy("");
-    }
-  };
-  const when = (ts) => {
-    if (!(Number(ts) > 0)) return "-";
-    const d = new Date(Number(ts) * 1000);
-    return `${formatDMY(d.toISOString())} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-  };
-  const list = flags || [];
-  return (
-    <Section title="Flags">
-      {list.length === 0 ? (
-        <p className="muted">{flags === null ? "" : "None"}</p>
-      ) : (
-        <table className="dev-flags">
-          <thead>
-            <tr>
-              <th>Shape</th>
-              <th>Kind</th>
-              <th>Events</th>
-              <th className="num">Hits</th>
-              <th>First seen</th>
-              <th>Last seen</th>
-              <th>Detail</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {list.map((f) => (
-              <tr key={f.key}>
-                <td>
-                  <span className="pill warn">{f.key}</span>
-                </td>
-                <td>{String(f.kind || "").replace(/_/g, " ")}</td>
-                <td>{Array.isArray(f.event_ids) && f.event_ids.length > 0 ? f.event_ids.join(", ") : "-"}</td>
-                <td className="num">{Number(f.count || 0).toLocaleString()}</td>
-                <td>{when(f.first_seen)}</td>
-                <td>{when(f.last_seen)}</td>
-                <td className="detail">{f.detail}</td>
-                <td className="num">
-                  <button className="secondary" onClick={() => clear(f.key)} disabled={busy === f.key}>
-                    Clear
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </Section>
   );
 }
 
@@ -9891,325 +9815,6 @@ const ModelCurveChart = ({ curve, height = 300 }) => {
   );
 };
 
-// Dev Lab → Rating Model: the Top-X curve the app uses today against a model
-// learned from the stored per-map scoreboards, walk-forward by month (see
-// backend/services/rating_model_study.py). The page shows the cached study.
-const RM_COLORS = { curve: "#7fb3ff", gbr: "#ff6b1a", gbr_no_opponent: "#b7693a", ridge: "#c9a0ff", overall: "#8fa3bf" };
-const RM_AXIS = { tick: { fill: "#9fb2c9", fontSize: 11 }, axisLine: { stroke: "#3a4452" }, tickLine: { stroke: "#3a4452" } };
-
-function RatingModelLabTab() {
-  const [latest, setLatest] = useState(null);
-  useEffect(() => {
-    let live = true;
-    api
-      .get("/events/hltv-results/rating-model-lab/latest", 60000)
-      .then((d) => {
-        if (live) setLatest(d && d.exists ? d : null);
-      })
-      .catch(() => {
-        if (live) setLatest(null);
-      });
-    return () => {
-      live = false;
-    };
-  }, []);
-  const r = latest?.result || null;
-  const num = (v, d = 4) => (Number.isFinite(Number(v)) ? Number(v).toFixed(d) : "-");
-  const signed = (v, d = 3) => (Number.isFinite(Number(v)) ? `${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(d)}` : "-");
-  const fmtInt = (v) => Number(v || 0).toLocaleString();
-  const methods = r?.methods || [];
-  const label = (k) => methods.find((m) => m.key === k)?.label || k;
-  const summary = r?.summary || {};
-  const folds = r?.folds || [];
-  const wins = r?.fold_wins?.gbr;
-  const computed = latest?.computed_at ? new Date(latest.computed_at * 1000) : null;
-
-  const foldRows = useMemo(
-    () => folds.map((f) => ({ month: f.month, n: f.n_test, ...Object.fromEntries(Object.entries(f.mae || {}).map(([k, v]) => [k, Number(v)])) })),
-    [folds]
-  );
-  const bucketRows = useMemo(
-    () =>
-      (r?.rank_buckets || []).map((b) => ({
-        bucket: b,
-        curve_bias: r?.by_opp_rank?.curve?.[b]?.bias,
-        gbr_bias: r?.by_opp_rank?.gbr?.[b]?.bias,
-        curve_mae: r?.by_opp_rank?.curve?.[b]?.mae,
-        gbr_mae: r?.by_opp_rank?.gbr?.[b]?.mae,
-        n: r?.by_opp_rank?.curve?.[b]?.n || 0,
-      })),
-    [r]
-  );
-  const facedRows = useMemo(() => {
-    const c = r?.by_opposition_faced?.curve || [];
-    const g = r?.by_opposition_faced?.gbr || [];
-    return c.map((q, i) => ({
-      bucket: `${Math.round(q.rank_lo)}–${Math.round(q.rank_hi)}`,
-      curve_bias: q.bias,
-      gbr_bias: g[i]?.bias,
-      curve_mae: q.mae,
-      gbr_mae: g[i]?.mae,
-      n: q.n,
-    }));
-  }, [r]);
-  const importance = useMemo(() => (r?.importance || []).slice(0, 12).map((x) => ({ label: x.label, value: Number(x.mae_increase) })), [r]);
-
-  const BiasTip = ({ active, payload }) => {
-    if (!active || !payload?.length) return null;
-    const d = payload[0]?.payload || {};
-    return (
-      <div className="pool-tooltip">
-        <div className="pool-tooltip-title">Opponent {d.bucket}</div>
-        <div>{label("curve")} {signed(d.curve_bias)} · MAE {num(d.curve_mae, 3)}</div>
-        <div>{label("gbr")} {signed(d.gbr_bias)} · MAE {num(d.gbr_mae, 3)}</div>
-        <div>{fmtInt(d.n)} maps</div>
-      </div>
-    );
-  };
-  const FoldTip = ({ active, payload }) => {
-    if (!active || !payload?.length) return null;
-    const d = payload[0]?.payload || {};
-    return (
-      <div className="pool-tooltip">
-        <div className="pool-tooltip-title">{d.month}</div>
-        {methods.map((m) => (
-          <div key={m.key}>
-            {m.label} {num(d[m.key])}
-          </div>
-        ))}
-        <div>{fmtInt(d.n)} maps</div>
-      </div>
-    );
-  };
-  const barChart = (rows, keyA, keyB, { zero = false, fmt = (v) => num(v, 2) } = {}) => (
-    <ResponsiveContainer width="100%" height={260}>
-      <BarChart data={rows} margin={{ top: 12, right: 12, left: 0, bottom: 4 }} barGap={2} barCategoryGap="28%">
-        <CartesianGrid stroke="#232a34" strokeDasharray="3 3" vertical={false} />
-        <XAxis dataKey="bucket" {...RM_AXIS} />
-        <YAxis {...RM_AXIS} width={46} tickFormatter={fmt} domain={["auto", "auto"]} />
-        <Tooltip cursor={{ fill: "rgba(255,255,255,0.04)" }} content={<BiasTip />} />
-        {zero && <ReferenceLine y={0} stroke="#f2f5f9" strokeWidth={1} />}
-        <Bar dataKey={keyA} fill={RM_COLORS.curve} isAnimationActive={false} />
-        <Bar dataKey={keyB} fill={RM_COLORS.gbr} isAnimationActive={false} />
-      </BarChart>
-    </ResponsiveContainer>
-  );
-  const legend = (keys) => (
-    <div className="rm-legend">
-      {keys.map((k) => (
-        <span key={k}>
-          <i style={{ background: RM_COLORS[k] }} /> {label(k)}
-        </span>
-      ))}
-    </div>
-  );
-  const best = (row, keys) => {
-    const vals = keys.map((k) => Number(row[k])).filter((v) => Number.isFinite(v));
-    return vals.length ? Math.min(...vals) : null;
-  };
-
-  return (
-    <Section title="Rating Model Lab">
-      {r && (
-        <div className="stack lab">
-          <div className="rm-head">
-            <div className="rm-tiles">
-              {[
-                { key: "curve", sub: `RMSE ${num(summary.curve?.series_rmse)}` },
-                { key: "gbr", sub: `RMSE ${num(summary.gbr?.series_rmse)}` },
-              ].map((t) => (
-                <div key={t.key} className="topx-tile rm-tile" style={{ borderLeftColor: RM_COLORS[t.key] }}>
-                  <div className="topx-tile-label">{label(t.key)} · per series</div>
-                  <div className="topx-tile-value">{num(summary[t.key]?.series_mae)}</div>
-                  <div className="topx-tile-maps">Mean absolute error · {t.sub}</div>
-                </div>
-              ))}
-              <div className="topx-tile rm-tile">
-                <div className="topx-tile-label">Months the learned model wins</div>
-                <div className="topx-tile-value">
-                  {wins ?? "-"} / {folds.length}
-                </div>
-                <div className="topx-tile-maps">{fmtInt(r.data?.eligible_series)} player-series scored</div>
-              </div>
-              <div className="topx-tile rm-tile">
-                <div className="topx-tile-label">Scoreboards</div>
-                <div className="topx-tile-value">{fmtInt(r.data?.rows)}</div>
-                <div className="topx-tile-maps">
-                  {fmtInt(r.data?.matches)} matches · {fmtInt(r.data?.players)} players · {r.data?.first_date} → {r.data?.last_date}
-                </div>
-              </div>
-            </div>
-            {computed && <div className="rm-updated">Updated {computed.toLocaleDateString()} {computed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>}
-          </div>
-
-          <div className="card sub">
-            <h3>Mean absolute error per map, by month</h3>
-            {legend(["curve", "gbr", "overall"])}
-            <ResponsiveContainer width="100%" height={300}>
-              <ComposedChart data={foldRows} margin={{ top: 12, right: 18, left: 0, bottom: 4 }}>
-                <CartesianGrid stroke="#232a34" strokeDasharray="3 3" />
-                <XAxis dataKey="month" {...RM_AXIS} />
-                <YAxis {...RM_AXIS} width={50} domain={["auto", "auto"]} tickFormatter={(v) => num(v, 3)} />
-                <Tooltip cursor={{ stroke: "#3a4452" }} content={<FoldTip />} />
-                {["overall", "curve", "gbr"].map((k) => (
-                  <Line key={k} type="monotone" dataKey={k} stroke={RM_COLORS[k]} strokeWidth={2} dot={{ r: 3, fill: RM_COLORS[k], strokeWidth: 0 }} isAnimationActive={false} />
-                ))}
-              </ComposedChart>
-            </ResponsiveContainer>
-            <table className="mm-table rm-table">
-              <thead>
-                <tr>
-                  <th>Month</th>
-                  <th>Maps</th>
-                  {methods.map((m) => (
-                    <th key={m.key}>{m.label}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {foldRows.map((f) => {
-                  const b = best(f, methods.map((m) => m.key));
-                  return (
-                    <tr key={f.month}>
-                      <td>{f.month}</td>
-                      <td>{fmtInt(f.n)}</td>
-                      {methods.map((m) => (
-                        <td key={m.key} className={Number(f[m.key]) === b ? "mm-win" : ""}>
-                          {num(f[m.key])}
-                        </td>
-                      ))}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="rm-grid">
-            <div className="card sub">
-              <h3>Bias by opponent rank</h3>
-              {legend(["curve", "gbr"])}
-              {barChart(bucketRows, "curve_bias", "gbr_bias", { zero: true, fmt: (v) => signed(v, 2) })}
-            </div>
-            <div className="card sub">
-              <h3>Mean absolute error by opponent rank</h3>
-              {legend(["curve", "gbr"])}
-              {barChart(bucketRows, "curve_mae", "gbr_mae", { fmt: (v) => num(v, 2) })}
-            </div>
-          </div>
-
-          <div className="rm-grid">
-            <div className="card sub">
-              <h3>Bias by the opposition faced in the window</h3>
-              {legend(["curve", "gbr"])}
-              {barChart(facedRows, "curve_bias", "gbr_bias", { zero: true, fmt: (v) => signed(v, 2) })}
-            </div>
-            <div className="card sub">
-              <h3>Inputs that move the learned model</h3>
-              <ResponsiveContainer width="100%" height={Math.max(220, 24 * importance.length + 30)}>
-                <BarChart data={importance} layout="vertical" margin={{ top: 6, right: 24, left: 6, bottom: 4 }} barCategoryGap="22%">
-                  <CartesianGrid stroke="#232a34" strokeDasharray="3 3" horizontal={false} />
-                  <XAxis type="number" {...RM_AXIS} tickFormatter={(v) => num(v, 4)} />
-                  <YAxis type="category" dataKey="label" {...RM_AXIS} width={190} />
-                  <Tooltip
-                    cursor={{ fill: "rgba(255,255,255,0.04)" }}
-                    content={({ active, payload }) =>
-                      active && payload?.length ? (
-                        <div className="pool-tooltip">
-                          <div className="pool-tooltip-title">{payload[0].payload.label}</div>
-                          <div>MAE +{num(payload[0].payload.value)} when shuffled</div>
-                        </div>
-                      ) : null
-                    }
-                  />
-                  <Bar dataKey="value" fill={RM_COLORS.gbr} isAnimationActive={false} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="rm-grid">
-            <div className="card sub">
-              <h3>Input sets</h3>
-              <table className="mm-table rm-table">
-                <thead>
-                  <tr>
-                    <th>Inputs</th>
-                    <th>Count</th>
-                    <th>MAE per map</th>
-                    <th>MAE per series</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(r.variants || []).map((v) => (
-                    <tr key={v.label}>
-                      <td className={v.used ? "mm-win" : ""}>{v.label}</td>
-                      <td>{fmtInt(v.inputs)}</td>
-                      <td>{num(v.mae)}</td>
-                      <td>{num(v.series_mae)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="card sub">
-              <h3>Inputs the learned model uses</h3>
-              <div className="rm-chips">
-                {(r.features || []).map((f) => (
-                  <span key={f.key} className="rm-chip">
-                    {f.label}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="card sub">
-            <h3>All methods</h3>
-            <table className="mm-table rm-table">
-              <thead>
-                <tr>
-                  <th>Method</th>
-                  <th>MAE per map</th>
-                  <th>RMSE per map</th>
-                  <th>Bias per map</th>
-                  <th>MAE per series</th>
-                  <th>RMSE per series</th>
-                  <th>Months beating the curve</th>
-                </tr>
-              </thead>
-              <tbody>
-                {methods.map((m) => {
-                  const s = summary[m.key] || {};
-                  const bestSeries = Math.min(...methods.map((x) => Number(summary[x.key]?.series_mae ?? Infinity)));
-                  return (
-                    <tr key={m.key}>
-                      <td>
-                        <i className="rm-swatch" style={{ background: RM_COLORS[m.key] }} /> {m.label}
-                      </td>
-                      <td>{num(s.mae)}</td>
-                      <td>{num(s.rmse)}</td>
-                      <td>{signed(s.bias, 4)}</td>
-                      <td className={Number(s.series_mae) === bestSeries ? "mm-win" : ""}>{num(s.series_mae)}</td>
-                      <td>{num(s.series_rmse)}</td>
-                      <td>{m.key === "curve" ? "-" : `${r.fold_wins?.[m.key] ?? "-"} / ${folds.length}`}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-    </Section>
-  );
-}
-
-// Display-only double-elimination group bracket drawn with the Playoff tab's
-// card + connector system (.pb-bracket): an upper bracket and a lower bracket,
-// each laid out exactly as the simulator plays it, with a footer on the
-// deciding cards saying where each place leads. slotIds = the group's seeds in
-// HLTV slot order (UB 1 = seeds 1 v 2, ...); "" or "unknown" = TBD.
 function GroupTeamRow({ teamId, name, placeholder, muted = false, hltvIdByTeamId }) {
   const id = Number(teamId);
   const known = Number.isFinite(id) && id > 0;
@@ -13072,7 +12677,6 @@ export default function App() {
         onViewEvent={selectViewEvent}
       />
     ),
-    devlab: <DevLabTab />,
     live: <LiveTab onOpenSettings={() => setActive("settings")} />,
     settings: <SettingsTab />,
     tournament: (

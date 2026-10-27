@@ -603,19 +603,6 @@ class DataScheduler:
             notes.append(f"rating model {'retrained' if info.get('trained') else 'already current'} ({int(info.get('rows') or 0)} maps)")
         except Exception as exc:  # noqa: BLE001
             notes.append(f"rating model refresh failed: {exc}")
-        # The Rating Model lab's study: the Top-X curve vs the learned rating
-        # model, re-run when tonight added scoreboards (about 90 s).
-        try:
-            self._set_state(processed=0, total=0, message="Rating model: refreshing the walk-forward study")
-            info = events.ensure_rating_model_evaluation()
-            s = info.get("summary") or {}
-            notes.append(
-                f"rating study {'re-run' if info.get('evaluated') else 'already current'} "
-                f"(series MAE curve {float((s.get('curve') or {}).get('series_mae') or 0):.4f}, "
-                f"learned {float((s.get('gbr') or {}).get('series_mae') or 0):.4f})"
-            )
-        except Exception as exc:  # noqa: BLE001
-            notes.append(f"rating study failed: {exc}")
         # The model the simulators use: retrain on everything when the data changed.
         try:
             self._set_state(processed=0, total=0, message="Map model: refreshing the app model")

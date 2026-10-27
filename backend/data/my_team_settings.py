@@ -1,5 +1,6 @@
 """Per user and event: whether the app sets the suggested boosters on HLTV
-by itself (auto mode), and the log of boosters it set."""
+by itself (auto mode), the per-user switch that does it in EVERY event
+(Settings), and the log of boosters it set."""
 from __future__ import annotations
 
 import time
@@ -24,6 +25,15 @@ def _ensure() -> None:
                 auto_boosters INTEGER NOT NULL DEFAULT 0,
                 updated_at    REAL,
                 PRIMARY KEY (user_key, event_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS my_team_prefs (
+                user_key   TEXT PRIMARY KEY,
+                auto_all   INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL
             )
             """
         )
@@ -89,6 +99,43 @@ def auto_pairs() -> List[Tuple[str, int]]:
     return [(str(r["user_key"]), int(r["event_id"])) for r in rows]
 
 
+def auto_all_enabled(user_key: str) -> bool:
+    _ensure()
+    conn = connect()
+    try:
+        row = conn.execute("SELECT auto_all FROM my_team_prefs WHERE user_key = ?", (str(user_key),)).fetchone()
+    finally:
+        conn.close()
+    return bool(row and int(row["auto_all"] or 0))
+
+
+def set_auto_all(user_key: str, enabled: bool) -> None:
+    _ensure()
+    conn = connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO my_team_prefs (user_key, auto_all, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(user_key) DO UPDATE SET auto_all = excluded.auto_all, updated_at = excluded.updated_at
+            """,
+            (str(user_key), 1 if enabled else 0, time.time()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def auto_all_users() -> List[str]:
+    """Every user who switched auto mode on for all events."""
+    _ensure()
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT user_key FROM my_team_prefs WHERE auto_all = 1").fetchall()
+    finally:
+        conn.close()
+    return [str(r["user_key"]) for r in rows]
+
+
 def add_action(user_key: str, event_id: int, **fields: Any) -> None:
     _ensure()
     conn = connect()
@@ -127,6 +174,7 @@ def delete_user(user_key: str) -> None:
     conn = connect()
     try:
         conn.execute("DELETE FROM my_team_settings WHERE user_key = ?", (str(user_key),))
+        conn.execute("DELETE FROM my_team_prefs WHERE user_key = ?", (str(user_key),))
         conn.execute("DELETE FROM booster_actions WHERE user_key = ?", (str(user_key),))
         conn.commit()
     finally:

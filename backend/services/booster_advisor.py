@@ -599,23 +599,50 @@ _stop = threading.Event()
 _thread: Optional[threading.Thread] = None
 
 
-def auto_tick() -> None:
+def auto_pairs_now() -> List[tuple]:
+    """Every (user, event) auto mode covers right now: the pairs switched on
+    per event, plus every live or upcoming event for the users who switched
+    it on for all events (Settings)."""
     from backend.data import my_team_settings
     from backend.services import live_state
 
-    pairs = my_team_settings.auto_pairs()
-    if not pairs:
-        return
+    per_event = my_team_settings.auto_pairs()
+    everywhere = my_team_settings.auto_all_users()
+    if not per_event and not everywhere:
+        return []
     current = {int(e["event_id"]): e.get("status") for e in live_state.live_events()}
-    for user_key, eid in pairs:
-        if current.get(int(eid)) not in ("live", "upcoming"):
-            continue
-        try:
-            done = apply_suggestions(int(eid), user_key, trigger="auto")
-            if done:
-                logger.info("Auto boosters for %s in event %s: %s", user_key, eid, [(d["player_id"], d["booster_index"], d["ok"]) for d in done])
-        except Exception:  # noqa: BLE001
-            logger.warning("Auto boosters failed for %s in event %s", user_key, eid, exc_info=True)
+    open_events = [eid for eid, status in current.items() if status in ("live", "upcoming")]
+    pairs = {(str(u), int(e)) for u, e in per_event if int(e) in open_events}
+    for user_key in everywhere:
+        for eid in open_events:
+            pairs.add((str(user_key), int(eid)))
+    return sorted(pairs)
+
+
+def _apply_auto(user_key: str, eid: int) -> None:
+    try:
+        done = apply_suggestions(int(eid), user_key, trigger="auto")
+        if done:
+            logger.info("Auto boosters for %s in event %s: %s", user_key, eid, [(d["player_id"], d["booster_index"], d["ok"]) for d in done])
+    except RuntimeError as exc:
+        if "No team of yours" in str(exc):
+            return  # no team drafted in this event: nothing to set
+        logger.warning("Auto boosters failed for %s in event %s: %s", user_key, eid, exc)
+    except Exception:  # noqa: BLE001
+        logger.warning("Auto boosters failed for %s in event %s", user_key, eid, exc_info=True)
+
+
+def auto_tick() -> None:
+    for user_key, eid in auto_pairs_now():
+        _apply_auto(user_key, eid)
+
+
+def apply_everywhere(user_key: str) -> None:
+    """Auto mode for all events was just switched on: set the advice in
+    every live or upcoming event the user has a team in, now."""
+    for u, eid in auto_pairs_now():
+        if u == str(user_key):
+            _apply_auto(u, eid)
 
 
 def _loop() -> None:

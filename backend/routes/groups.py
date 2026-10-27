@@ -1488,18 +1488,13 @@ def combined_shape_supported(group_format: str, group_count: int) -> bool:
 
 
 def reject_unsupported_combined_shape(group_format: str, group_count: int, event_id: int | None = None) -> str:
-    """Flag the shape for development and return the user-facing reason."""
-    from backend.services import dev_flags
-
+    """Log the shape and return the user-facing reason."""
     fmt, count = combined_shape_key(group_format, group_count)
     label = combined_shape_label(fmt, count)
-    dev_flags.flag(
-        key=f"combined:{fmt}x{count}",
-        kind="combined_playoff_shape",
-        detail=f"{label}: playoff seeding for this shape has not been verified against an HLTV bracket, so the "
-               "simulator refuses it. To support it, confirm the bracket on the event page and add the shape to "
-               "_SUPPORTED_COMBINED_SHAPES.",
-        event_id=event_id,
+    logging.getLogger(__name__).warning(
+        "Event %s: %s — playoff seeding for this shape has not been verified against an HLTV bracket, so the "
+        "simulator refuses it (confirm the bracket on the event page and add the shape to _SUPPORTED_COMBINED_SHAPES)",
+        event_id, label,
     )
     return (
         f"Combined playoffs are not supported yet for {label}. The shape has been flagged for development; "

@@ -29,7 +29,16 @@ to run 2.4 maps, so the per-map miss chance is (1 - R)^(1/2.4) and a
 series of m expected maps triggers with 1 - (1 - R)^(m/2.4): 1 map for a
 best-of-one, 3.9 for a best-of-five, R itself for a best-of-three. The
 coming match's series length comes from the Swiss record
-(swiss_engine.match_bo); later rounds assume the stage's usual length.
+(swiss_engine.match_bo).
+
+Later rounds (Swiss): the chance a player plays each later round, and the
+series length he plays it in, come from branching his team's REAL record
+on the coming match's result (the win model's odds against the drawn
+opponent, else against the field) and then on the field for the rounds
+after; a player whose next pairing HLTV has not drawn yet keeps a column
+for that round (played for sure, from the live record) so his booster is
+reserved rather than handed to a teammate. Brackets still use the bake's
+chance of reaching each later round.
 """
 from __future__ import annotations
 
@@ -211,13 +220,95 @@ def _booster_obj(b: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return {"index": idx, "hltv_id": b.get("id"), "name": BOOSTER_NAMES.get(idx, b.get("name")) if idx is not None else b.get("name")}
 
 
+def _swiss_odds(event_id: int, results: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """What the branch model needs: the bake's team order and win matrices
+    per series type (a missing one derived from the other through the
+    model's best-of formula), and from the live state each team's record,
+    the pairings HLTV has made but not finished, and the team names."""
+    from backend.data import team_aliases
+    from backend.services import leader_role, live_state
+
+    order = [int(t) for t in ((results.get("groups") or [[]])[0] or [])]
+    wp = {str(k): v for k, v in (((results.get("swiss") or {}).get("win_probs")) or {}).items() if v}
+    if not order or not wp:
+        return None
+    if "bo3" in wp and "bo1" not in wp:
+        wp["bo1"] = [[leader_role.map_probability(float(p), 2) if i != j else 0.5 for j, p in enumerate(row)] for i, row in enumerate(wp["bo3"])]
+    if "bo1" in wp and "bo3" not in wp:
+        wp["bo3"] = [[leader_role.series_probability(float(p), 2) if i != j else 0.5 for j, p in enumerate(row)] for i, row in enumerate(wp["bo1"])]
+    try:
+        entry = live_state.live_event(int(event_id)) or {}
+    except Exception:  # noqa: BLE001 - the advice still works from the fantasy feeds alone
+        logger.warning("Live state unavailable for event %s", event_id, exc_info=True)
+        entry = {}
+    sw = entry.get("swiss") or {}
+    records: Dict[int, tuple] = {}
+    for t, r in (sw.get("records") or {}).items():
+        try:
+            records[int(t)] = (int(r[0]), int(r[1]))
+        except (TypeError, ValueError, IndexError):
+            continue
+    pending_opp: Dict[int, int] = {}
+    for rd in sw.get("rounds") or []:
+        for m in rd.get("matches") or []:
+            if m.get("winner") is None and m.get("a") is not None and m.get("b") is not None:
+                pending_opp[int(m["a"])] = int(m["b"])
+                pending_opp[int(m["b"])] = int(m["a"])
+    names = {team_aliases.key(str(v.get("name") or "")): int(t) for t, v in (entry.get("teams") or {}).items() if v.get("name")}
+    return {"order": order, "idx": {t: i for i, t in enumerate(order)}, "wp": wp, "records": records, "pending_opp": pending_opp, "name_to_tid": names}
+
+
+def _p_win(odds: Dict[str, Any], a: int, b: int, bo: int) -> Optional[float]:
+    """P(a beats b) in a series of this length from the bake's matrices."""
+    m = odds["wp"].get(f"bo{int(bo)}")
+    ia, ib = odds["idx"].get(int(a)), odds["idx"].get(int(b))
+    if m is None or ia is None or ib is None or ia == ib:
+        return None
+    return float(m[ia][ib])
+
+
+def _p_field(odds: Dict[str, Any], a: int, bo: int, pool: Optional[List[int]] = None) -> float:
+    """P(a wins a series of this length) against the teams it may meet: the
+    live teams on the same record when given, else the whole field."""
+    cands = [int(b) for b in (pool or []) if int(b) != int(a) and int(b) in odds["idx"]] or [b for b in odds["order"] if b != int(a)]
+    ps = [p for p in (_p_win(odds, a, b, bo) for b in cands) if p is not None]
+    return float(sum(ps) / len(ps)) if ps else 0.5
+
+
+def _branch_slots(start: Dict[tuple, float], p_win_at, bo3_mode: str, n_slots: int) -> List[List[tuple]]:
+    """Per later slot, the states (prob, wins, losses, bo) a Swiss team can
+    still be playing in, from a distribution over records at the first
+    slot; each slot's match is then won with p_win_at(wins, losses, bo,
+    first) and the record moves on. Stops once no state is alive."""
+    from collections import defaultdict
+
+    from backend.services import swiss_engine
+
+    out: List[List[tuple]] = []
+    dist = dict(start)
+    for j in range(max(0, int(n_slots))):
+        alive = {(w, l): p for (w, l), p in dist.items() if w < swiss_engine.TARGET and l < swiss_engine.TARGET and p > 1e-9}
+        if not alive:
+            break
+        out.append([(float(p), int(w), int(l), int(swiss_engine.match_bo(w, l, bo3_mode))) for (w, l), p in alive.items()])
+        nxt: Dict[tuple, float] = defaultdict(float)
+        for (w, l), p in alive.items():
+            bo = int(swiss_engine.match_bo(w, l, bo3_mode))
+            pw = min(1.0, max(0.0, float(p_win_at(w, l, bo, j == 0))))
+            nxt[(w + 1, l)] += p * pw
+            nxt[(w, l + 1)] += p * (1.0 - pw)
+        dist = dict(nxt)
+    return out
+
+
 def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> Dict[str, Any]:
     """The advice: per player his coming match, the booster on it, the
     suggested booster (with its rate and expected points) and the later
     plan; plus the pool of free boosters."""
+    from backend.data import team_aliases
     from backend.data.player_db import get_player
     from backend.routes.groups import _GROUPS_STATE
-    from backend.services import event_rosters
+    from backend.services import event_rosters, swiss_engine
 
     eid = int(event_id)
     f = feeds(eid, user_key, max_age)
@@ -274,17 +365,16 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
             live_rates[int(pid_)] = by_idx
     swiss = results.get("swiss") or {}
     bo3_mode = str(swiss.get("bo3_mode") or "all")
+    is_swiss = results.get("group_format") == "swiss"
+    odds = _swiss_odds(eid, results) if is_swiss else None
 
-    def series_len(wins: int, losses: int, known: bool) -> int:
-        """The coming match's series length from the Swiss record; a later
-        round's from the stage's usual length."""
+    def series_len(wins: int, losses: int) -> int:
+        """The coming match's series length from the Swiss record (brackets: Bo3)."""
         from backend.services import swiss_engine
 
-        if results.get("group_format") != "swiss":
+        if not is_swiss:
             return 3
-        if known:
-            return int(swiss_engine.match_bo(int(wins), int(losses), bo3_mode))
-        return 3 if bo3_mode == "all" else 1 if bo3_mode == "none" else (3 if wins + losses >= 2 else 1)
+        return int(swiss_engine.match_bo(int(wins), int(losses), bo3_mode))
 
     def play_prob(tid: Optional[int], stage_key: str) -> float:
         rounds = ((stage_teams.get(str(tid)) or {}).get("rounds") or {}) if tid is not None else {}
@@ -315,8 +405,14 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
             }
         played = finished_by_pid.get(pid, 0) if pid is not None else 0
         wins, losses = record_by_pid.get(pid, [0, 0]) if pid is not None else (0, 0)
+        if not match and odds is not None and tid is not None and tid in odds["records"]:
+            # between rounds HLTV's own pages know today's result before the
+            # fantasy tracker does: the record with more games is the newer one
+            lw, ll = odds["records"][tid]
+            if lw + ll > wins + losses:
+                wins, losses, played = int(lw), int(ll), int(lw + ll)
         if match:
-            match["bo"] = series_len(wins, losses, True)
+            match["bo"] = series_len(wins, losses)
         entry = {
             "player_id": pid, "name": name, "team_id": tid,
             "match": match, "assigned": assigned, "played": played, "record": [wins, losses],
@@ -328,24 +424,67 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
         # a booster already on the coming match may still be changed: it is in the pool
         if assigned and assigned.get("index") is not None and match and match["assignable"]:
             pool.add(int(assigned["index"]))
-        if not match or not rates:
+        if not rates:
             continue
-        # slot 0 = the coming match; later slots = the rounds after it,
-        # weighted by the chance of playing them given the current round
         here = stage_order[played] if played < len(stage_order) else None
-        base_prob = play_prob(tid, here) if here else 0.0
-        if match["assignable"]:
-            columns.append({"player_id": pid, "slot": 0, "prob": 1.0, "stage": here, "bo": match["bo"]})
-        for k in range(played + 1, len(stage_order)):
-            prob = play_prob(tid, stage_order[k])
-            rel = (prob / base_prob) if base_prob > 0 else prob
-            if rel > 0.01:
-                columns.append({"player_id": pid, "slot": k - played, "prob": min(1.0, rel), "stage": stage_order[k], "bo": series_len(k, 0, False)})
+        if here is None:
+            continue
+        alive = (wins < swiss_engine.TARGET and losses < swiss_engine.TARGET) if is_swiss else True
+        # the coming match (slot 0, played for sure) when it is drawn; when it
+        # is not, and the team is still in, the next round itself is the
+        # first column ("next": reserved, nothing to set yet)
+        if match:
+            if match["assignable"]:
+                columns.append({"player_id": pid, "kind": "coming", "slot": 0, "stage": here, "branches": [(1.0, int(match["bo"]))]})
+            base = played + 1
+        elif is_swiss and alive and tid is not None and odds is not None:
+            entry["next_round"] = {"stage": here, "bo": series_len(wins, losses)}
+            base = played
+        else:
+            continue
+        if not is_swiss or tid is None or odds is None:
+            # brackets: the bake's chance of reaching each later round from this one
+            base_prob = play_prob(tid, here)
+            for k in range(base, len(stage_order)):
+                prob = play_prob(tid, stage_order[k])
+                rel = (prob / base_prob) if base_prob > 0 else prob
+                if rel > 0.01:
+                    columns.append({"player_id": pid, "kind": "later", "slot": k - played, "stage": stage_order[k], "branches": [(min(1.0, rel), 3)]})
+            continue
+        # Swiss: branch the team's real record on the coming match (the model's
+        # odds against the drawn opponent) and then on the field
+        if match:
+            opp = odds["pending_opp"].get(tid)
+            if opp is None and match.get("opponent"):
+                opp = odds["name_to_tid"].get(team_aliases.key(str(match["opponent"])))
+            p_first = _p_win(odds, tid, opp, int(match["bo"])) if opp is not None else None
+            if p_first is None:
+                p_first = _p_field(odds, tid, int(match["bo"]))
+            match["win_chance"] = round(float(p_first), 3)
+            start = {(wins + 1, losses): float(p_first), (wins, losses + 1): 1.0 - float(p_first)}
+            pool_first: Optional[List[int]] = None
+        else:
+            start = {(wins, losses): 1.0}
+            pool_first = [t for t, r in odds["records"].items() if tuple(r) == (wins, losses) and t != tid and t not in odds["pending_opp"]]
+        slots = _branch_slots(start, lambda w, l, bo, first: _p_field(odds, tid, bo, pool_first if first else None), bo3_mode, len(stage_order) - base)
+        for j, states in enumerate(slots):
+            k = base + j
+            prob = sum(p for p, _, _, _ in states)
+            if prob <= 0.01:
+                continue
+            kind = "next" if (not match and j == 0) else "later"
+            columns.append({"player_id": pid, "kind": kind, "slot": k - played + (0 if match else 1), "stage": stage_order[k], "branches": [(float(p), int(bo)) for p, _, _, bo in states]})
 
     boosters = sorted(pool)
     rates_of = {p["player_id"]: p["rates"] for p in players}
+
+    def col_value(col: Dict[str, Any], rate: float) -> float:
+        """The booster's expected points in a column: the chance of each
+        branch × the trigger chance in that branch's series length."""
+        return sum(float(pr) * match_rate(rate, int(bo)) for pr, bo in col["branches"]) * BOOSTER_POINT_VALUE
+
     if boosters and columns:
-        weights = [[float(col["prob"]) * match_rate(float(rates_of.get(col["player_id"], {}).get(b, 0.0)), int(col["bo"])) * BOOSTER_POINT_VALUE for col in columns] for b in boosters]
+        weights = [[col_value(col, float(rates_of.get(col["player_id"], {}).get(b, 0.0))) for col in columns] for b in boosters]
         for b_row, c, w in _max_weight_assignment(weights):
             if w <= 1e-9:
                 continue
@@ -353,12 +492,20 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
             b = boosters[b_row]
             entry = next(p for p in players if p["player_id"] == col["player_id"])
             rate = float(rates_of.get(col["player_id"], {}).get(b, 0.0))
-            per_match = match_rate(rate, int(col["bo"]))
-            item = {"index": b, "hltv_id": _hltv_id(b, options), "name": BOOSTER_NAMES.get(b), "rate": round(rate, 3), "match_rate": round(per_match, 3), "bo": int(col["bo"]), "expected": round(per_match * BOOSTER_POINT_VALUE, 2), "prob": round(float(col["prob"]), 3), "stage": col["stage"]}
-            if col["slot"] > 0 and results.get("group_format") == "swiss":
+            prob = float(sum(pr for pr, _ in col["branches"]))
+            value = col_value(col, rate)
+            per_match = (value / BOOSTER_POINT_VALUE / prob) if prob > 0 else 0.0  # P(trigger | the match is played)
+            bo = max(col["branches"], key=lambda x: x[0])[1]
+            item = {
+                "index": b, "hltv_id": _hltv_id(b, options), "name": BOOSTER_NAMES.get(b), "rate": round(rate, 3),
+                "match_rate": round(per_match, 3), "bo": int(bo), "expected": round(per_match * BOOSTER_POINT_VALUE, 2),
+                "prob": round(prob, 3), "stage": col["stage"],
+                "branches": [{"prob": round(float(pr), 3), "bo": int(bo_)} for pr, bo_ in col["branches"]],
+            }
+            if col["kind"] == "later" and is_swiss:
                 w0, l0 = entry.get("record") or [0, 0]
-                item["condition"] = swiss_condition(int(w0), int(l0), int(col["slot"]))
-            if col["slot"] == 0:
+                item["condition"] = swiss_condition(int(w0), int(l0), int(col["slot"]) - (0 if entry.get("match") else 1))
+            if col["kind"] in ("coming", "next"):
                 entry["suggestion"] = item
             else:
                 entry["plan"].append({**item, "slot": col["slot"]})

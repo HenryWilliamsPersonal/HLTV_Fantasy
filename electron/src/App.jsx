@@ -6395,7 +6395,6 @@ function LiveTab({ onOpenSettings }) {
                     <th>Format</th>
                     <th>Dates</th>
                     <th className="num">Teams</th>
-                    <th className="num">Matches</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -6407,11 +6406,6 @@ function LiveTab({ onOpenSettings }) {
                         {dm(ev.start_at)} – {dm(ev.end_at)}
                       </td>
                       <td className="num">{ev.team_count}</td>
-                      <td className="num">
-                        {Number(ev.played || 0)}
-                        {ev.total ? <span className="muted"> / {ev.total}</span> : null}
-                        {Number(ev.live_count || 0) > 0 ? <span className="live-inplay"> · {ev.live_count} in play</span> : null}
-                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -7100,6 +7094,11 @@ function BoosterPanel({ ev, onOpenSettings }) {
                           · {m.live ? "live" : when(m.start_at)}
                           {m.bo ? ` · Bo${m.bo}` : ""}
                         </span>
+                      </span>
+                    ) : p.next_round ? (
+                      <span>
+                        <strong>{stageName(p.next_round.stage)}</strong>
+                        {p.next_round.bo ? <span className="muted"> · Bo{p.next_round.bo}</span> : null}
                       </span>
                     ) : (
                       <span className="muted">No upcoming match</span>

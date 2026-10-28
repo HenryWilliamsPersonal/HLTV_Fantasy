@@ -209,7 +209,8 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
             row["padding"], row["max"], row["breakdown"] = 0, None, None
             row["source"] = "computed"
         base = int(row["rating_points"]) + int(row["win_points"])
-        row["total"] = int(row["best"]["total"]) if row.get("best") and row["best"].get("total") is not None else base
+        # with the field: the theoretical maximum (best role + a booster every match one triggered in)
+        row["total"] = int(row["max"]["total"]) if row.get("max") else base
         row["base_total"] = base
         players.append(row)
     players.sort(key=lambda r: (-r["total"], -r["rating_points"], r["name"].lower()))

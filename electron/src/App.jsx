@@ -1138,11 +1138,11 @@ const nextSortValue = (sortValue, ascValue, descValue, defaultDirection = "asc")
   return defaultDirection === "desc" ? descValue : ascValue;
 };
 
-const SortHeader = ({ children, sortValue, asc, desc, onChange, defaultDirection = "asc", title }) => {
+const SortHeader = ({ children, sortValue, asc, desc, onChange, defaultDirection = "asc", title, className }) => {
   const direction = sortDirectionFor(sortValue, asc, desc);
   const arrow = direction === "asc" ? "↑" : direction === "desc" ? "↓" : "↕";
   return (
-    <th title={title}>
+    <th title={title} className={className}>
       <button
         type="button"
         className="table-sort-button"
@@ -7193,7 +7193,9 @@ function LeaderboardPanel({ ev }) {
   });
   const signed = (v) => (v == null ? "-" : `${Number(v) > 0 ? "+" : ""}${Number(v)}`);
   const players = data?.players || [];
+  const field = !!data?.field;
   const [openId, setOpenId] = useState(null);
+  const [sortBy, setSortBy] = useState("total_desc");
   const openRow = openId != null ? players.find((x) => x.player_id === openId) : null;
   const teamIds = useMemo(() => {
     const m = {};
@@ -7202,40 +7204,74 @@ function LeaderboardPanel({ ev }) {
     });
     return m;
   }, [players]);
+  const sorted = useMemo(() => {
+    const [key, dir] = sortBy.split("_");
+    const sign = dir === "asc" ? 1 : -1;
+    const val = (r) => {
+      switch (key) {
+        case "name":
+          return String(r.name || "");
+        case "team":
+          return String(r.team || "");
+        case "owned":
+          return Number(r.owned || 0);
+        case "score":
+          return Number(r.wins || 0) * 100 - (Number(r.matches || 0) - Number(r.wins || 0));
+        case "rating":
+          return Number(r.rating_avg || 0);
+        case "ratingpts":
+          return Number(r.rating_points || 0);
+        case "winpts":
+          return Number(r.win_points || 0);
+        case "role":
+          return Number(r.max?.role_points || 0);
+        case "boosters":
+          return Number(r.max?.booster_points || 0);
+        default:
+          return Number(r.total || 0);
+      }
+    };
+    return [...players].sort((a, b) => {
+      const va = val(a);
+      const vb = val(b);
+      const c = typeof va === "string" ? va.localeCompare(vb) : va - vb;
+      return c !== 0 ? c * sign : Number(b.total || 0) - Number(a.total || 0);
+    });
+  }, [players, sortBy]);
+  const head = (label, key, opts = {}) => (
+    <SortHeader
+      sortValue={sortBy}
+      asc={`${key}_asc`}
+      desc={`${key}_desc`}
+      defaultDirection={opts.asc ? "asc" : "desc"}
+      onChange={setSortBy}
+      className={opts.num ? "num" : undefined}
+    >
+      {label}
+    </SortHeader>
+  );
   return (
     <Section title="Leaderboard">
       {openRow && openRow.breakdown ? <LeaderboardPlayerModal p={openRow} teamIds={teamIds} onClose={() => setOpenId(null)} /> : null}
       {error && <span className="pill warn">{error}</span>}
-      {data && (
-        <div className="bp-head">
-          <span className="pill">{Number(data.matches_scored || 0)} of {Number(data.matches_scored || 0) + Number(data.matches_pending || 0)} matches scored</span>
-          {data.field && (
-            <span className="pill">
-              {Number(data.field.teams || 0).toLocaleString()}
-              {data.field.league_size ? ` of ${Number(data.field.league_size).toLocaleString()}` : ""} teams read
-            </span>
-          )}
-        </div>
-      )}
       <table className="bp-table lb-table">
         <thead>
           <tr>
             <th className="num tight">#</th>
-            <th>Player</th>
-            <th>Team</th>
-            {data?.field ? <th className="num">Owned</th> : null}
-            <th className="num">Matches</th>
-            <th className="num">Rating</th>
-            <th className="num">Rating pts</th>
-            <th className="num">Win pts</th>
-            {data?.field ? <th>Role</th> : null}
-            {data?.field ? <th>Boosters</th> : null}
-            <th className="num">{data?.field ? "Best total" : "Total"}</th>
-            {data?.field ? <th className="num">Max</th> : null}
+            {head("Player", "name", { asc: true })}
+            {head("Team", "team", { asc: true })}
+            {field ? head("Owned", "owned", { num: true }) : null}
+            {head("Score", "score", { num: true })}
+            {head("Rating", "rating", { num: true })}
+            {head("Rating pts", "ratingpts", { num: true })}
+            {head("Win pts", "winpts", { num: true })}
+            {field ? head("Role", "role") : null}
+            {field ? head("Boosters", "boosters") : null}
+            {head("Total", "total", { num: true })}
           </tr>
         </thead>
         <tbody>
-          {players.map((p) => (
+          {sorted.map((p) => (
             <tr key={p.player_id} className={p.breakdown ? "row-link" : ""} onClick={() => p.breakdown && setOpenId(p.player_id)}>
               <td className="num tight">{p.rank}</td>
               <td>
@@ -7250,36 +7286,34 @@ function LeaderboardPanel({ ev }) {
                   <span>{p.team}</span>
                 </div>
               </td>
-              {data?.field ? (
+              {field ? (
                 <td className="num">
                   {Number(p.owned || 0).toLocaleString()}
                   {data.field.teams > 0 ? <span className="muted"> {Math.round((100 * Number(p.owned || 0)) / Number(data.field.teams))}%</span> : null}
                 </td>
               ) : null}
               <td className="num">
-                {p.matches}
-                {p.matches > 0 ? <span className="muted"> ({p.wins}-{p.matches - p.wins})</span> : null}
-                {p.padding > 0 ? <span className="muted"> +{p.padding} pad</span> : null}
+                {Number(p.wins || 0)}-{Number(p.matches || 0) - Number(p.wins || 0)}
               </td>
               <td className="num">{p.rating_avg == null ? "-" : Number(p.rating_avg).toFixed(2)}</td>
               <td className="num">{p.matches > 0 ? signed(p.rating_points) : "-"}</td>
               <td className="num">{p.matches > 0 ? signed(p.win_points) : "-"}</td>
-              {data?.field ? (
+              {field ? (
                 <td>
-                  {p.best?.role_name ? (
+                  {p.max?.role_name ? (
                     <span>
-                      {p.best.role_name} <span className="muted">{signed(p.best.role_points)}</span>
+                      {p.max.role_name} <span className="muted">{signed(p.max.role_points)}</span>
                     </span>
                   ) : (
                     <span className="muted">-</span>
                   )}
                 </td>
               ) : null}
-              {data?.field ? (
+              {field ? (
                 <td className="lb-boosters">
-                  {p.best && (p.best.boosters || []).some(Boolean) ? (
+                  {p.max && (p.max.boosters || []).some(Boolean) ? (
                     <span>
-                      {(p.best.boosters || []).map((b) => b || "none").join(", ")} <span className="muted">{signed(p.best.booster_points)}</span>
+                      {(p.max.boosters || []).map((b) => b || "none").join(", ")} <span className="muted">{signed(p.max.booster_points)}</span>
                     </span>
                   ) : (
                     <span className="muted">-</span>
@@ -7289,7 +7323,6 @@ function LeaderboardPanel({ ev }) {
               <td className="num">
                 <strong>{p.matches > 0 ? signed(p.total) : "-"}</strong>
               </td>
-              {data?.field ? <td className="num">{p.max ? <strong>{signed(p.max.total)}</strong> : <span className="muted">-</span>}</td> : null}
             </tr>
           ))}
         </tbody>

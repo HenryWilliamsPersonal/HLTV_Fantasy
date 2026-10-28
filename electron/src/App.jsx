@@ -319,11 +319,12 @@ const ALL_TABS = [
   { key: "events", label: "Events" },
   { key: "tournament", label: "Tournament" },
   { key: "live", label: "Live" },
+  { key: "season", label: "Season" },
   { key: "scheduling", label: "Scheduling" },
   { key: "users", label: "Users" },
   { key: "settings", label: "Settings" },
 ];
-const PUBLIC_TAB_KEYS = ["view", "events", "tournament", "live", "settings"];
+const PUBLIC_TAB_KEYS = ["view", "events", "tournament", "live", "season", "settings"];
 const visibleTabs = () => (PUBLIC_BUILD ? ALL_TABS.filter((t) => PUBLIC_TAB_KEYS.includes(t.key)) : ALL_TABS);
 const NOT_PUBLISHED = "Valuations for this event have not been published yet.";
 
@@ -6427,6 +6428,215 @@ function LiveTab({ onOpenSettings }) {
 
 // Settings: the app user's own preferences. For now the HLTV account that
 // the My Team tab of a live event page reads with (services/my_team).
+// Season: the HLTV fantasy season as the user's own account sees it — their
+// standing, the season points every game earned (with the team / role /
+// booster points behind them), the leaders and the users around them, and
+// the season-points table (services/fantasy_season: stored per user,
+// refreshed by the nightly batch after each event and when opened stale).
+function SeasonTab({ onOpenSettings }) {
+  const [data, setData] = useState(null);
+  const [state, setState] = useState("loading"); // loading | ready | disconnected | error
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const poll = useRef(null);
+  const load = async (refresh = false) => {
+    clearTimeout(poll.current);
+    if (refresh) setBusy(true);
+    try {
+      const d = await api.get(`/my-team/season${refresh ? "?refresh=1" : ""}`, 60000);
+      if (d?.season_name) {
+        setData(d);
+        setState("ready");
+        setError("");
+      }
+      if (d?.pending) poll.current = setTimeout(() => load(false), 4000);
+      else {
+        setBusy(false);
+        if (!d?.season_name) {
+          setState("error");
+          setError(d?.error || "Could not read HLTV");
+        }
+      }
+    } catch (e) {
+      const msg = String(e?.message || "");
+      setBusy(false);
+      if (/HLTV login|Sign in|no longer accepts/i.test(msg)) {
+        setState("disconnected");
+        setError(msg);
+      } else {
+        setState("error");
+        setError(msg || "Could not read HLTV");
+      }
+    }
+  };
+  useEffect(() => {
+    load(false);
+    return () => clearTimeout(poll.current);
+  }, []);
+  const n = (v) => (v == null ? "-" : Number(v).toLocaleString());
+  const fmtDate = (s) => (s ? new Date(Number(s) * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "-");
+  const me = data?.me || null;
+  const games = data?.games || [];
+  const finishedTotal = games.filter((g) => !g.live).reduce((a, g) => a + Number(g.season_points || 0), 0);
+  const leaders = data?.leaders || [];
+  const around = (data?.around || []).filter((r) => !leaders.some((l) => l.placement === r.placement));
+  const standingRow = (r) => (
+    <tr key={`${r.placement}-${r.user_id}`} className={r.is_user ? "change" : ""}>
+      <td className="num tight">{n(r.placement)}</td>
+      <td>
+        <strong>{r.username}</strong>
+      </td>
+      <td className="num">{n(r.leagues)}</td>
+      <td className="num">{n(r.live_points)}</td>
+      <td className="num">
+        <strong>{n(r.season_points)}</strong>
+      </td>
+      <td>{r.prize ? r.prize : <span className="muted">-</span>}</td>
+    </tr>
+  );
+  const part = (g, key) => (g.parts && g.parts[key] ? (
+    <span>
+      {n(g.parts[key].points)} <span className="muted">{g.parts[key].pct}</span>
+    </span>
+  ) : (
+    <span className="muted">-</span>
+  ));
+  return (
+    <div className="stack">
+      <Section title={data?.season_name || "Season"}>
+        {(state === "disconnected" || state === "error") && (
+          <div className="bp-head">
+            <span className="pill warn">{error || "No HLTV account connected"}</span>
+            {state === "disconnected" && onOpenSettings && (
+              <button className="secondary" onClick={onOpenSettings}>
+                Settings
+              </button>
+            )}
+            {state === "error" && (
+              <button className="secondary" onClick={() => load(true)} disabled={busy}>
+                Refresh
+              </button>
+            )}
+          </div>
+        )}
+        {data && (
+          <div className="mt-overview">
+            <div className="card sub mt-box">
+              <h3>Standing</h3>
+              <div className="mt-rows">
+                <div className="mt-row">
+                  <span className="mt-row-label">Placement</span>
+                  <span className="mt-row-value">{me ? `${n(me.placement)} of ${n(data.total_users)}` : "-"}</span>
+                </div>
+                <div className="mt-row">
+                  <span className="mt-row-label">Season points</span>
+                  <span className="mt-row-value">{me ? n(me.season_points) : "-"}</span>
+                </div>
+                <div className="mt-row">
+                  <span className="mt-row-label">Live points</span>
+                  <span className="mt-row-value">{me ? n(me.live_points) : "-"}</span>
+                </div>
+                <div className="mt-row">
+                  <span className="mt-row-label">Games</span>
+                  <span className="mt-row-value">{me ? `${n(me.leagues)} of ${n(data.finished_games)}` : n(data.finished_games)}</span>
+                </div>
+                <div className="mt-row">
+                  <span className="mt-row-label">Season ends</span>
+                  <span className="mt-row-value">{fmtDate(data.ends_at)}</span>
+                </div>
+                <div className="mt-row">
+                  <span className="mt-row-label">Prizes</span>
+                  <span className="mt-row-value">{(data.prizes || []).join(" · ") || "-"}</span>
+                </div>
+              </div>
+            </div>
+            <div className="card sub mt-box">
+              <h3>Season points</h3>
+              <div className="mt-rows">
+                {(data.tiers || []).map((t) => (
+                  <div className="mt-row" key={t.top_pct}>
+                    <span className="mt-row-label">Top {t.top_pct}</span>
+                    <span className="mt-row-value">{n(t.points)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </Section>
+      {data && (
+        <Section title="Games">
+          <table className="bp-table lb-table">
+            <thead>
+              <tr>
+                <th>Event</th>
+                <th className="num">Placement</th>
+                <th className="num">Top</th>
+                <th className="num">Team pts</th>
+                <th className="num">Role pts</th>
+                <th className="num">Booster pts</th>
+                <th className="num">Season pts</th>
+              </tr>
+            </thead>
+            <tbody>
+              {games.map((g) => (
+                <tr key={`${g.event_id}-${g.team_id}`} className={g.live ? "change" : ""}>
+                  <td>
+                    <strong>{g.name}</strong>
+                  </td>
+                  <td className="num">
+                    {n(g.placement)} <span className="muted">of {n(g.total)}</span>
+                  </td>
+                  <td className="num">{g.top_pct || "-"}</td>
+                  <td className="num">{part(g, "team")}</td>
+                  <td className="num">{part(g, "role")}</td>
+                  <td className="num">{part(g, "boost")}</td>
+                  <td className="num">
+                    <strong>{n(g.season_points)}</strong>
+                  </td>
+                </tr>
+              ))}
+              <tr className="total">
+                <td>Total</td>
+                <td colSpan={5} />
+                <td className="num">
+                  <strong>{n(finishedTotal)}</strong>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </Section>
+      )}
+      {data && (
+        <Section title="Standings">
+          <table className="bp-table lb-table">
+            <thead>
+              <tr>
+                <th className="num tight">#</th>
+                <th>User</th>
+                <th className="num">Games</th>
+                <th className="num">Live pts</th>
+                <th className="num">Season pts</th>
+                <th>Prize</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leaders.map(standingRow)}
+              {leaders.length > 0 && around.length > 0 ? (
+                <tr className="pad">
+                  <td className="num tight">…</td>
+                  <td colSpan={5} />
+                </tr>
+              ) : null}
+              {around.map(standingRow)}
+            </tbody>
+          </table>
+        </Section>
+      )}
+    </div>
+  );
+}
+
 function SettingsTab() {
   return (
     <div className="stack">
@@ -13170,6 +13380,7 @@ export default function App() {
       />
     ),
     live: <LiveTab onOpenSettings={() => setActive("settings")} />,
+    season: <SeasonTab onOpenSettings={() => setActive("settings")} />,
     settings: <SettingsTab />,
     tournament: (
       <TournamentTab

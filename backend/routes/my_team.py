@@ -53,6 +53,20 @@ def _cookies_from(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return cookies
 
 
+@router.get("/season")
+def get_season(request: Request, refresh: bool = False) -> dict:
+    """The HLTV fantasy season as the user's account sees it (services/
+    fantasy_season): the stored copy at once, re-read in the background
+    when stale or on refresh (`pending` meanwhile)."""
+    from backend.services import fantasy_season
+
+    key = _connected_key(request)
+    job = fantasy_season.season_for(key, refresh=refresh)
+    out: Dict[str, Any] = dict(job.get("value") or {})
+    out.update({"pending": bool(job.get("pending")), "error": job.get("error")})
+    return out
+
+
 @router.get("/session")
 def get_session(request: Request) -> dict:
     from backend.data import my_team_settings

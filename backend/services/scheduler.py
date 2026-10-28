@@ -299,6 +299,9 @@ class DataScheduler:
         elif task == "backup":
             threading.Thread(target=self._run_backup_only, args=("manual",), name="scheduler-backup", daemon=True).start()
             return {"status": "started", "tasks": ["backup"]}
+        elif task == "season":
+            threading.Thread(target=self._run_season_only, args=("manual",), name="scheduler-season", daemon=True).start()
+            return {"status": "started", "tasks": ["season"]}
         else:
             return {"status": "error", "detail": f"Unknown task '{task}'."}
         threading.Thread(
@@ -333,6 +336,7 @@ class DataScheduler:
         and a backup of both databases (backend/services/backup.py)."""
         steps = [
             ("valuations", lambda: self._bake_valuations(trigger, only_if_missing=True)),
+            ("season", lambda: self._refresh_season(trigger)),
             ("hltv_session", lambda: self._check_hltv_session(trigger)),
             ("backup", lambda: self._run_backup(trigger)),
         ]
@@ -353,7 +357,7 @@ class DataScheduler:
             return
         task = str(pending.get("task") or "")
         order = self._enabled_tasks(cfg)
-        tail = ["valuations", "hltv_session", "backup"]
+        tail = ["valuations", "season", "hltv_session", "backup"]
         if task in order:
             logger.info("Resuming the interrupted %s batch from task %s", pending.get("trigger"), task)
             self._run_batch(order[order.index(task):], "resume", cfg)
@@ -366,6 +370,30 @@ class DataScheduler:
             finally:
                 self._run_lock.release()
                 self._set_state(running=False, current_task=None, trigger=None, processed=0, total=0)
+
+    def _refresh_season(self, trigger: str) -> None:
+        """Every connected account's fantasy season (placement, season points
+        per game), re-read once the night's events are scored; its own run
+        row so the Scheduling history shows it (services/fantasy_season)."""
+        from backend.services import fantasy_season
+
+        run_id = schedule_db.start_run("season", trigger)
+        self._set_state(running=True, current_task="season", trigger=trigger, started_at=time.time(),
+                        processed=0, total=0, message="Reading the fantasy season...")
+        try:
+            schedule_db.finish_run(run_id, "success", fantasy_season.refresh_all())
+        except Exception as exc:  # noqa: BLE001 — never let it break a batch
+            schedule_db.finish_run(run_id, "error", f"season read failed: {exc}")
+            logger.exception("Season refresh failed")
+
+    def _run_season_only(self, trigger: str) -> None:
+        if not self._run_lock.acquire(blocking=False):
+            return
+        try:
+            self._refresh_season(trigger)
+        finally:
+            self._run_lock.release()
+            self._set_state(running=False, current_task=None, trigger=None, processed=0, total=0)
 
     def _check_hltv_session(self, trigger: str) -> None:
         """Is the scraper browser still signed in to HLTV, and for how long?

@@ -1162,7 +1162,7 @@ def fetch_page(payload: Dict[str, Any]):
     archives it as a page snapshot — so format-detection work can inspect the
     stored HTML without a second browser fighting over the Chrome profile."""
     url = str((payload or {}).get("url") or "").strip()
-    if not url.startswith("https://www.hltv.org/"):
+    if not (url.startswith("https://www.hltv.org/") or url.startswith("https://resources.hltv.org/")):
         raise HTTPException(status_code=400, detail="Only hltv.org URLs are allowed")
     try:
         html = fetch_hltv_html(url)

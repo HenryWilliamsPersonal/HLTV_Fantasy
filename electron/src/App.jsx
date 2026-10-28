@@ -249,7 +249,7 @@ function ComboPager({ page, pageSize, total, onPage }) {
   );
 }
 
-function BreakdownHero({ playerId, name, teamName, hltvTeamId, roleId, stats, total, note = null }) {
+function BreakdownHero({ playerId, name, teamName, hltvTeamId, roleId, stats, total, note = null, decimals = 2 }) {
   return (
     <div className="breakdown-hero">
       <div className="breakdown-id">
@@ -284,12 +284,12 @@ function BreakdownHero({ playerId, name, teamName, hltvTeamId, roleId, stats, to
       <div className="breakdown-stats">
         {stats.map(([label, value]) => (
           <div className="breakdown-stat" key={label}>
-            <div className="breakdown-stat-value">{Number(value || 0).toFixed(2)}</div>
+            <div className="breakdown-stat-value">{Number(value || 0).toFixed(decimals)}</div>
             <div className="breakdown-stat-label">{label}</div>
           </div>
         ))}
         <div className="breakdown-stat total">
-          <div className="breakdown-stat-value">{Number(total || 0).toFixed(2)}</div>
+          <div className="breakdown-stat-value">{Number(total || 0).toFixed(decimals)}</div>
           <div className="breakdown-stat-label">Total</div>
         </div>
       </div>
@@ -7193,8 +7193,18 @@ function LeaderboardPanel({ ev }) {
   });
   const signed = (v) => (v == null ? "-" : `${Number(v) > 0 ? "+" : ""}${Number(v)}`);
   const players = data?.players || [];
+  const [openId, setOpenId] = useState(null);
+  const openRow = openId != null ? players.find((x) => x.player_id === openId) : null;
+  const teamIds = useMemo(() => {
+    const m = {};
+    players.forEach((p) => {
+      if (p.team && p.hltv_team_id) m[p.team] = p.hltv_team_id;
+    });
+    return m;
+  }, [players]);
   return (
     <Section title="Leaderboard">
+      {openRow && openRow.breakdown ? <LeaderboardPlayerModal p={openRow} teamIds={teamIds} onClose={() => setOpenId(null)} /> : null}
       {error && <span className="pill warn">{error}</span>}
       {data && (
         <div className="bp-head">
@@ -7221,11 +7231,12 @@ function LeaderboardPanel({ ev }) {
             {data?.field ? <th>Role</th> : null}
             {data?.field ? <th>Boosters</th> : null}
             <th className="num">{data?.field ? "Best total" : "Total"}</th>
+            {data?.field ? <th className="num">Max</th> : null}
           </tr>
         </thead>
         <tbody>
           {players.map((p) => (
-            <tr key={p.player_id}>
+            <tr key={p.player_id} className={p.breakdown ? "row-link" : ""} onClick={() => p.breakdown && setOpenId(p.player_id)}>
               <td className="num tight">{p.rank}</td>
               <td>
                 <div className="table-player-cell">
@@ -7248,6 +7259,7 @@ function LeaderboardPanel({ ev }) {
               <td className="num">
                 {p.matches}
                 {p.matches > 0 ? <span className="muted"> ({p.wins}-{p.matches - p.wins})</span> : null}
+                {p.padding > 0 ? <span className="muted"> +{p.padding} pad</span> : null}
               </td>
               <td className="num">{p.rating_avg == null ? "-" : Number(p.rating_avg).toFixed(2)}</td>
               <td className="num">{p.matches > 0 ? signed(p.rating_points) : "-"}</td>
@@ -7277,11 +7289,206 @@ function LeaderboardPanel({ ev }) {
               <td className="num">
                 <strong>{p.matches > 0 ? signed(p.total) : "-"}</strong>
               </td>
+              {data?.field ? <td className="num">{p.max ? <strong>{signed(p.max.total)}</strong> : <span className="muted">-</span>}</td> : null}
             </tr>
           ))}
         </tbody>
       </table>
     </Section>
+  );
+}
+
+// A leaderboard row opens the player match by match, from the field: HLTV's
+// rating and win points, the points of every role some team gave him, which
+// boosters triggered, the padding rounds, and the theoretical maximum — the
+// best role plus a different booster for every match one triggered in.
+function LeaderboardPlayerModal({ p, teamIds, onClose }) {
+  const b = p.breakdown || {};
+  const ms = b.matches || [];
+  const pad = b.padding || { count: 0 };
+  const mx = p.max || {};
+  const signed = (v) => (v == null ? "-" : `${Number(v) > 0 ? "+" : ""}${Number(v)}`);
+  const cell = (v) => (v == null ? <span className="muted">-</span> : signed(v));
+  const padRows = Array.from({ length: Number(pad.count || 0) }, (_, i) => i);
+  const matchTotal = (m) => Number(m.rating || 0) + Number(m.team || 0) + Number(m.role || 0) + (m.booster ? 5 : 0);
+  const padTotal = Number(pad.rating || 0) + Number(pad.team || 0) + Number(pad.role || 0);
+  const oppHead = ms.map((m, i) => (
+    <th className="num" key={m.match_url || i}>
+      {m.opponent}
+    </th>
+  ));
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal player-sources-modal lb-modal" onClick={(e) => e.stopPropagation()}>
+        <header className="modal-header">
+          <h3>Match Points</h3>
+          <button className="close" onClick={onClose}>
+            &times;
+          </button>
+        </header>
+        <div className="modal-body">
+          <BreakdownHero
+            playerId={p.player_id}
+            name={p.name}
+            teamName={p.team}
+            hltvTeamId={p.hltv_team_id}
+            roleId={mx.role_index}
+            note="maximum"
+            stats={[
+              ["Rating", p.rating_points],
+              ["Win", p.win_points],
+              ["Role", mx.role_points],
+              ["Booster", mx.booster_points],
+            ]}
+            total={mx.total}
+            decimals={0}
+          />
+          <div className="stack">
+            <h4>Matches</h4>
+            <table className="bp-table lb-table">
+              <thead>
+                <tr>
+                  <th className="num tight">#</th>
+                  <th>Opponent</th>
+                  <th>Result</th>
+                  <th className="num">Rating pts</th>
+                  <th className="num">Win pts</th>
+                  <th className="num">{mx.role_name || "Role"}</th>
+                  <th>Booster</th>
+                  <th className="num">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ms.map((m, i) => (
+                  <tr key={m.match_url || i}>
+                    <td className="num tight">{i + 1}</td>
+                    <td>
+                      <div className="table-player-cell">
+                        <TeamLogo hltvTeamId={teamIds[m.opponent]} name={m.opponent} size={20} />
+                        <span>{m.opponent}</span>
+                      </div>
+                    </td>
+                    <td className={m.result === "WON" ? "pos" : m.result === "LOST" ? "neg" : ""}>{m.result === "WON" ? "Win" : m.result === "LOST" ? "Loss" : m.result || "-"}</td>
+                    <td className="num">{signed(m.rating)}</td>
+                    <td className="num">{signed(m.team)}</td>
+                    <td className="num">{cell(m.role)}</td>
+                    <td>
+                      {m.booster ? (
+                        <span>
+                          {m.booster} <span className="muted">+5</span>
+                        </span>
+                      ) : (
+                        <span className="muted">-</span>
+                      )}
+                    </td>
+                    <td className="num">
+                      <strong>{signed(matchTotal(m))}</strong>
+                    </td>
+                  </tr>
+                ))}
+                {padRows.map((i) => (
+                  <tr key={`pad-${i}`} className="pad">
+                    <td className="num tight">{ms.length + i + 1}</td>
+                    <td>Padding</td>
+                    <td />
+                    <td className="num">{signed(pad.rating)}</td>
+                    <td className="num">{signed(pad.team)}</td>
+                    <td className="num">{signed(pad.role)}</td>
+                    <td>
+                      <span className="muted">-</span>
+                    </td>
+                    <td className="num">
+                      <strong>{signed(padTotal)}</strong>
+                    </td>
+                  </tr>
+                ))}
+                <tr className="total">
+                  <td className="num tight" />
+                  <td>Total</td>
+                  <td />
+                  <td className="num">{signed(p.rating_points)}</td>
+                  <td className="num">{signed(p.win_points)}</td>
+                  <td className="num">{signed(mx.role_points)}</td>
+                  <td>{signed(mx.booster_points)}</td>
+                  <td className="num">
+                    <strong>{signed(mx.total)}</strong>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="stack">
+            <h4>Roles</h4>
+            <table className="bp-table lb-table">
+              <thead>
+                <tr>
+                  <th>Role</th>
+                  {oppHead}
+                  {pad.count > 0 ? <th className="num">Padding</th> : null}
+                  <th className="num">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(b.roles || []).map((r) => (
+                  <tr key={r.role_name} className={r.role_name === mx.role_name ? "change" : ""}>
+                    <td>
+                      <span className="breakdown-id-role">
+                        {r.role_index != null ? <RoleBadge roleId={r.role_index} size={18} /> : null}
+                        {r.role_name}
+                      </span>
+                    </td>
+                    {(r.per_match || []).map((v, i) => (
+                      <td className="num" key={i}>
+                        {cell(v)}
+                      </td>
+                    ))}
+                    {pad.count > 0 ? (
+                      <td className="num">
+                        {pad.count} × {signed(r.padding)}
+                      </td>
+                    ) : null}
+                    <td className="num">
+                      <strong>{r.complete ? signed(r.total) : "-"}</strong>
+                      {!r.complete ? (
+                        <span className="muted">
+                          {" "}
+                          {r.seen} of {ms.length}
+                        </span>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="stack">
+            <h4>Boosters</h4>
+            <table className="bp-table lb-table">
+              <thead>
+                <tr>
+                  <th>Booster</th>
+                  {oppHead}
+                  <th className="num">Triggers</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(b.boosters || []).map((bo) => (
+                  <tr key={bo.booster_name}>
+                    <td>{bo.booster_name}</td>
+                    {(bo.per_match || []).map((v, i) => (
+                      <td className="num" key={i}>
+                        {v == null ? <span className="muted">-</span> : Number(v) > 0 ? ms[i]?.booster === bo.booster_name ? <strong>+5</strong> : "+5" : <span className="muted">0</span>}
+                      </td>
+                    ))}
+                    <td className="num">{bo.triggers}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

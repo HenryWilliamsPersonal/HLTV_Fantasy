@@ -3544,6 +3544,12 @@ button:disabled {
 .lb-table td.num strong { color: #ff6b1a; }
 .lb-table th.tight, .lb-table td.tight { width: 36px; color: #8fa3bf; }
 .lb-table td.lb-boosters { max-width: 260px; white-space: normal; line-height: 1.3; }
+.lb-table td.pos { color: #3fbf7f; }
+.lb-table td.neg { color: #e0705a; }
+.lb-table tbody tr.pad td { color: #8fa3bf; }
+.lb-table tbody tr.total td { background: #171c24; border-top: 1px solid #2c3441; }
+.modal.lb-modal { max-width: 1280px; }
+.lb-modal .stack { margin-top: 18px; }
 .bp-table th.tight { width: 110px; }
 .bp-table td.tight { white-space: nowrap; text-align: right; }
 .bp-table th.num { width: 96px; }

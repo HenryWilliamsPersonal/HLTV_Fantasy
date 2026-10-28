@@ -437,6 +437,7 @@ def stop_read(event_id: int) -> bool:
 
 # ---------------------------------------------------------------- per-player summary
 _SUMMARY_CACHE: Dict[int, Dict[str, Any]] = {}
+_FACTS_CACHE: Dict[int, Dict[str, Any]] = {}
 
 
 def player_summary(event_id: int) -> Dict[str, Any]:
@@ -484,3 +485,141 @@ def player_summary(event_id: int) -> Dict[str, Any]:
     with _LOCK:
         _SUMMARY_CACHE[eid] = out
     return out
+
+
+# ---------------------------------------------------------------- per-match facts
+# What the field tells about a player match by match. Every team that owns
+# him sees the same rating and team points; the role points differ by the
+# role the team gave him and the booster points by the booster it set — so
+# across 14,000 teams most roles and boosters are observed for every match.
+#
+# Padding: a team that finishes the Swiss early (3-0, 3-1) plays fewer
+# matches than a 3-2 team, and HLTV pads the missing rounds with the
+# player's average so far — rating and role points truncated toward zero
+# (int(mean): -0.67 -> 0, 1.5 -> 1), team points a flat 6, no booster.
+# Checked on 29,000 padding items of PGL Masters Bucharest 2026.
+PADDING_TEAM_POINTS = 6
+BOOSTER_VALUE = 5
+
+
+def _trunc_mean(values: List[int]) -> int:
+    return int(sum(values) / len(values)) if values else 0
+
+
+def _max_matching(triggered: Dict[str, set]) -> Dict[int, str]:
+    """booster -> the match indexes it triggered in; returns match index ->
+    booster with every booster used at most once (augmenting paths)."""
+    owner: Dict[int, str] = {}
+
+    def place(b: str, seen: set) -> bool:
+        for mi in sorted(triggered[b]):
+            if mi in seen:
+                continue
+            seen.add(mi)
+            if mi not in owner or place(owner[mi], seen):
+                owner[mi] = b
+                return True
+        return False
+
+    for b in sorted(triggered, key=lambda k: (len(triggered[k]), k)):  # the boosters with the fewest options first
+        place(b, set())
+    return owner
+
+
+def _match_id(url: Optional[str]) -> Optional[int]:
+    import re
+
+    m = re.search(r"/matches/(\d+)/", str(url or ""))
+    return int(m.group(1)) if m else None
+
+
+def match_facts(event_id: int) -> Dict[str, Any]:
+    """{players: {player_id: {name, team, matches: [...], padding: {count,
+    rating, team}, roles: [...], boosters: [...], rating_points, win_points,
+    max: {...}}}} from the stored field: per match HLTV's rating and team
+    points, the points of every role seen and whether each booster seen
+    triggered (0 or 5); the theoretical maximum = rating + team + the best
+    complete role + a different booster for every match one triggered in."""
+    from backend.services.my_team import ROLE_INDEX_BY_NAME
+
+    eid = int(event_id)
+    st = status(eid)
+    key = (st.get("teams_stored"), st.get("stored_at"))
+    with _LOCK:
+        hit = _FACTS_CACHE.get(eid)
+        if hit and hit.get("_key") == key:
+            return hit
+    rows = teams(eid)
+    players: Dict[int, Dict[str, Any]] = {}
+    for t in rows:
+        read_at = float(t.get("read_at") or 0.0)
+        for p in t.get("players") or []:
+            pid = p.get("player_id")
+            if pid is None:
+                continue
+            s = players.setdefault(int(pid), {"player_id": int(pid), "name": p.get("name"), "team": p.get("team"), "matches": {}, "padding": 0})
+            role = p.get("role_name")
+            for m in p.get("matches") or []:
+                mk = m.get("match_url") or f"{m.get('opponent')}@{m.get('end_time')}"
+                e = s["matches"].get(mk)
+                if e is None:
+                    e = s["matches"][mk] = {
+                        "match_url": m.get("match_url") or None, "match_id": _match_id(m.get("match_url")), "opponent": m.get("opponent"), "result": m.get("result"),
+                        "end_time": m.get("end_time"), "rating": 0, "team": 0, "_at": -1.0, "roles": {}, "boosters": {},
+                    }
+                if read_at >= e["_at"]:  # the latest read's figures: scoring catches up in the hour after a match
+                    e["_at"], e["rating"], e["team"] = read_at, int(m.get("rating") or 0), int(m.get("team") or 0)
+                if role:
+                    e["roles"][role] = max(e["roles"].get(role, -99), int(m.get("role") or 0))
+                b = m.get("booster_name")
+                if b:
+                    e["boosters"][b] = max(e["boosters"].get(b, 0), int(m.get("booster") or 0))
+            s["padding"] = max(int(s["padding"]), len(p.get("padding") or []))
+
+    out: Dict[int, Dict[str, Any]] = {}
+    for pid, s in players.items():
+        ms = sorted(s["matches"].values(), key=lambda e: (e.get("end_time") or 0.0, e.get("match_url") or ""))
+        n, pad = len(ms), int(s["padding"])
+        ratings = [int(e["rating"]) for e in ms]
+        wins = [int(e["team"]) for e in ms]
+        pad_rating = _trunc_mean(ratings) if pad else 0
+        roles = []
+        for r in sorted({r for e in ms for r in e["roles"]}, key=lambda r: (ROLE_INDEX_BY_NAME.get(str(r).lower(), 99), r)):
+            vals = [e["roles"].get(r) for e in ms]
+            seen = [int(v) for v in vals if v is not None]
+            pad_role = _trunc_mean(seen) if (pad and seen) else 0
+            roles.append({
+                "role_name": r, "role_index": ROLE_INDEX_BY_NAME.get(str(r).lower()), "per_match": vals, "padding": pad_role,
+                "total": sum(seen) + pad * pad_role, "complete": len(seen) == n, "seen": len(seen),
+            })
+        complete = [r for r in roles if r["complete"]]
+        best_role = max(complete, key=lambda r: (r["total"], -(r["role_index"] if r["role_index"] is not None else 99))) if complete else None
+        booster_names = sorted({b for e in ms for b in e["boosters"]})
+        triggered = {b: {i for i, e in enumerate(ms) if int(e["boosters"].get(b) or 0) > 0} for b in booster_names}
+        plan = _max_matching({b: v for b, v in triggered.items() if v})
+        boosters = [{"booster_name": b, "per_match": [e["boosters"].get(b) for e in ms], "triggers": len(triggered[b])} for b in booster_names]
+        rating_total = sum(ratings) + pad * pad_rating
+        win_total = sum(wins) + pad * PADDING_TEAM_POINTS
+        booster_total = BOOSTER_VALUE * len(plan)
+        matches = []
+        for i, e in enumerate(ms):
+            matches.append({
+                "match_url": e["match_url"], "match_id": e["match_id"], "opponent": e["opponent"], "result": e["result"], "end_time": e["end_time"],
+                "rating": int(e["rating"]), "team": int(e["team"]),
+                "role": e["roles"].get(best_role["role_name"]) if best_role else None, "booster": plan.get(i),
+                "triggered": sorted(b for b in booster_names if i in triggered[b]), "roles_seen": len(e["roles"]), "boosters_seen": len(e["boosters"]),
+            })
+        out[int(pid)] = {
+            "player_id": int(pid), "name": s.get("name"), "team": s.get("team"), "matches": matches,
+            "padding": {"count": pad, "rating": pad_rating, "team": PADDING_TEAM_POINTS, "role": best_role["padding"] if best_role else 0},
+            "roles": roles, "boosters": boosters, "rating_points": rating_total, "win_points": win_total,
+            "max": {
+                "total": rating_total + win_total + (best_role["total"] if best_role else 0) + booster_total,
+                "role_name": best_role["role_name"] if best_role else None, "role_index": best_role["role_index"] if best_role else None,
+                "role_points": best_role["total"] if best_role else 0, "booster_points": booster_total, "boosters": [plan.get(i) for i in range(n)],
+            },
+        }
+    res = {"_key": key, "teams": len(rows), "players": out}
+    with _LOCK:
+        _FACTS_CACHE[eid] = res
+    return res

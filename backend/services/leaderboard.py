@@ -186,6 +186,7 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
 
     field = fantasy_field.player_summary(eid) if fantasy_field.status(eid).get("teams_stored") else None
     field_players = (field or {}).get("players") or {}
+    facts = (fantasy_field.match_facts(eid).get("players") or {}) if field else {}
     players = []
     for row in rows.values():
         row["rating_avg"] = round(row["rating_sum"] / row["matches"], 2) if row["matches"] else None
@@ -193,12 +194,19 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
         f = field_players.get(int(row["player_id"]))
         row["owned"] = int(f["owned"]) if f else 0
         row["best"] = (f or {}).get("best")
-        if f and f.get("matches"):
+        fx = facts.get(int(row["player_id"]))
+        if f and f.get("matches") and fx:
+            # HLTV's own figures, padding rounds included (the leaderboard counts them)
             row["computed_rating_points"], row["computed_win_points"] = row["rating_points"], row["win_points"]
-            row["rating_points"], row["win_points"] = int(f["hltv_rating_points"]), int(f["hltv_win_points"])
-            row["matches"] = max(int(row["matches"]), int(f["matches"]))
+            row["rating_points"], row["win_points"] = int(fx["rating_points"]), int(fx["win_points"])
+            row["matches"] = max(int(row["matches"]), len(fx["matches"]))
+            row["wins"] = sum(1 for m in fx["matches"] if str(m.get("result") or "").upper() == "WON")
+            row["padding"] = int(fx["padding"]["count"])
+            row["max"] = fx["max"]
+            row["breakdown"] = {k: fx[k] for k in ("matches", "padding", "roles", "boosters")}
             row["source"] = "hltv"
         else:
+            row["padding"], row["max"], row["breakdown"] = 0, None, None
             row["source"] = "computed"
         base = int(row["rating_points"]) + int(row["win_points"])
         row["total"] = int(row["best"]["total"]) if row.get("best") and row["best"].get("total") is not None else base
@@ -223,7 +231,7 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
         "players": players,
         "matches_scored": len(finished) - len(missing),
         "matches_pending": len(missing),
-        "components": ["rating", "win"] + (["role", "booster"] if field else []),
+        "components": ["rating", "win"] + (["role", "booster", "padding", "max"] if field else []),
         "field": {k: (field or {}).get(k) for k in ("teams", "league_size", "read_at", "running")} if field else None,
         "read_at": time.time(),
     }

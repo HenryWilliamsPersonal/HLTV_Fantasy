@@ -180,19 +180,23 @@ def finish_run(run_id: int, status: str, message: str = "") -> None:
         conn.close()
 
 
-def fail_orphan_runs() -> int:
+def fail_orphan_runs() -> list:
     """Close out run rows stuck as 'running' — they belong to a previous
-    process that died mid-task and would otherwise show as running forever."""
+    process that died mid-task and would otherwise show as running forever.
+    Returns the rows closed ({task, trigger, started_at}) so the scheduler
+    can resume the batch they belonged to."""
     ensure_schedule_schema()
     conn = _connect()
     try:
-        cur = conn.execute(
+        rows = conn.execute("SELECT task, trigger, started_at FROM schedule_runs WHERE status = 'running'").fetchall()
+        orphans = [{"task": str(r["task"]), "trigger": str(r["trigger"] or ""), "started_at": float(r["started_at"] or 0.0)} for r in rows]
+        conn.execute(
             "UPDATE schedule_runs SET status = 'error', message = 'Interrupted by backend restart', finished_at = ? "
             "WHERE status = 'running'",
             (time.time(),),
         )
         conn.commit()
-        return int(cur.rowcount or 0)
+        return orphans
     finally:
         conn.close()
 

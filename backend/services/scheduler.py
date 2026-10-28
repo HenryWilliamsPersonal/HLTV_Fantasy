@@ -69,6 +69,8 @@ def heartbeat(kind: str) -> bool:
 
 logger = logging.getLogger(__name__)
 
+RESUME_WINDOW_SECONDS = 20 * 3600  # an interrupted batch older than this is left to the next slot
+RESUME_DELAY_SECONDS = 120  # let the process warm up before the resumed batch starts
 _TICK_SECONDS = 30
 
 
@@ -95,10 +97,20 @@ class DataScheduler:
         self._stop.clear()
         self._last_resurrect = 0.0
         self._keep_awake = False
+        self._resume: Optional[Dict[str, Any]] = None
         try:
-            schedule_db.fail_orphan_runs()
+            orphans = schedule_db.fail_orphan_runs()
         except Exception:
             logger.exception("Could not clean orphaned schedule runs")
+            orphans = []
+        # A batch the previous process died in (restart, update, reboot)
+        # resumes from the interrupted task once this process has warmed
+        # up, so a restart during the nightly run no longer costs the
+        # night's results import and valuations.
+        latest = max(orphans, key=lambda o: o["started_at"]) if orphans else None
+        if latest and time.time() - latest["started_at"] < RESUME_WINDOW_SECONDS:
+            self._resume = {"task": latest["task"], "trigger": latest["trigger"], "due": time.time() + RESUME_DELAY_SECONDS}
+            logger.info("Scheduler will resume the %s batch from task %s in %ss", latest["trigger"], latest["task"], RESUME_DELAY_SECONDS)
         self._thread = threading.Thread(target=self._loop, name="data-scheduler", daemon=True)
         self._thread.start()
         logger.info("Data scheduler started")
@@ -108,6 +120,10 @@ class DataScheduler:
 
     def _loop(self) -> None:
         while not self._stop.wait(_TICK_SECONDS):
+            try:
+                self._maybe_resume()
+            except Exception:
+                logger.exception("Scheduler resume failed")
             try:
                 self._maybe_run_scheduled()
             except Exception:
@@ -269,6 +285,9 @@ class DataScheduler:
             tasks = self._enabled_tasks(cfg) or list(schedule_db.TASK_KEYS)
         elif task in schedule_db.TASK_KEYS:
             tasks = [task]
+        elif "," in task and all(t.strip() in schedule_db.TASK_KEYS for t in task.split(",")):
+            wanted = {t.strip() for t in task.split(",")}
+            tasks = [t for t in (self._enabled_tasks(cfg) or list(schedule_db.TASK_KEYS)) if t in wanted] or sorted(wanted)
         elif task == "hltv_session":
             threading.Thread(
                 target=self._run_session_check_only, args=("manual",), name="scheduler-session-check", daemon=True
@@ -298,20 +317,55 @@ class DataScheduler:
         try:
             for task in tasks:
                 self._run_task(task, trigger, cfg)
-            # The event behaviour contract for every unfinished event: bake
-            # what is missing, refresh what has not started, leave the rest.
-            self._bake_valuations(trigger, only_if_missing=True)
-            # Every batch ends with a login-health check so a dying HLTV
-            # remember-me cookie is flagged weeks ahead in the run history.
-            self._check_hltv_session(trigger)
-            # ...and a backup of both databases (see backend/services/backup.py).
-            self._run_backup(trigger)
+            self._run_tail(trigger)
             statuses = [str(r.get("status")) for r in schedule_db.list_runs(limit=40) if float(r.get("started_at") or 0) >= batch_started]
             outcome = "fail" if "error" in statuses else "success"
         finally:
             self._run_lock.release()
             self._set_state(running=False, current_task=None, trigger=None, processed=0, total=0)
             heartbeat(outcome)
+
+    def _run_tail(self, trigger: str, start: str = "valuations") -> None:
+        """What every batch ends with, from `start` on: the event behaviour
+        contract for every unfinished event (bake what is missing, refresh
+        what has not started, leave the rest), the HLTV login-health check
+        (a dying remember-me cookie flagged weeks ahead in the run history),
+        and a backup of both databases (backend/services/backup.py)."""
+        steps = [
+            ("valuations", lambda: self._bake_valuations(trigger, only_if_missing=True)),
+            ("hltv_session", lambda: self._check_hltv_session(trigger)),
+            ("backup", lambda: self._run_backup(trigger)),
+        ]
+        names = [n for n, _ in steps]
+        for _name, fn in steps[names.index(start) if start in names else 0:]:
+            fn()
+
+    def _maybe_resume(self) -> None:
+        """Run the batch the previous process was interrupted in, from the
+        interrupted task: that task again (its own job may have resumed by
+        itself, which is harmless) and every task after it, then the tail."""
+        pending = self._resume
+        if not pending or time.time() < float(pending.get("due") or 0):
+            return
+        self._resume = None
+        cfg = schedule_db.get_schedule_config()
+        if not cfg.get("enabled"):
+            return
+        task = str(pending.get("task") or "")
+        order = self._enabled_tasks(cfg)
+        tail = ["valuations", "hltv_session", "backup"]
+        if task in order:
+            logger.info("Resuming the interrupted %s batch from task %s", pending.get("trigger"), task)
+            self._run_batch(order[order.index(task):], "resume", cfg)
+        elif task in tail:
+            if not self._run_lock.acquire(blocking=False):
+                return
+            try:
+                logger.info("Resuming the interrupted %s batch from %s", pending.get("trigger"), task)
+                self._run_tail("resume", start=task)
+            finally:
+                self._run_lock.release()
+                self._set_state(running=False, current_task=None, trigger=None, processed=0, total=0)
 
     def _check_hltv_session(self, trigger: str) -> None:
         """Is the scraper browser still signed in to HLTV, and for how long?
@@ -481,7 +535,7 @@ class DataScheduler:
         return _short(result)
 
     def _drive_job(self, name, unit, total_hint, latest_fn, start_fn, resume_fn, pause_fn, deadline,
-                   processed_key="processed_items", total_key="total_items"):
+                   processed_key="processed_items", total_key="total_items", final_fn=None):
         """Run one pausable job family to completion (or to the deadline):
         resume a paused/failed latest job, else start one; poll it, mirror
         progress into the scheduler state; at the deadline ask it to pause
@@ -513,7 +567,9 @@ class DataScheduler:
             if not cut_short and time.time() >= deadline:
                 pause_fn(job_id)
                 cut_short = True
-        final = latest_fn() or {}
+        # The finished job, from a lookup that includes completed jobs: a
+        # latest_fn limited to live jobs answers nothing once it is done.
+        final = (final_fn or latest_fn)() or {}
         st = str(final.get("status") or "")
         ok = int(final.get("ok") or 0)
         failed = int(final.get("failed") or 0)
@@ -538,7 +594,10 @@ class DataScheduler:
             teams.resume_roster_import_job, teams.pause_roster_import_job, deadline,
         )
         after = teams._roster_coverage(top_n)
-        notes.append(f"{note}, {after.get('with_roster', 0)}/{after.get('teams_in_scope', 0)} top-{top_n} teams have a lineup")
+        notes.append(
+            f"{note}, {after.get('checked', 0)}/{after.get('teams_in_scope', 0)} top-{top_n} teams checked this week, "
+            f"{after.get('full_lineups', 0)} with a full lineup, {after.get('short_lineups', 0)} short"
+        )
         failed_any = failed_any or failed
 
         scope_ids = [int(t["team_id"]) for t in teams._roster_scope_teams(top_n)]
@@ -548,6 +607,7 @@ class DataScheduler:
             lambda: teams.start_map_stats_import_job({"team_ids": scope_ids}),
             teams.resume_map_stats_import_job, teams.pause_map_stats_import_job, deadline,
             processed_key="processed_teams", total_key="total_teams",
+            final_fn=lambda: teams._get_latest_map_stats_job(include_completed=True),
         )
         notes.append(note)
         failed_any = failed_any or failed

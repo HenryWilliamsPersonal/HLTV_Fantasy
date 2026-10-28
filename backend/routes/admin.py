@@ -1509,7 +1509,26 @@ def hltv_session_cookies(payload: Dict[str, Any]):
             detail="Cookies were added but hltv.org still shows this browser signed out; sign in again in your session and retry.",
         )
     _admin_logger.info("HLTV session hand-off applied (%s); signed in as %s", ", ".join(names), result.get("username") or "?")
+    # kept, so a browser that loses its profile cookies signs back in by itself
+    from backend.data import hltv_accounts
+
+    hltv_accounts.save(hltv_session.SCRAPER_KEY, cookies, str(result.get("username") or ""))
     return {"status": "ok", "applied": names, **result}
+
+
+@router.post("/hltv-session-restore")
+def hltv_session_restore():
+    """Sign the scraper browser back in from the stored session (the
+    hand-off's copy, else the stored session of the account it was last
+    signed in as) and report the login state."""
+    try:
+        snap = hltv_session.restore_login()
+    except HLTVBrowserError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if snap is None:
+        raise HTTPException(status_code=404, detail="No stored HLTV session to restore from; hand the login over again.")
+    hltv_session.save_snapshot(snap)
+    return snap
 
 
 def _handoff_cookies(payload: Dict[str, Any]) -> List[Dict[str, Any]]:

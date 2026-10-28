@@ -85,6 +85,18 @@ def save(user_key: str, cookies: List[Dict[str, Any]], username: str) -> Dict[st
     return get(user_key) or {}
 
 
+def list_accounts() -> List[Dict[str, Any]]:
+    """Every stored session's metadata (never the cookies)."""
+    _ensure()
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT user_key, username, saved_at, autologin_expires_at FROM user_hltv_sessions").fetchall()
+    finally:
+        conn.close()
+    return [{"user_key": r["user_key"], "username": r["username"] or "", "saved_at": float(r["saved_at"] or 0.0),
+             "autologin_expires_at": float(r["autologin_expires_at"]) if r["autologin_expires_at"] else None} for r in rows]
+
+
 def delete(user_key: str) -> bool:
     _ensure()
     conn = connect()

@@ -234,6 +234,11 @@ def with_personal_session(callback, cookies: Optional[List[Dict[str, Any]]] = No
 
     def session(driver):
         saved = [c for c in (driver.get_cookies() or []) if c.get("name") in SESSION_COOKIE_NAMES]
+        if not any(c.get("name") == "autologin" for c in saved):
+            # the browser has lost its own login (a hard kill can drop the
+            # profile's cookies): put the stored one back afterwards instead
+            stored = hltv_session.stored_login() or {}
+            saved = [c for c in (stored.get("cookies") or []) if c.get("name") in SESSION_COOKIE_NAMES]
         try:
             for name in SESSION_COOKIE_NAMES:
                 try:

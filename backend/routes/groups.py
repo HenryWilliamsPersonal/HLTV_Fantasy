@@ -2135,7 +2135,7 @@ def bake_event_valuations(
 
     started = time.time()
     event_id = int(event_id)
-    if only_if_missing and _GROUPS_STATE.load(key=event_id):
+    if only_if_missing and has_baked_run(event_id):
         return {"status": "exists", "event_id": event_id, "reason": "already baked at import; not refreshed"}
     event = get_event_detail(event_id)
     if not event:
@@ -2357,8 +2357,8 @@ def _bake_bracket_event(event_id: int, detected: dict, trigger: str, started: fl
         detail = getattr(exc, "detail", None) or str(exc)
         return {"status": "skipped", "event_id": event_id, "reason": f"bracket unavailable: {str(detail)[:200]}"}
     ids = [int(t or 0) for t in (auto.get("team_ids") or [])]
-    if not ids or any(t <= 0 for t in ids):
-        return {"status": "skipped", "event_id": event_id, "reason": "bracket not published yet (TBD slots)"}
+    if not ids:
+        return {"status": "skipped", "event_id": event_id, "reason": "bracket unavailable: no slots on the event page"}
     bracket_kind = "double" if (str(auto.get("bracket_kind") or "") == "double" or kind == "double_elim") else "single"
     if bracket_kind == "double" and len(ids) != 8:
         return {"status": "unsupported", "event_id": event_id, "reason": f"double elimination with {len(ids)} teams is not modelled (8 only)"}
@@ -2366,6 +2366,14 @@ def _bake_bracket_event(event_id: int, detected: dict, trigger: str, started: fl
         return {"status": "unsupported", "event_id": event_id, "reason": f"a {len(ids)}-team bracket is not modelled (2, 4, 8 or 16)"}
     third_place = bool(detected.get("playoff_third_place")) and bracket_kind == "single"
     final_bo = int(playoff_routes._detected_final_bo(event_id) or 3)
+    if any(t <= 0 for t in ids):
+        # HLTV has not placed every team: store the draw as it stands (its
+        # own teams seeded by their Swiss record when HLTV placed none) so
+        # the page shows the bracket; the nightly bake replaces it with the
+        # valuation once the draw is published (has_baked_run is False).
+        if all(t <= 0 for t in ids):
+            ids = _provisional_slots(event_id, event, len(ids))
+        return _store_provisional_bracket(event_id, ids, bracket_kind, third_place, final_bo, trigger, started)
     payload = {
         "groups": [ids], "group_format": "bracket", "combined_playoffs": False, "playoff_stop_teams": 1,
         "playoff_third_place": third_place, "event_id": event_id,
@@ -2375,6 +2383,73 @@ def _bake_bracket_event(event_id: int, detected: dict, trigger: str, started: fl
     snapshot, inputs_meta = _event_inputs(event_id, ids, refresh=refresh_inputs)
     payload["inputs"] = inputs_meta
     return _finish_paths_bake(event_id, payload, snapshot, inputs_meta, started, {"kind": kind, "bracket": bracket_kind, "teams": len(ids), "third_place": third_place, "final_bo": final_bo})
+
+
+# Seed -> first-round slot order of a single-elimination bracket (1 v 8, 4 v 5,
+# 2 v 7, 3 v 6), used only for a provisional draw before HLTV places the teams.
+_SEED_SLOTS = {2: [1, 2], 4: [1, 4, 2, 3], 8: [1, 8, 4, 5, 2, 7, 3, 6], 16: [1, 16, 8, 9, 4, 13, 5, 12, 2, 15, 7, 10, 3, 14, 6, 11]}
+
+
+def _provisional_slots(event_id: int, event: dict, size: int) -> List[int]:
+    """HLTV has placed no team yet: the fantasy game's own teams (the ones
+    already qualified and priced) seeded by their record in the sibling Swiss
+    stage of the same HLTV event (3-0 first), the slots of the teams still to
+    qualify left empty (0)."""
+    from backend.data.event_db import list_events
+    from backend.services import event_rosters, live_state
+
+    known = [int(t) for t in (event_rosters.rosters(int(event_id)) or {}).keys()]
+    record: Dict[int, List[int]] = {}
+    hid = int(event.get("hltv_event_id") or 0)
+    for row in list_events():
+        sid = int(row.get("event_id") or 0)
+        if not sid or sid == int(event_id) or int(row.get("hltv_event_id") or 0) != hid:
+            continue
+        try:
+            entry = live_state.live_event(sid, fetch_if_missing=False) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        if str(entry.get("group_format") or "") != "swiss":
+            continue
+        for m in entry.get("matches") or []:
+            if m.get("winner") is None or m.get("a") is None or m.get("b") is None:
+                continue
+            w = int(m["winner"])
+            loser = int(m["a"]) if int(m["b"]) == w else int(m["b"])
+            record.setdefault(w, [0, 0])[0] += 1
+            record.setdefault(loser, [0, 0])[1] += 1
+    order = sorted(known, key=lambda t: (-(record.get(t) or [0, 0])[0], (record.get(t) or [0, 0])[1], t))
+    layout = _SEED_SLOTS.get(int(size)) or list(range(1, int(size) + 1))
+    return [order[s - 1] if s - 1 < len(order) else 0 for s in layout]
+
+
+def _store_provisional_bracket(event_id: int, ids: List[int], bracket_kind: str, third_place: bool, final_bo: int, trigger: str, started: float) -> Dict[str, Any]:
+    """The draw as it stands, stored as a 'bracket' state WITHOUT results
+    (payload.provisional): the page draws it, nothing values it, and the
+    nightly bake keeps re-reading the event page until HLTV fills the slots."""
+    from backend.services import stage_formats
+
+    spec = stage_formats.bracket_spec(bracket_kind, ids, third_place, final_bo)
+    known = sum(1 for t in ids if t > 0)
+    payload = {
+        "groups": [ids], "group_format": "bracket", "combined_playoffs": False, "playoff_stop_teams": 1,
+        "playoff_third_place": third_place, "event_id": int(event_id), "provisional": True,
+        "bracket": {
+            "kind": bracket_kind, "team_slots": ids, "third_place": third_place, "final_bo": final_bo, "rounds": spec["rounds"],
+            "matches": spec["matches"], "stages": [st.descriptor() | {"series": int(st.series)} for st in spec["stages"]],
+        },
+        "baked": {"trigger": trigger, "at": started, "provisional": True},
+    }
+    _GROUPS_STATE.save(payload, {}, key=int(event_id))
+    return {"status": "provisional", "event_id": int(event_id), "reason": f"bracket not published yet: {known} of {len(ids)} slots known"}
+
+
+def has_baked_run(event_id: int) -> bool:
+    """A stored valuation — not a provisional draw waiting for HLTV's bracket."""
+    key = int(event_id)
+    if not _GROUPS_STATE.exists(key=key):
+        return False
+    return not bool((_GROUPS_STATE.load_payload(key=key) or {}).get("provisional"))
 
 
 def _paths_build(payload_or_results: dict, team_ids: List[int], prob_cache: Dict, regenerate: bool) -> tuple:
@@ -3352,7 +3427,15 @@ def _parse_event_playoff_bracket(html: str) -> Dict[str, Any]:
     for rm in re.finditer(r'"team":\{"id":(\d+),"name":"[^"]+".{0,700}?"ranking":(\d+)', un):
         ranking_by_id.setdefault(int(rm.group(1)), int(rm.group(2)))
 
-    m = re.search(r'[Ss]ingleElimination","name":"Single Elimination Bracket"', un)
+    # The main single-elimination bracket: HLTV's 2026 pages name it after
+    # the stage ('Playoffs'), the older ones 'Single Elimination Bracket';
+    # the third-place decider is a single-slot bracket of its own, skipped.
+    m = None
+    for cand in re.finditer(r'"(?:[^"]*\.)?[Ss]ingleElimination"(?:,"bracketId":\{[^}]*\})?,"name":"([^"]*)"', un):
+        if re.search(r"3rd|third|decider", cand.group(1), re.IGNORECASE):
+            continue
+        m = cand
+        break
     if not m:
         return {"bracket_size": 0, "seeds": []}
     seg = un[m.start():]
@@ -3556,8 +3639,9 @@ def autofill_event_playoff(
         # seeded single-elim bracket (an import-time snapshot may predate the
         # draw); otherwise fall back to a live fetch of the canonical page.
         snap_html = _find_event_snapshot_html(hid)
-        if snap_html and int(_parse_event_playoff_bracket(snap_html).get("bracket_size") or 0) in (8, 16):
-            html = snap_html
+        snap_parsed = _parse_event_playoff_bracket(snap_html) if snap_html else {}
+        if snap_html and int(snap_parsed.get("bracket_size") or 0) in (8, 16) and snap_parsed.get("seeds") and all(snap_parsed["seeds"]):
+            html = snap_html  # the full draw is archived; a TBD snapshot would hide a draw HLTV has published since
         elif snap_html:
             try:
                 if _parse_event_double8_bracket(snap_html):
@@ -3768,11 +3852,12 @@ def get_latest_groups(full: bool = False, event_id: Optional[int] = None):
     latest = _GROUPS_STATE.load(key=key)
     if not latest:
         return {"exists": False, "event_id": key}
+    provisional = bool((latest.get("payload") or {}).get("provisional"))
     return {
         "exists": True,
         "event_id": key,
         "payload": latest["payload"],
-        "results": latest["results"] if full else _slim_groups_results(latest["results"] or {}),
+        "results": None if provisional else (latest["results"] if full else _slim_groups_results(latest["results"] or {})),
         "updated_at": latest["updated_at"],
     }
 

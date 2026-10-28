@@ -10740,9 +10740,27 @@ function PlayoffSkeleton({ format, groupCount, qualsPerGroup, stopTeams = 1, bo 
 const PATH_FORMATS = ["swiss", "bracket"];
 
 // Bracket stage: the most likely bracket of the stored run.
-function BracketStageView({ results, teams, teamLookup }) {
+function BracketStageView({ results, teams, teamLookup, draw = null }) {
   const br = results?.bracket || null;
   if (!br) {
+    // The draw as HLTV shows it before every team is placed (the stored
+    // provisional bracket): the picker board, read-only, TBD where a slot
+    // is still open.
+    if (draw && (draw.matches || []).length > 0) {
+      const slots = draw.team_slots || [];
+      const known = slots.filter((t) => Number(t) > 0).length;
+      return (
+        <div className="card sub group-card">
+          <div className="group-card-head">
+            <h3>Bracket</h3>
+            <span className="muted">
+              {known} of {slots.length} teams
+            </span>
+          </div>
+          <BracketPicker bracket={draw} teamLookup={teamLookup} picks={{}} onPick={() => {}} readOnly />
+        </div>
+      );
+    }
     return (
       <div className="card sub">
         <p className="muted">{PUBLIC_BUILD ? NOT_PUBLISHED : "Not baked yet."}</p>
@@ -11391,6 +11409,7 @@ function GroupsTab({
     }
     setCombinedPlayoffs(Boolean(payload.combined_playoffs));
     setBakedInfo(payload.baked || null);
+    setBracketDraw(payload.bracket || null);
     if (payload.playoff_stop_teams) setPlayoffStopTeams(String(payload.playoff_stop_teams));
     if (payload.playoff_layout) setPlayoffLayout(String(payload.playoff_layout));
     setResults(data.results || null);
@@ -11982,6 +12001,7 @@ function GroupsTab({
 
   const [breakdownPlayer, setBreakdownPlayer] = useState(null);
   const [bakedInfo, setBakedInfo] = useState(null);
+  const [bracketDraw, setBracketDraw] = useState(null); // the stored draw (provisional or baked payload)
   // Collapsible group / playoff cards, remembered per browser so a long
   // page can be skipped past on every visit. { "group-0": true, playoff: true }
   const collapseStorageKey = "groups.collapsedCards";
@@ -12474,7 +12494,7 @@ function GroupsTab({
           />
         )}
         {groupsTab === "stage" && groupFormat === "bracket" && (
-          <BracketStageView results={results} teams={teams} teamLookup={teamLookup} />
+          <BracketStageView results={results} teams={teams} teamLookup={teamLookup} draw={bracketDraw} />
         )}
         {groupsTab === "stage" && (
           <>

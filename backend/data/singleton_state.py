@@ -180,6 +180,20 @@ class SingletonState:
             else:
                 self._cache.pop(k, None)
 
+    def load_payload(self, key: Optional[int] = None) -> Optional[dict]:
+        """The stored payload alone (small), without parsing the result blob."""
+        k = self._key(key)
+        with self._cache_lock:
+            hit = self._cache.get(k)
+            if hit is not None:
+                return hit.get("payload")
+        conn = connect()
+        try:
+            row = conn.execute(f"SELECT payload_json FROM {self.table} WHERE singleton_id = ?", (k,)).fetchone()
+        finally:
+            conn.close()
+        return json.loads(row[0]) if row and row[0] else None
+
     def keys(self) -> list:
         """Every stored key (one row per key when keyed)."""
         conn = connect()

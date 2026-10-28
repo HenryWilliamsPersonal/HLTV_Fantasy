@@ -30,7 +30,7 @@ from backend.services import event_rosters
 def _groups_hooks() -> Dict[str, Any]:
     from backend.routes import groups
 
-    return {"bake": groups.bake_event_valuations, "exists": lambda eid: groups._GROUPS_STATE.exists(eid)}
+    return {"bake": groups.bake_event_valuations, "exists": groups.has_baked_run}
 
 
 def _bounty_hooks() -> Dict[str, Any]:

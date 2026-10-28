@@ -45,6 +45,20 @@ async def live_stream(request: Request) -> StreamingResponse:
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@router.get("/events/{event_id}/best-team")
+def get_live_best_team(event_id: int) -> dict:
+    """The roster that would have scored most with hindsight, with its
+    roles and the booster for every match (services/fantasy_field.best_team);
+    needs the field to be stored."""
+    from backend.services import fantasy_field
+
+    if not fantasy_field.status(int(event_id)).get("teams_stored"):
+        raise HTTPException(status_code=404, detail="The field of this event has not been read")
+    out = dict(fantasy_field.best_team(int(event_id)))
+    out.pop("_key", None)
+    return out
+
+
 @router.get("/events/{event_id}/leaderboard")
 def get_live_leaderboard(event_id: int) -> dict:
     """Every player in the event scored from the matches played so far

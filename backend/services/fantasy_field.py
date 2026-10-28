@@ -438,6 +438,7 @@ def stop_read(event_id: int) -> bool:
 # ---------------------------------------------------------------- per-player summary
 _SUMMARY_CACHE: Dict[int, Dict[str, Any]] = {}
 _FACTS_CACHE: Dict[int, Dict[str, Any]] = {}
+_BEST_CACHE: Dict[int, Dict[str, Any]] = {}
 
 
 def player_summary(event_id: int) -> Dict[str, Any]:
@@ -623,3 +624,148 @@ def match_facts(event_id: int) -> Dict[str, Any]:
     with _LOCK:
         _FACTS_CACHE[eid] = res
     return res
+
+
+# ---------------------------------------------------------------- best team in hindsight
+# HLTV's roster rules, checked on the field itself (PGL Masters Bucharest
+# 2026, 14,582 teams): five players, a 1,000,000 budget (the dearest lineup
+# costs exactly that), at most two players of one team (no lineup carries
+# three), one player per role, each booster once per event.
+BUDGET = 1_000_000
+MAX_PER_TEAM = 2
+_CANDIDATES = 2000  # rosters taken from the kernel per pass, by upper bound
+_MAX_CANDIDATES = 250_000
+
+
+def best_team(event_id: int, budget: int = BUDGET, max_per_team: int = MAX_PER_TEAM) -> Dict[str, Any]:
+    """The roster that would have scored most with hindsight: rating and win
+    points as scored, the best assignment of distinct roles, and a different
+    booster on every (player, match) slot it triggered in. Exact: the roster
+    kernel lists legal rosters by an upper bound (each player's own maximum)
+    and they are valued exactly, best first, until the next bound cannot beat
+    the best value found."""
+    import numpy as np
+
+    from backend.data.player_db import get_player
+    from backend.services import roster_kernels as rk
+    from backend.services.swiss_booster_assignment import _max_weight_assignment
+
+    eid = int(event_id)
+    facts = match_facts(eid)
+    key = (facts.get("_key"), int(budget), int(max_per_team))
+    with _LOCK:
+        hit = _BEST_CACHE.get(eid)
+        if hit and hit.get("_key") == key:
+            return hit
+    rows: List[Dict[str, Any]] = []
+    role_names: List[str] = []
+    for pid, f in (facts.get("players") or {}).items():
+        p = get_player(int(pid)) or {}
+        price = p.get("price")
+        if not price:
+            continue
+        roles = {r["role_name"]: r for r in f.get("roles") or [] if r.get("complete")}
+        for r in roles:
+            if r not in role_names:
+                role_names.append(r)
+        slots = {i: set(m.get("triggered") or []) for i, m in enumerate(f.get("matches") or []) if m.get("triggered")}
+        base = int(f.get("rating_points") or 0) + int(f.get("win_points") or 0)
+        rows.append({
+            "player_id": int(pid), "name": f.get("name") or p.get("name"), "team": f.get("team") or "", "price": int(price), "base": base,
+            "roles": roles, "slots": slots, "facts": f,
+            "bound": base + max([int(r["total"]) for r in roles.values()] + [0]) + BOOSTER_VALUE * len(slots),
+        })
+    from backend.services.my_team import ROLE_INDEX_BY_NAME
+
+    role_names.sort(key=lambda r: (ROLE_INDEX_BY_NAME.get(str(r).lower(), 99), r))
+    empty = {"_key": key, "players": [], "total": 0, "cost": 0, "budget": int(budget), "max_per_team": int(max_per_team)}
+    if len(rows) < 5:
+        with _LOCK:
+            _BEST_CACHE[eid] = empty
+        return empty
+    team_ids: Dict[str, int] = {}
+    team_of = np.array([team_ids.setdefault(r["team"], len(team_ids)) for r in rows], dtype=np.int64)
+    scores = np.array([float(r["bound"]) for r in rows], dtype=np.float64)
+    prices = np.array([r["price"] for r in rows], dtype=np.int64)
+    NO = -1e9
+
+    def value(idx: List[int]) -> Dict[str, Any]:
+        chosen = [rows[i] for i in idx]
+        n_roles = len(role_names)
+        weights = []
+        for a, r in enumerate(chosen):  # 5 rows x (roles + one 'no role' column per player)
+            w = [float(r["roles"][name]["total"]) if name in r["roles"] else NO for name in role_names]
+            w += [0.0 if b == a else NO for b in range(len(chosen))]
+            weights.append(w)
+        role_of: Dict[int, Optional[str]] = {}
+        role_pts = 0
+        for a, c, w in _max_weight_assignment(weights):
+            role_of[a] = role_names[c] if c < n_roles and w > NO / 2 else None
+            role_pts += int(w) if w > NO / 2 else 0
+        triggered: Dict[str, set] = {}
+        for a, r in enumerate(chosen):
+            for mi, names in r["slots"].items():
+                for b in names:
+                    triggered.setdefault(b, set()).add((a, mi))
+        plan = _max_matching(triggered)
+        total = sum(r["base"] for r in chosen) + role_pts + BOOSTER_VALUE * len(plan)
+        return {"total": int(total), "role_pts": int(role_pts), "booster_pts": BOOSTER_VALUE * len(plan), "role_of": role_of, "plan": plan, "idx": list(idx)}
+
+    best: Optional[Dict[str, Any]] = None
+    k = _CANDIDATES
+    tried = 0
+    while True:
+        cands = rk.top_rosters_one(scores, prices, team_of, int(budget), int(max_per_team), int(k))
+        settled = False
+        for bound_sum, roster in cands:
+            if best is not None and bound_sum <= best["total"]:
+                settled = True
+                break
+            tried += 1
+            v = value([int(i) for i in roster])
+            if best is None or v["total"] > best["total"]:
+                best = v
+        if settled or len(cands) < k or k >= _MAX_CANDIDATES:
+            break
+        k = min(k * 5, _MAX_CANDIDATES)
+    if best is None:
+        with _LOCK:
+            _BEST_CACHE[eid] = empty
+        return empty
+
+    from backend.data.event_db import get_event_detail
+    from backend.services import live_state
+
+    entry = live_state.live_event(eid, fetch_if_missing=False) or {}
+    hltv_ids = {str(v.get("name") or ""): v.get("hltv_team_id") for v in (entry.get("teams") or {}).values()}
+    players_out = []
+    for a, i in enumerate(best["idx"]):
+        r = rows[i]
+        f = r["facts"]
+        role = best["role_of"].get(a)
+        role_row = r["roles"].get(role) if role else None
+        matches = []
+        for mi, m in enumerate(f.get("matches") or []):
+            b = best["plan"].get((a, mi))
+            matches.append({
+                "opponent": m.get("opponent"), "result": m.get("result"), "match_url": m.get("match_url"), "rating": m.get("rating"), "team": m.get("team"),
+                "role": (role_row["per_match"][mi] if role_row else None), "booster": b, "booster_points": BOOSTER_VALUE if b else 0,
+            })
+        booster_pts = sum(m["booster_points"] for m in matches)
+        role_pts = int(role_row["total"]) if role_row else 0
+        players_out.append({
+            "player_id": r["player_id"], "name": r["name"], "team": r["team"], "hltv_team_id": hltv_ids.get(r["team"]), "price": r["price"],
+            "role_name": role, "role_index": role_row["role_index"] if role_row else None, "role_points": role_pts,
+            "rating_points": int(f.get("rating_points") or 0), "win_points": int(f.get("win_points") or 0), "booster_points": booster_pts,
+            "total": r["base"] + role_pts + booster_pts, "matches": matches, "padding": f.get("padding"),
+        })
+    players_out.sort(key=lambda p: -p["total"])
+    out = {
+        "_key": key, "players": players_out, "total": int(best["total"]), "cost": int(sum(p["price"] for p in players_out)),
+        "budget": int(budget), "max_per_team": int(max_per_team),
+        "rating_points": sum(p["rating_points"] for p in players_out), "win_points": sum(p["win_points"] for p in players_out),
+        "role_points": int(best["role_pts"]), "booster_points": int(best["booster_pts"]), "rosters_valued": tried,
+    }
+    with _LOCK:
+        _BEST_CACHE[eid] = out
+    return out

@@ -7174,6 +7174,16 @@ function LeaderboardPanel({ ev }) {
       if (idRef.current !== id) return;
       setData(d);
       setError("");
+      if (d?.field) {
+        try {
+          const b = await api.get(`/live/events/${id}/best-team`, 60000);
+          if (idRef.current === id) setBest(b);
+        } catch (e) {
+          if (idRef.current === id) setBest(null);
+        }
+      } else {
+        setBest(null);
+      }
       // matches whose scoreboards are being read fill in within minutes
       if (Number(d?.matches_pending || 0) > 0) poll.current = setTimeout(() => load(id), 30000);
     } catch (e) {
@@ -7196,6 +7206,7 @@ function LeaderboardPanel({ ev }) {
   const field = !!data?.field;
   const [openId, setOpenId] = useState(null);
   const [sortBy, setSortBy] = useState("total_desc");
+  const [best, setBest] = useState(null);
   const openRow = openId != null ? players.find((x) => x.player_id === openId) : null;
   const teamIds = useMemo(() => {
     const m = {};
@@ -7250,9 +7261,91 @@ function LeaderboardPanel({ ev }) {
       {label}
     </SortHeader>
   );
+  const bestPlayers = best?.players || [];
+  const slotCount = bestPlayers.reduce((n, p) => Math.max(n, (p.matches || []).length), 0);
+  const slots = Array.from({ length: slotCount }, (_, i) => i);
   return (
-    <Section title="Leaderboard">
+    <div className="stack">
       {openRow && openRow.breakdown ? <LeaderboardPlayerModal p={openRow} teamIds={teamIds} onClose={() => setOpenId(null)} /> : null}
+      {bestPlayers.length > 0 ? (
+        <Section title="Best Team">
+          <table className="bp-table lb-table">
+            <thead>
+              <tr>
+                <th>Player</th>
+                <th>Team</th>
+                <th className="num">Price</th>
+                <th>Role</th>
+                {slots.map((i) => (
+                  <th key={i}>{i + 1}</th>
+                ))}
+                <th className="num">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bestPlayers.map((p) => (
+                <tr key={p.player_id}>
+                  <td>
+                    <div className="table-player-cell">
+                      <PlayerPhoto playerId={p.player_id} name={p.name} size={28} />
+                      <strong>{p.name}</strong>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="table-player-cell">
+                      <TeamLogo hltvTeamId={p.hltv_team_id} name={p.team} size={20} />
+                      <span>{p.team}</span>
+                    </div>
+                  </td>
+                  <td className="num">{Number(p.price || 0).toLocaleString()}</td>
+                  <td>
+                    {p.role_name ? (
+                      <span>
+                        {p.role_name} <span className="muted">{signed(p.role_points)}</span>
+                      </span>
+                    ) : (
+                      <span className="muted">-</span>
+                    )}
+                  </td>
+                  {slots.map((i) => {
+                    const m = (p.matches || [])[i];
+                    return (
+                      <td className="lb-slot" key={i}>
+                        {m ? (
+                          <>
+                            <span className="lb-slot-opp">vs {m.opponent}</span>
+                            {m.booster ? (
+                              <span>
+                                {m.booster} <span className="muted">+5</span>
+                              </span>
+                            ) : (
+                              <span className="muted">-</span>
+                            )}
+                          </>
+                        ) : null}
+                      </td>
+                    );
+                  })}
+                  <td className="num">
+                    <strong>{signed(p.total)}</strong>
+                  </td>
+                </tr>
+              ))}
+              <tr className="total">
+                <td>Total</td>
+                <td />
+                <td className="num">{Number(best.cost || 0).toLocaleString()}</td>
+                <td>{signed(best.role_points)}</td>
+                {slotCount > 0 ? <td className="lb-slot" colSpan={slotCount}>{signed(best.booster_points)}</td> : null}
+                <td className="num">
+                  <strong>{signed(best.total)}</strong>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </Section>
+      ) : null}
+      <Section title="Leaderboard">
       {error && <span className="pill warn">{error}</span>}
       <table className="bp-table lb-table">
         <thead>
@@ -7327,7 +7420,8 @@ function LeaderboardPanel({ ev }) {
           ))}
         </tbody>
       </table>
-    </Section>
+      </Section>
+    </div>
   );
 }
 

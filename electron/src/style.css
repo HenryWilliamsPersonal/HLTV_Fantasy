@@ -3545,6 +3545,8 @@ button:disabled {
 .lb-table th.tight, .lb-table td.tight { width: 36px; color: #8fa3bf; }
 .lb-table td.lb-boosters { max-width: 260px; white-space: normal; line-height: 1.3; }
 .lb-table td.pos { color: #3fbf7f; }
+.lb-table td.lb-slot { white-space: normal; line-height: 1.3; min-width: 120px; }
+.lb-table .lb-slot-opp { display: block; color: #8fa3bf; font-size: 11px; }
 .lb-table td.neg { color: #e0705a; }
 .lb-table tbody tr.pad td { color: #8fa3bf; }
 .lb-table tbody tr.total td { background: #171c24; border-top: 1px solid #2c3441; }

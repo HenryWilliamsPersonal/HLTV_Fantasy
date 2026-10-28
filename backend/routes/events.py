@@ -4521,7 +4521,31 @@ def discover_and_import_new_fantasy_events() -> Dict[str, Any]:
             imported.append(fid)
         except Exception as exc:  # noqa: BLE001 — one bad event must not stop the rest
             failed.append({"event_id": fid, "error": str(exc)[:200]})
-    if prev_active is not None and imported:
+    # The open events already held are imported again: prices move until
+    # the roster locks, and a stage-scoped game (a playoff) gains the
+    # teams that qualify — their players had no price before. An event
+    # whose roster grew is valued again with the fresh inputs (the usual
+    # nightly refresh leaves a started HLTV event alone, and a playoff
+    # game belongs to an event that started with its group stage).
+    refreshed: List[str] = []
+    for fid in sorted(found):
+        if fid not in existing or fid in removed:
+            continue
+        try:
+            before = _event_player_ids(fid)
+            import_hltv_event({"event_id": str(fid)})
+            after = _event_player_ids(fid)
+            grown = sorted(after - before)
+            note = f"{fid}: {len(after)} players" + (f", +{len(grown)} new" if grown else "")
+            if grown:
+                from backend.services import event_pipeline
+
+                baked = event_pipeline.bake_event(int(fid), trigger="roster", only_if_missing=False, refresh_inputs=True)
+                note += f", valued again: {baked.get('status')}"
+            refreshed.append(note)
+        except Exception as exc:  # noqa: BLE001 — one event must not stop the rest
+            refreshed.append(f"{fid}: failed ({str(exc)[:120]})")
+    if prev_active is not None and (imported or refreshed):
         try:
             set_active_event(int(prev_active))
         except Exception:
@@ -4543,7 +4567,14 @@ def discover_and_import_new_fantasy_events() -> Dict[str, Any]:
         "imported": imported,
         "failed": failed,
         "renamed": renamed,
+        "refreshed": refreshed,
     }
+
+
+def _event_player_ids(event_id: int) -> set:
+    """The player ids of the event's stored roster (every team)."""
+    detail = get_event_detail(int(event_id)) or {}
+    return {int(p) for t in (detail.get("teams") or []) for p in (t.get("player_ids") or []) if p}
 
 
 @router.post("/pull-new")

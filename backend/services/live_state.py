@@ -76,6 +76,70 @@ def _event_matches(conn: sqlite3.Connection, key_to_tid: Dict[str, int], start: 
     return out
 
 
+def _match_key(m: Dict[str, Any]) -> str:
+    return str(m.get("match_id") or m.get("url") or "")
+
+
+def _swiss_walk(matches: List[Dict[str, Any]], team_ids: List[int]) -> tuple:
+    """(keys of the matches that belong to the Swiss stage, each team's
+    Swiss record after them): walking the matches in order, a match is the
+    Swiss's while neither team has reached TARGET wins or losses — once a
+    team is through or out, its next match is the playoff's."""
+    from backend.services import swiss_engine
+
+    rec = {int(t): [0, 0] for t in team_ids}
+    keys: set = set()
+    for m in matches:
+        a, b, w = int(m["a"]), int(m["b"]), m.get("winner")
+        if w is None or a not in rec or b not in rec:
+            continue
+        if max(rec[a] + rec[b]) >= swiss_engine.TARGET:
+            continue
+        keys.add(_match_key(m))
+        rec[int(w)][0] += 1
+        rec[b if int(w) == a else a][1] += 1
+    return keys, rec
+
+
+def _swiss_alive(rec: Dict[int, List[int]], tid: Any) -> bool:
+    from backend.services import swiss_engine
+
+    r = rec.get(int(tid or 0))
+    return bool(r) and max(r) < swiss_engine.TARGET
+
+
+def _sibling_swiss_walk(conn: sqlite3.Connection, event_id: int, hltv_event_id: int, start: str, end: str) -> Optional[tuple]:
+    """The Swiss walk of the group-stage fantasy game of the same HLTV
+    event (all its teams), for a playoff game to tell the Swiss matches
+    between its teams from its own. None without such a sibling."""
+    from backend.data.event_db import get_event_detail, list_events
+    from backend.routes import events as events_routes
+    from backend.routes.groups import _GROUPS_STATE
+
+    hid = int(hltv_event_id or 0)
+    if not hid:
+        return None
+    for row in list_events():
+        sid = int(row.get("event_id") or 0)
+        if not sid or sid == int(event_id) or int(row.get("hltv_event_id") or 0) != hid:
+            continue
+        sdetail = get_event_detail(sid) or {}
+        try:
+            sdet = events_routes._detect_event_tournament_kind_cached(sdetail) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        if str(sdet.get("kind") or "") != "swiss":
+            continue
+        sres = ((_GROUPS_STATE.load(key=sid) or {}).get("results")) or {}
+        if not sres.get("teams"):
+            continue
+        steam_ids = [int(t) for t in sres["teams"]]
+        srows = _team_rows(conn, steam_ids)
+        skey_to_tid = {team_aliases.key(str(r["name"] or "")): tid for tid, r in srows.items() if r.get("name")}
+        return _swiss_walk(_event_matches(conn, skey_to_tid, start, end), steam_ids)
+    return None
+
+
 def _swiss_state(matches: List[Dict[str, Any]], team_ids: List[int], bo3_mode: str, pending: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Rounds from the finished matches, then the pairings HLTV has made but
     not finished (live or scheduled) in the round their records put them."""
@@ -259,6 +323,24 @@ def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float, fetch_if_mi
             })
     matches.sort(key=lambda m: (str(m.get("date") or ""), int(m.get("match_id") or 0)))
     pending = [pm for pm in page if pm["status"] in ("live", "upcoming")]
+    # A stage-scoped game (HLTV runs the group stage and the playoffs as two
+    # fantasy games of one event) sees only its stage: the Swiss game keeps
+    # the matches of its walk (a team through or out plays no more Swiss),
+    # the playoff game drops the Swiss matches between its teams — found by
+    # the group-stage sibling's walk, which knows every team — and the
+    # Swiss pairings still in play.
+    if detected.get("stage_scoped"):
+        kind = str(detected.get("kind") or "")
+        if kind == "swiss":
+            swiss_keys, rec = _swiss_walk(matches, team_ids)
+            matches = [m for m in matches if _match_key(m) in swiss_keys]
+            pending = [pm for pm in pending if _swiss_alive(rec, pm.get("a")) and _swiss_alive(rec, pm.get("b"))]
+        elif kind in ("playoff", "double_elim"):
+            walk = _sibling_swiss_walk(conn, event_id, int(detail.get("hltv_event_id") or 0), _iso(start), _iso(end + GRACE_DAYS * DAY))
+            if walk is not None:
+                swiss_keys, rec = walk
+                matches = [m for m in matches if _match_key(m) not in swiss_keys]
+                pending = [pm for pm in pending if not (_swiss_alive(rec, pm.get("a")) and _swiss_alive(rec, pm.get("b")))]
     live_now = [pm for pm in pending if pm["status"] == "live"]
     upcoming = sorted((pm for pm in pending if pm["status"] == "upcoming"), key=lambda pm: (pm.get("start_at") or 0.0))
     entry: Dict[str, Any] = {
@@ -298,6 +380,10 @@ def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float, fetch_if_mi
             stage_by_url.update(g.pop("stage_by_url", {}))
     for m in matches:
         m["stage"] = stage_by_url.get(str(m.get("url")))
+    # a stage whose matches are all played is over, whatever the parent
+    # event's dates say (the group stage ends days before the playoffs)
+    if entry["status"] == "live" and entry.get("total") and int(entry.get("played") or 0) >= int(entry["total"]) and not live_now:
+        entry["status"] = "finished"
     last = matches[-1] if matches else None
     entry["last_match"] = (
         {"a": rows.get(last["a"], {}).get("name"), "b": rows.get(last["b"], {}).get("name"), "score_a": last["score_a"], "score_b": last["score_b"], "date": last["date"]}

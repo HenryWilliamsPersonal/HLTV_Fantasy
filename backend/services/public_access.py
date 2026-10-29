@@ -60,6 +60,7 @@ PUBLIC_ROUTES: List[Tuple[str, str]] = [
     ("GET", r"/live/events/\d+"),
     ("GET", r"/live/events/\d+/leaderboard"),
     ("GET", r"/live/events/\d+/best-team"),
+    ("GET", r"/live/events/\d+/teams"),
     ("GET", r"/live/stream"),
     # My Team: each signed-in user's own HLTV account (routes require a user)
     ("GET", r"/my-team(/.*)?"),

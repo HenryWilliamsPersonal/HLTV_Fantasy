@@ -229,6 +229,17 @@ def teams(event_id: int) -> List[Dict[str, Any]]:
     return out
 
 
+def stored_events() -> List[int]:
+    """The events with a stored field, most recently read first."""
+    _ensure()
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT event_id, MAX(read_at) AS at FROM fantasy_field_teams GROUP BY event_id ORDER BY at DESC").fetchall()
+    finally:
+        conn.close()
+    return [int(r["event_id"]) for r in rows]
+
+
 def status(event_id: int) -> Dict[str, Any]:
     """The live run if one is going, else the last stored run, plus the
     stored team count."""

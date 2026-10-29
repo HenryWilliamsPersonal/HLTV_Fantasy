@@ -59,6 +59,32 @@ def get_live_best_team(event_id: int) -> dict:
     return out
 
 
+@router.get("/events/{event_id}/teams")
+def get_live_teams(event_id: int, request: Request, q: str = "", sort: str = "expected_final", desc: int = 1, page: int = 0, size: int = 50) -> dict:
+    """Every user team of the event's fantasy league: points so far, the
+    expected points still to come and at the end (services/field_projection),
+    searchable by team name, sorted and paged. The caller's own team (its
+    connected HLTV account's) comes back marked and in `mine`."""
+    from backend.data import my_team_cache
+    from backend.services import fantasy_field, field_projection, public_access
+
+    if not fantasy_field.status(int(event_id)).get("teams_stored"):
+        raise HTTPException(status_code=404, detail="The field of this event has not been read")
+    mine = []
+    uid = public_access.session_user_id(request)
+    key = f"user:{int(uid)}" if uid else None
+    if key is None and public_access.is_operator(request):
+        from backend.services import my_team
+
+        key = my_team.OPERATOR_KEY
+    if key:
+        cached = my_team_cache.get(key, int(event_id)) or {}
+        tid = (cached.get("team") or {}).get("team_id")
+        if tid:
+            mine.append(int(tid))
+    return field_projection.page(int(event_id), q=q, sort=sort, desc=bool(desc), page_no=page, size=size, mine=mine)
+
+
 @router.get("/events/{event_id}/leaderboard")
 def get_live_leaderboard(event_id: int) -> dict:
     """Every player in the event scored from the matches played so far

@@ -7457,7 +7457,198 @@ function BoosterPanel({ ev, onOpenSettings }) {
 // way HLTV scores them from the matches played so far — rating and win
 // points to start (services/leaderboard). Re-read when the event's pages
 // change on the server.
+// The Leaderboard sub-tab: the players of the event, or every user team of
+// its fantasy league with the points it is expected to finish on.
 function LeaderboardPanel({ ev }) {
+  const [view, setView] = useState("players");
+  return (
+    <div className="stack">
+      <div className="tab-bar small">
+        {[
+          ["players", "Players"],
+          ["teams", "Teams"],
+        ].map(([k, label]) => (
+          <button key={k} className={view === k ? "tab active" : "tab"} onClick={() => setView(k)}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {view === "teams" ? <TeamLeaderboard ev={ev} /> : <PlayerLeaderboard ev={ev} />}
+    </div>
+  );
+}
+
+// Every user team of the league (services/field_projection): points so far,
+// the points still expected and at the end of the tournament from the
+// current point, the places both give; searchable by team name, sorted and
+// paged by the server. The viewer's own team is pinned on top.
+const TEAM_LB_PAGE = 50;
+function TeamLeaderboard({ ev }) {
+  const eventId = ev?.event_id;
+  const [q, setQ] = useState("");
+  const [query, setQuery] = useState("");
+  const [sortBy, setSortBy] = useState("expected_final_desc");
+  const [page, setPage] = useState(0);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(null);
+  const reqRef = useRef(0);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setQuery(q.trim());
+      setPage(0);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [q]);
+  const load = async () => {
+    if (!eventId) return;
+    const id = ++reqRef.current;
+    const cut = sortBy.lastIndexOf("_");
+    const key = sortBy.slice(0, cut);
+    const dir = sortBy.slice(cut + 1);
+    setLoading(true);
+    try {
+      const d = await api.get(
+        `/live/events/${eventId}/teams?q=${encodeURIComponent(query)}&sort=${key}&desc=${dir === "desc" ? 1 : 0}&page=${page}&size=${TEAM_LB_PAGE}`,
+        120000
+      );
+      if (id !== reqRef.current) return;
+      setData(d);
+      setError("");
+    } catch (e) {
+      if (id !== reqRef.current) return;
+      setError(e?.message || "Could not read the teams");
+    } finally {
+      if (id === reqRef.current) setLoading(false);
+    }
+  };
+  useEffect(() => {
+    load();
+  }, [eventId, query, sortBy, page]);
+  useLiveStream((change) => {
+    if (Number(change.event_id) === Number(eventId)) load();
+  });
+  const n = (v) => (v == null ? "-" : Number(v).toLocaleString());
+  const f1 = (v) => (v == null ? "-" : Number(v).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
+  const head = (label, key, opts = {}) => (
+    <SortHeader
+      sortValue={sortBy}
+      asc={`${key}_asc`}
+      desc={`${key}_desc`}
+      defaultDirection={opts.asc ? "asc" : "desc"}
+      onChange={(v) => {
+        setSortBy(v);
+        setPage(0);
+      }}
+      className={opts.num ? "num" : ""}
+    >
+      {label}
+    </SortHeader>
+  );
+  const mineIds = new Set((data?.mine || []).map((r) => r.team_id));
+  const pinned = (data?.mine || []).filter((r) => !(data?.rows || []).some((x) => x.team_id === r.team_id));
+  const row = (r, extra = "") => {
+    const isOpen = open === r.team_id;
+    const cls = `row-link${r.mine || mineIds.has(r.team_id) ? " team-lb-mine" : ""}${extra}`;
+    return (
+      <React.Fragment key={`${extra}-${r.team_id}`}>
+        <tr className={cls} onClick={() => setOpen(isOpen ? null : r.team_id)}>
+          <td className="num">{n(r.place_now)}</td>
+          <td>
+            <strong>{r.team_name}</strong>
+          </td>
+          <td>
+            <div className="team-lb-lineup">
+              {(r.players || []).map((p) => (
+                <span className="team-lb-player" key={p.player_id} title={`${p.name}${p.role_name ? ` · ${p.role_name}` : ""}`}>
+                  <PlayerPhoto playerId={p.player_id} name={p.name} size={26} />
+                </span>
+              ))}
+            </div>
+          </td>
+          <td className="num">
+            <strong>{n(r.points)}</strong>
+          </td>
+          <td className="num">{f1(r.expected_left)}</td>
+          <td className="num">
+            <strong className="team-lb-final">{f1(r.expected_final)}</strong>
+          </td>
+          <td className="num">{n(r.place_expected)}</td>
+        </tr>
+        {isOpen ? (
+          <tr className="team-lb-detail">
+            <td />
+            <td colSpan={6}>
+              <table className="mt-mini team-lb-mini">
+                <thead>
+                  <tr>
+                    <th>Player</th>
+                    <th>Team</th>
+                    <th>Role</th>
+                    <th className="num">Points</th>
+                    <th className="num">Expected to come</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(r.players || []).map((p) => (
+                    <tr key={p.player_id}>
+                      <td>
+                        <div className="table-player-cell">
+                          <PlayerPhoto playerId={p.player_id} name={p.name} size={24} />
+                          <span>{p.name}</span>
+                        </div>
+                      </td>
+                      <td>{p.team}</td>
+                      <td>{p.role_name || <span className="muted">-</span>}</td>
+                      <td className="num">{n(p.points)}</td>
+                      <td className="num">{f1(p.expected_left)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </td>
+          </tr>
+        ) : null}
+      </React.Fragment>
+    );
+  };
+  return (
+    <Section title="Teams">
+      <div className="players-controls">
+        <Input label="Search Teams" value={q} onChange={setQ} placeholder="Team name" className="search-field" />
+      </div>
+      {error && <span className="pill warn">{error}</span>}
+      {data ? (
+        <>
+          <ComboPager page={page} pageSize={TEAM_LB_PAGE} total={data.total} onPage={setPage} />
+          <table className={`bp-table lb-table team-lb${loading ? " loading" : ""}`}>
+            <thead>
+              <tr>
+                {head("Place", "place_now", { num: true, asc: true })}
+                {head("Team", "team_name", { asc: true })}
+                <th>Lineup</th>
+                {head("Points", "points", { num: true })}
+                {head("Expected to come", "expected_left", { num: true })}
+                {head("Expected final", "expected_final", { num: true })}
+                {head("Projected place", "place_expected", { num: true, asc: true })}
+              </tr>
+            </thead>
+            <tbody>
+              {pinned.map((r) => row(r, " team-lb-pinned"))}
+              {(data.rows || []).map((r) => row(r))}
+            </tbody>
+          </table>
+          <ComboPager page={page} pageSize={TEAM_LB_PAGE} total={data.total} onPage={setPage} />
+        </>
+      ) : !error ? (
+        <p className="muted">Loading...</p>
+      ) : null}
+    </Section>
+  );
+}
+
+function PlayerLeaderboard({ ev }) {
   const eventId = ev?.event_id;
   const [data, setData] = useState(null);
   const [error, setError] = useState("");

@@ -3641,3 +3641,16 @@ button:disabled {
 .season-games td:first-child { width: 40%; }
 .season-games strong.season-neg { color: #ff9c9c; }
 .season-games strong.season-pos { color: #7ee2a0; }
+
+/* Leaderboard: Teams view */
+.team-lb { table-layout: auto; }
+.team-lb.loading tbody { opacity: 0.55; }
+.team-lb-lineup { display: flex; gap: 4px; }
+.team-lb-player { display: inline-flex; }
+.team-lb-final { color: #ff6b1a; }
+.team-lb tr.team-lb-mine td { background: rgba(255, 107, 26, 0.1); }
+.team-lb tr.team-lb-mine td:first-child { box-shadow: inset 3px 0 0 #ff6b1a; }
+.team-lb tr.team-lb-detail > td { background: #0f1318; padding-top: 4px; padding-bottom: 10px; }
+.team-lb-mini { min-width: 560px; }
+.team-lb-mini th, .team-lb-mini td { padding: 4px 10px; }
+.team-lb-mini th:not(.num), .team-lb-mini td:not(.num) { text-align: left; }

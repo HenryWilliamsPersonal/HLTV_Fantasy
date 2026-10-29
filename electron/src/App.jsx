@@ -7916,7 +7916,7 @@ function LiveEventBody({ ev }) {
       {ev.group_format === "bracket" && ev.bracket && (
         <div className="card sub">
           <h3>Bracket</h3>
-          <BracketPicker bracket={ev.bracket} teamLookup={teamLookup} picks={ev.bracket_picks || {}} onPick={() => {}} readOnly />
+          <BracketPicker bracket={ev.bracket} teamLookup={teamLookup} teams={teamRows} picks={ev.bracket_picks || {}} onPick={() => {}} readOnly />
         </div>
       )}
       {Array.isArray(ev.groups) && ev.groups.length > 0 && (
@@ -10571,11 +10571,22 @@ function OutcomeBracketVisual({ bracket, teamLookup, teams, highlightTeamId }) {
       />
     );
   };
-  if (bracket.grand_final) {
+  const meta = (stage) => (stage === "final" || stage === "grand_final" ? "BO5" : "BO3");
+  return <BracketLayout byStage={bracket} card={card} meta={meta} />;
+}
+
+// The bracket board every playoff bracket draws (the Playoff tab's card +
+// connector system): one column per round, the third-place decider under the
+// final, a double elimination as upper and lower sections. byStage maps a
+// stage key to its matches in order; card(m, title, meta) draws one match.
+function BracketLayout({ byStage, card, meta }) {
+  const titleOf = (stage, m, i, count) =>
+    DOUBLE8_MATCH_TITLE[m.key] || (count === 1 ? STAGE_FULL[stage] || stage : `${STAGE_SHORT[stage] || stage} ${i + 1}`);
+  if (byStage.grand_final) {
     const columns = (rounds) => (
       <div className="pb-bracket">
         {rounds.map(([stage, keys, straight]) => {
-          const matches = bracket[stage] || [];
+          const matches = byStage[stage] || [];
           return (
             <div className={`pb-round${straight ? " straight" : ""}`} key={stage}>
               <div className="pb-round-title">{STAGE_FULL[stage] || stage}</div>
@@ -10585,7 +10596,7 @@ function OutcomeBracketVisual({ bracket, teamLookup, teams, highlightTeamId }) {
                   if (!m) return null;
                   return (
                     <div className="pb-match-wrap" key={key}>
-                      {card(m, DOUBLE8_MATCH_TITLE[key] || key, key === "grand_final" ? "BO5" : "BO3")}
+                      {card(m, DOUBLE8_MATCH_TITLE[key] || key, meta(stage))}
                     </div>
                   );
                 })}
@@ -10608,8 +10619,8 @@ function OutcomeBracketVisual({ bracket, teamLookup, teams, highlightTeamId }) {
       </div>
     );
   }
-  const rounds = Object.keys(bracket).filter((k) => k !== "third_place" && (bracket[k] || []).length > 0);
-  const third = (bracket.third_place || [])[0];
+  const rounds = Object.keys(byStage).filter((k) => k !== "third_place" && (byStage[k] || []).length > 0);
+  const third = (byStage.third_place || [])[0];
   return (
     <div className="group-brackets">
       <div>
@@ -10618,14 +10629,14 @@ function OutcomeBracketVisual({ bracket, teamLookup, teams, highlightTeamId }) {
             <div className="pb-round" key={stage}>
               <div className="pb-round-title">{STAGE_FULL[stage] || stage}</div>
               <div className="pb-matches">
-                {(bracket[stage] || []).map((m, i) => (
-                  <div className="pb-match-wrap" key={`${stage}-${i}`}>
-                    {card(m, (bracket[stage] || []).length === 1 ? STAGE_FULL[stage] || stage : `${STAGE_SHORT[stage] || stage} ${i + 1}`, stage === "final" ? "BO5" : "BO3")}
+                {(byStage[stage] || []).map((m, i) => (
+                  <div className="pb-match-wrap" key={m.key || `${stage}-${i}`}>
+                    {card(m, titleOf(stage, m, i, (byStage[stage] || []).length), meta(stage))}
                   </div>
                 ))}
                 {third && (
                   <div className={`pb-match-wrap pb-aux${ri === rounds.length - 1 ? "" : " pb-spacer"}`} aria-hidden={ri !== rounds.length - 1}>
-                    {card(third, "3rd place", "BO3")}
+                    {card(third, "3rd place", meta("third_place"))}
                   </div>
                 )}
               </div>
@@ -10973,7 +10984,7 @@ function BracketStageView({ results, teams, teamLookup, draw = null }) {
               {known} of {slots.length} teams
             </span>
           </div>
-          <BracketPicker bracket={draw} teamLookup={teamLookup} picks={{}} onPick={() => {}} readOnly />
+          <BracketPicker bracket={draw} teamLookup={teamLookup} teams={teams} picks={{}} onPick={() => {}} readOnly />
         </div>
       );
     }
@@ -10995,14 +11006,27 @@ function BracketStageView({ results, teams, teamLookup, draw = null }) {
 }
 
 // Completed-bracket picker: every match of the stored bracket in play order,
-// each a pick between the two teams its earlier picks feed into it.
-function BracketPicker({ bracket, teamLookup, picks, onPick, readOnly = false }) {
+// each a pick between the two teams its earlier picks feed into it, drawn on
+// the bracket board (read-only on the Live page and for a provisional draw).
+function BracketPicker({ bracket, teamLookup, teams, picks, onPick, readOnly = false }) {
   const matches = bracket?.matches || [];
   const stages = bracket?.stages || [];
   const slots = (bracket?.team_slots || []).map(Number);
+  const series = {};
+  stages.forEach((st) => {
+    series[st.key] = Number(st.series || 0) || (st.key === "final" || st.key === "grand_final" ? Number(bracket?.final_bo || 5) : 3);
+  });
+  const hltvIdByTeamId = {};
+  (teams || []).forEach((t) => {
+    hltvIdByTeamId[Number(t.team_id)] = t.hltv_team_id;
+  });
   const winners = {};
   const losers = {};
-  const resolved = matches.map(([key, stage, fa, fb]) => {
+  const byStage = {};
+  stages.filter((st) => !st.pad).forEach((st) => {
+    byStage[st.key] = [];
+  });
+  matches.forEach(([key, stage, fa, fb]) => {
     const side = (f) => (f[0] === "seed" ? slots[Number(f[1])] : f[0] === "win" ? winners[String(f[1])] : losers[String(f[1])]) || null;
     const a = side(fa);
     const b = side(fb);
@@ -11012,57 +11036,46 @@ function BracketPicker({ bracket, teamLookup, picks, onPick, readOnly = false })
       winners[key] = w;
       losers[key] = w === a ? b : a;
     }
-    const label = (f) => (f[0] === "seed" ? "TBD" : `${f[0] === "win" ? "Winner" : "Loser"} of ${DOUBLE8_MATCH_TITLE[f[1]] || f[1]}`);
-    return { key, stage, a, b, w, pa: label(fa), pb: label(fb) };
+    const label = (f) => (f[0] === "seed" ? "TBD" : `${f[0] === "win" ? "Winner" : "Loser"} of ${DOUBLE8_MATCH_TITLE[f[1]] || matchTitle(f[1])}`);
+    (byStage[stage] = byStage[stage] || []).push({ key, a, b, w, pa: label(fa), pb: label(fb) });
   });
-  const byStage = {};
-  resolved.forEach((m) => {
-    (byStage[m.stage] = byStage[m.stage] || []).push(m);
+  Object.keys(byStage).forEach((k) => {
+    if (!byStage[k].length) delete byStage[k];
   });
-  const titleOf = (m, i, s) => DOUBLE8_MATCH_TITLE[m.key] || (byStage[s.key].length === 1 ? s.full : `${s.label} ${i + 1}`);
-  const columns = stages
-    .filter((s) => !s.pad && byStage[s.key])
-    .map((s) => ({ key: s.key, title: s.full, matches: byStage[s.key].map((m, i) => ({ ...m, title: titleOf(m, i, s) })) }));
-  return <PickerBoard columns={columns} teamLookup={teamLookup} onPick={onPick} readOnly={readOnly} />;
+  const row = (m, tid, placeholder, idx) => {
+    if (!tid) {
+      return (
+        <div className="playoff-team-row muted" key={idx}>
+          <span className="playoff-team-badge empty">?</span>
+          <span className="playoff-team-tbd">{placeholder}</span>
+        </div>
+      );
+    }
+    const name = teamLookup[tid] || String(tid);
+    const cls = m.w ? (m.w === tid ? " winner" : " loser") : "";
+    return (
+      <button
+        type="button"
+        key={idx}
+        className={`playoff-team-row outcome-row bracket-pick${cls}`}
+        disabled={readOnly}
+        onClick={() => !readOnly && onPick(m.key, tid)}
+      >
+        <TeamLogo hltvTeamId={hltvIdByTeamId[Number(tid)]} name={name} size={24} />
+        <span>{name}</span>
+        {m.w === tid && <span className="outcome-row-mark">W</span>}
+      </button>
+    );
+  };
+  const card = (m, title, meta) => <GroupMatchCard title={title} meta={meta} rows={[row(m, m.a, m.pa, "a"), row(m, m.b, m.pb, "b")]} />;
+  return <BracketLayout byStage={byStage} card={card} meta={(stage) => `BO${series[stage] || 3}`} />;
 }
 
-// The completed-stage picker board every format draws: one column per
-// round, one card per match (its title, the two sides as buttons, the
-// picked winner lit), unknown sides as disabled placeholders.
-function PickerBoard({ columns, teamLookup, onPick, readOnly = false }) {
-  return (
-    <div className="pb-bracket">
-      {columns.map((col) => (
-        <div className="pb-round" key={col.key}>
-          <div className="pb-round-title">{col.title}</div>
-          <div className="pb-matches">
-            {col.matches.map((m) => (
-              <div className="pb-match-wrap" key={m.key}>
-                <div className="gsl-match">
-                  <span className="gsl-label">{m.title}</span>
-                  <span className="gsl-pick">
-                    {[
-                      [m.a, m.pa],
-                      [m.b, m.pb],
-                    ].map(([tid, placeholder], rowIdx) => (
-                      <button
-                        key={rowIdx}
-                        disabled={!tid || readOnly}
-                        className={tid && m.w === tid ? "active" : ""}
-                        onClick={() => tid && !readOnly && onPick(m.key, tid)}
-                      >
-                        {tid ? teamLookup[tid] || tid : placeholder}
-                      </button>
-                    ))}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+// "semis_1" -> "SF 1", "final_1" -> "Final": a feeder's name in a placeholder.
+function matchTitle(key) {
+  const m = /^(.*)_(\d+)$/.exec(String(key));
+  if (!m) return STAGE_SHORT[key] || key;
+  return m[1] === "final" ? "Final" : `${STAGE_SHORT[m[1]] || m[1]} ${m[2]}`;
 }
 
 // Completed Swiss board, laid out the way HLTV draws a Swiss stage: one
@@ -13025,7 +13038,7 @@ function GroupsTab({
           <>
             <div className="card sub">
               <h3>Bracket Results</h3>
-              <BracketPicker bracket={results.bracket} teamLookup={teamLookup} picks={bracketPicks} onPick={pickBracketMatch} />
+              <BracketPicker bracket={results.bracket} teamLookup={teamLookup} teams={teams} picks={bracketPicks} onPick={pickBracketMatch} />
             </div>
             {renderTop5Filters()}
             <div className="actions">

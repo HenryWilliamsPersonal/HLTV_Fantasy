@@ -3011,6 +3011,20 @@ button:disabled {
 .playoff-team-row.outcome-row.winner { color: #f2f5f9; font-weight: 600; }
 .playoff-team-row.outcome-row.loser { opacity: 0.5; }
 .playoff-team-row.outcome-row.mine { box-shadow: inset 3px 0 0 #ff6b1a; }
+/* The bracket board's pick rows: the outcome row as a button */
+.playoff-team-row.bracket-pick {
+  width: 100%;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  color: #c6d0dc;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.playoff-team-row.bracket-pick:not(:disabled):hover { background: #1b2028; }
+.playoff-team-row.bracket-pick:disabled { cursor: default; }
+.playoff-team-row.bracket-pick:focus-visible { outline: 2px solid #ff8a47; outline-offset: -2px; }
 .outcome-row-mark {
   margin-left: auto;
   font-family: var(--display);

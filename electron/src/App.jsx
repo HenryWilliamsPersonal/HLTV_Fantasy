@@ -7444,6 +7444,10 @@ function LeaderboardPanel({ ev }) {
           return Number(r.rating_points || 0);
         case "winpts":
           return Number(r.win_points || 0);
+        case "expected":
+          return r.expected == null ? -1e9 : Number(r.expected);
+        case "vsexp":
+          return r.vs_expected == null ? -1e9 : Number(r.vs_expected);
         case "role":
           return Number(r.max?.role_points || 0);
         case "boosters":
@@ -7560,7 +7564,6 @@ function LeaderboardPanel({ ev }) {
       <table className="bp-table lb-table">
         <thead>
           <tr>
-            <th className="num tight">#</th>
             {head("Player", "name", { asc: true })}
             {head("Team", "team", { asc: true })}
             {field ? head("Owned", "owned", { num: true }) : null}
@@ -7568,6 +7571,8 @@ function LeaderboardPanel({ ev }) {
             {head("Rating", "rating", { num: true })}
             {head("Rating pts", "ratingpts", { num: true })}
             {head("Win pts", "winpts", { num: true })}
+            {head("Expected", "expected", { num: true })}
+            {head("vs Expected", "vsexp", { num: true })}
             {field ? head("Role", "role") : null}
             {field ? head("Boosters", "boosters") : null}
             {head("Total", "total", { num: true })}
@@ -7576,7 +7581,6 @@ function LeaderboardPanel({ ev }) {
         <tbody>
           {sorted.map((p) => (
             <tr key={p.player_id} className={p.breakdown ? "row-link" : ""} onClick={() => p.breakdown && setOpenId(p.player_id)}>
-              <td className="num tight">{p.rank}</td>
               <td>
                 <div className="table-player-cell">
                   <PlayerPhoto playerId={p.player_id} name={p.name} size={28} />
@@ -7601,6 +7605,10 @@ function LeaderboardPanel({ ev }) {
               <td className="num">{p.rating_avg == null ? "-" : Number(p.rating_avg).toFixed(2)}</td>
               <td className="num">{p.matches > 0 ? signed(p.rating_points) : "-"}</td>
               <td className="num">{p.matches > 0 ? signed(p.win_points) : "-"}</td>
+              <td className="num">{p.expected == null ? "-" : Number(p.expected).toFixed(1)}</td>
+              <td className={`num ${p.vs_expected == null ? "" : p.vs_expected >= 0 ? "pos" : "neg"}`}>
+                {p.vs_expected == null ? "-" : `${p.vs_expected > 0 ? "+" : ""}${Number(p.vs_expected).toFixed(1)}`}
+              </td>
               {field ? (
                 <td>
                   {p.max?.role_name ? (

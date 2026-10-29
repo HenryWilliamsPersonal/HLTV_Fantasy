@@ -123,6 +123,53 @@ def _same_team(a: Any, b: Any) -> bool:
     return bool(a) and bool(b) and team_aliases.key(str(a)) == team_aliases.key(str(b))
 
 
+def _expectations(event_id: int):
+    """A function (player, team, opponents in played order) -> the expected
+    rating + win points of those matches, from the baked run's stage stats:
+    each match takes the next stage whose figures list that opponent, the
+    figure divided by the chance of that pairing (it is weighted by it), so
+    it is the expectation given the match was played. None without a run."""
+    from backend.routes.groups import _GROUPS_STATE
+
+    ss = (((_GROUPS_STATE.load(key=int(event_id)) or {}).get("results")) or {}).get("stage_stats") or {}
+    order = [str(s.get("key")) for s in (ss.get("stages") or []) if s.get("key") and s.get("key") != "padding"]
+    sp, st = ss.get("players") or {}, ss.get("teams") or {}
+
+    def value(pid: int, tid: int, stage: str, opp: Optional[int]) -> Optional[float]:
+        ps = ((sp.get(str(pid)) or {}).get("stages") or {}).get(stage)
+        if not ps:
+            return None
+        rnd = ((st.get(str(tid)) or {}).get("rounds") or {}).get(stage) or {}
+        po = (ps.get("opponents") or {}).get(str(opp)) if opp is not None else None
+        if po:
+            play = float(((rnd.get("opponents") or {}).get(str(opp)) or {}).get("play") or 0.0)
+            if play > 1e-6:
+                return (float(po.get("rating") or 0.0) + float(po.get("win") or 0.0)) / play
+        play = float(rnd.get("play") or 0.0)
+        v = float(ps.get("rating") or 0.0) + float(ps.get("win") or 0.0)
+        return v / play if play > 0.05 else v
+
+    def expect(pid: int, tid: int, opponents: List[int]) -> Optional[float]:
+        stages = (sp.get(str(pid)) or {}).get("stages") or {}
+        if not order or not stages:
+            return None
+        total, at = 0.0, 0
+        for opp in opponents:
+            pick = next((i for i in range(at, len(order)) if str(opp) in ((stages.get(order[i]) or {}).get("opponents") or {})), None)
+            if pick is None:
+                pick = at if at < len(order) else None
+            if pick is None:
+                return None
+            v = value(pid, tid, order[pick], opp)
+            if v is None:
+                return None
+            total += v
+            at = pick + 1
+        return total
+
+    return expect
+
+
 def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, Any]:
     """{players: [{player_id, name, team_id, team, hltv_team_id, price, matches,
     rating_points, win_points, total}] best first, matches_scored,
@@ -153,6 +200,7 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
                 "player_id": int(pid), "name": str(p.get("name") or pid), "team_id": int(tid), "team": team_names.get(int(tid), ""),
                 "hltv_team_id": (teams.get(int(tid)) or {}).get("hltv_team_id"), "price": p.get("price") if p.get("price") is not None else price_of.get(int(pid)),
                 "matches": 0, "wins": 0, "rating_points": 0, "win_points": 0, "total": 0, "rating_sum": 0.0,
+                "played": [],
             }
 
     for m in finished:
@@ -177,6 +225,9 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
             row["win_points"] += int(wp)
             row["total"] += rp + int(wp)
             row["rating_sum"] += float(rating)
+            mine = int(row["team_id"])
+            opp = int(m["b"]) if int(m.get("a") or 0) == mine else int(m.get("a") or 0)
+            row["played"].append({"date": str(m.get("date") or ""), "opponent": opp, "points": rp + int(wp)})
 
     # The field (services/fantasy_field), when it has been read: HLTV's own
     # rating and team points per player replace the computed ones, plus how
@@ -187,8 +238,14 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
     field = fantasy_field.player_summary(eid) if fantasy_field.status(eid).get("teams_stored") else None
     field_players = (field or {}).get("players") or {}
     facts = (fantasy_field.match_facts(eid).get("players") or {}) if field else {}
+    expect = _expectations(eid)
     players = []
     for row in rows.values():
+        played = sorted(row.pop("played"), key=lambda x: x["date"])  # stable: the list order within a day
+        exp = expect(int(row["player_id"]), int(row["team_id"]), [x["opponent"] for x in played]) if played else None
+        row["expected"] = round(exp, 1) if exp is not None else None
+        row["actual"] = sum(int(x["points"]) for x in played)
+        row["vs_expected"] = round(row["actual"] - exp, 1) if exp is not None else None
         row["rating_avg"] = round(row["rating_sum"] / row["matches"], 2) if row["matches"] else None
         row.pop("rating_sum", None)
         f = field_players.get(int(row["player_id"]))

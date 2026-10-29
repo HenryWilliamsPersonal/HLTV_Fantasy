@@ -125,6 +125,10 @@ class DataScheduler:
             except Exception:
                 logger.exception("Scheduler resume failed")
             try:
+                self._maybe_run_morning()
+            except Exception:
+                logger.exception("Scheduler morning tick failed")
+            try:
                 self._maybe_run_scheduled()
             except Exception:
                 logger.exception("Scheduler tick failed")
@@ -219,12 +223,25 @@ class DataScheduler:
     # so a machine that comes back late in the afternoon does not run twice.
     _CATCH_UP_COVERS_NEXT = timedelta(hours=6)
 
-    def _due_slot(self, cfg: Dict[str, Any], now: datetime) -> datetime:
+    def _due_slot(self, cfg: Dict[str, Any], now: datetime, key: str = "run_time") -> datetime:
         """The most recent daily slot that has passed: today's, or yesterday's
         while today's is still ahead."""
-        hh, mm = (cfg.get("run_time") or "00:00").split(":")
+        hh, mm = (cfg.get(key) or "00:00").split(":")
         today_slot = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
         return today_slot if now >= today_slot else today_slot - timedelta(days=1)
+
+    def _pending_morning_slot(self, cfg: Dict[str, Any], now: datetime) -> Optional[datetime]:
+        """The morning slot still owed, or None: covered once a morning run
+        started at or after it, or once the nightly batch has (the nightly
+        imports the same results, so a morning missed until then is moot)."""
+        if not cfg.get("do_morning"):
+            return None
+        due = self._due_slot(cfg, now, key="morning_time")
+        if schedule_db.last_morning_run_ts() >= due.timestamp():
+            return None
+        if schedule_db.last_scheduled_run_ts() >= due.timestamp():
+            return None
+        return due
 
     def _pending_slot(self, cfg: Dict[str, Any], now: datetime) -> Optional[datetime]:
         """The slot the batch still owes, or None. A slot is covered once a
@@ -255,6 +272,19 @@ class DataScheduler:
         if trigger == "catch-up":
             logger.info("Catching up the %s batch missed at %s", cfg.get("run_time"), due.strftime("%Y-%m-%d %H:%M"))
         self._run_batch(self._enabled_tasks(cfg), trigger=trigger, cfg=cfg)
+
+    def _maybe_run_morning(self) -> None:
+        """The light morning run: the results import, then the season read
+        (an event that ended overnight is scored by then)."""
+        cfg = schedule_db.get_schedule_config()
+        if not cfg.get("enabled") or not cfg.get("do_matches"):
+            return
+        now = datetime.now()
+        due = self._pending_morning_slot(cfg, now)
+        if due is None or self._run_lock.locked():
+            return
+        trigger = "morning" if now - due < timedelta(minutes=5) else "morning-catch-up"
+        self._run_batch(["matches"], trigger=trigger, cfg=cfg, tail=("season",))
 
     # ---- running -------------------------------------------------------------
     @staticmethod
@@ -309,7 +339,9 @@ class DataScheduler:
         ).start()
         return {"status": "started", "tasks": tasks}
 
-    def _run_batch(self, tasks: List[str], trigger: str, cfg: Dict[str, Any]) -> None:
+    def _run_batch(self, tasks: List[str], trigger: str, cfg: Dict[str, Any], tail: Optional[tuple] = None) -> None:
+        """The tasks in order, then the tail (all of it, or only the steps
+        named in `tail`)."""
         if not tasks:
             return
         if not self._run_lock.acquire(blocking=False):
@@ -320,7 +352,7 @@ class DataScheduler:
         try:
             for task in tasks:
                 self._run_task(task, trigger, cfg)
-            self._run_tail(trigger)
+            self._run_tail(trigger, only=tail)
             statuses = [str(r.get("status")) for r in schedule_db.list_runs(limit=40) if float(r.get("started_at") or 0) >= batch_started]
             outcome = "fail" if "error" in statuses else "success"
         finally:
@@ -328,7 +360,7 @@ class DataScheduler:
             self._set_state(running=False, current_task=None, trigger=None, processed=0, total=0)
             heartbeat(outcome)
 
-    def _run_tail(self, trigger: str, start: str = "valuations") -> None:
+    def _run_tail(self, trigger: str, start: str = "valuations", only: Optional[tuple] = None) -> None:
         """What every batch ends with, from `start` on: the event behaviour
         contract for every unfinished event (bake what is missing, refresh
         what has not started, leave the rest), the HLTV login-health check
@@ -341,7 +373,9 @@ class DataScheduler:
             ("backup", lambda: self._run_backup(trigger)),
         ]
         names = [n for n, _ in steps]
-        for _name, fn in steps[names.index(start) if start in names else 0:]:
+        for name, fn in steps[names.index(start) if start in names else 0:]:
+            if only is not None and name not in only:
+                continue
             fn()
 
     def _maybe_resume(self) -> None:
@@ -722,12 +756,18 @@ class DataScheduler:
         pending = self._pending_slot(cfg, now) if cfg.get("enabled") else None
         if pending is not None:
             next_run = now  # the missed slot is caught up on the next tick
+        mh, mm2 = (cfg.get("morning_time") or "09:00").split(":")
+        morning_today = now.replace(hour=int(mh), minute=int(mm2), second=0, microsecond=0)
+        next_morning = morning_today if now < morning_today else morning_today + timedelta(days=1)
+        if cfg.get("enabled") and self._pending_morning_slot(cfg, now) is not None:
+            next_morning = now
         from backend.services import hltv_session
 
         return {
             "config": cfg,
             "state": state,
             "next_run_at": next_run.timestamp(),
+            "next_morning_at": next_morning.timestamp() if cfg.get("do_morning") else None,
             "catch_up_pending": pending is not None,
             "missed_slot_at": pending.timestamp() if pending is not None else None,
             "last_success_by_task": schedule_db.last_success_by_task(),

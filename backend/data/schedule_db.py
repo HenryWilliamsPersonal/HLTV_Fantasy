@@ -30,6 +30,11 @@ _DEFAULT_CONFIG = {
     # Nightly time budget for the map-model backfills (historical map stats,
     # vetoes, per-map scoreboards); whatever is left continues the next night.
     "map_model_minutes": 120,
+    # A second, light run in the morning: the results import (and the season
+    # read after it), so matches that ended late the evening before reach the
+    # Live page before the nightly batch.
+    "do_morning": 1,
+    "morning_time": "09:00",
 }
 
 
@@ -80,6 +85,10 @@ def ensure_schedule_schema() -> None:
                 conn.execute("ALTER TABLE schedule_config ADD COLUMN do_team_data INTEGER NOT NULL DEFAULT 1")
             if "team_data_top_n" not in cols:
                 conn.execute("ALTER TABLE schedule_config ADD COLUMN team_data_top_n INTEGER NOT NULL DEFAULT 200")
+            if "do_morning" not in cols:
+                conn.execute("ALTER TABLE schedule_config ADD COLUMN do_morning INTEGER NOT NULL DEFAULT 1")
+            if "morning_time" not in cols:
+                conn.execute("ALTER TABLE schedule_config ADD COLUMN morning_time TEXT NOT NULL DEFAULT '09:00'")
             conn.execute(
                 "INSERT OR IGNORE INTO schedule_config (singleton_id) VALUES (1)"
             )
@@ -100,8 +109,9 @@ def get_schedule_config() -> Dict[str, Any]:
         return dict(_DEFAULT_CONFIG)
     cfg = {k: row[k] for k in row.keys()}
     cfg.pop("do_ratings", None)  # the Top-X ratings task is gone; the column stays in old databases
-    for flag in ("enabled", "do_events", "do_rankings", "do_matches", "do_map_model", "do_team_data"):
+    for flag in ("enabled", "do_events", "do_rankings", "do_matches", "do_map_model", "do_team_data", "do_morning"):
         cfg[flag] = bool(cfg.get(flag))
+    cfg["morning_time"] = str(cfg.get("morning_time") or "09:00")
     cfg["matches_lookback_days"] = int(cfg.get("matches_lookback_days") or 3)
     cfg["map_model_minutes"] = int(cfg.get("map_model_minutes") or 120)
     cfg["team_data_top_n"] = int(cfg.get("team_data_top_n") or 200)
@@ -119,6 +129,8 @@ def update_schedule_config(patch: Dict[str, Any]) -> Dict[str, Any]:
         "do_team_data": lambda v: 1 if v else 0,
         "team_data_top_n": lambda v: max(10, min(500, int(v))),
         "run_time": lambda v: _normalize_time(str(v)),
+        "do_morning": lambda v: 1 if v else 0,
+        "morning_time": lambda v: _normalize_time(str(v)),
         "matches_lookback_days": lambda v: max(1, min(30, int(v))),
         "map_model_minutes": lambda v: max(1, min(720, int(v))),
     }
@@ -222,6 +234,17 @@ def last_scheduled_run_ts() -> float:
         row = conn.execute(
             "SELECT MAX(started_at) AS ts FROM schedule_runs WHERE trigger IN ('scheduled', 'catch-up')"
         ).fetchone()
+    finally:
+        conn.close()
+    return float((row["ts"] if row else 0) or 0.0)
+
+
+def last_morning_run_ts() -> float:
+    """Start time of the most recent morning run (scheduled or caught up)."""
+    ensure_schedule_schema()
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT MAX(started_at) AS ts FROM schedule_runs WHERE trigger IN ('morning', 'morning-catch-up')").fetchone()
     finally:
         conn.close()
     return float((row["ts"] if row else 0) or 0.0)

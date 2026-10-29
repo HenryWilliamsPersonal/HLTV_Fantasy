@@ -9992,6 +9992,7 @@ function SchedulingTab({ notify, players, refresh }) {
   const [message, setMessage] = useState("");
   // Local edit state so typing a value doesn't fire a save per keystroke.
   const [runTime, setRunTime] = useState("00:00");
+  const [morningTime, setMorningTime] = useState("09:00"); // the light morning run: results import + season read
   const [lookbackDays, setLookbackDays] = useState(3);
   const [mapModelMinutes, setMapModelMinutes] = useState(120);
   const [teamDataTopN, setTeamDataTopN] = useState(200);
@@ -10036,6 +10037,7 @@ function SchedulingTab({ notify, players, refresh }) {
       setStatus(data);
       if (data?.config) {
         setRunTime(String(data.config.run_time || "00:00"));
+        setMorningTime(String(data.config.morning_time || "09:00"));
         setLookbackDays(Number(data.config.matches_lookback_days || 3));
         setMapModelMinutes(Number(data.config.map_model_minutes || 120));
         setTeamDataTopN(Number(data.config.team_data_top_n || 200));
@@ -10277,7 +10279,14 @@ function SchedulingTab({ notify, players, refresh }) {
               </label>
               <input type="time" value={runTime} onChange={(e) => setRunTime(e.target.value)} onBlur={() => patchConfig({ run_time: runTime })} disabled={saveBusy} />
             </div>
-            <div className="topx-tile-maps">{config.enabled ? `Daily at ${runTime}` : "Paused"}</div>
+            <div className="sch-tile-row">
+              <label className="switch" title={config.do_morning ? "Morning results import on" : "Morning results import off"}>
+                <input type="checkbox" checked={Boolean(config.do_morning)} onChange={(e) => patchConfig({ do_morning: e.target.checked })} disabled={saveBusy || !config.enabled} />
+                <span className="switch-track" />
+              </label>
+              <input type="time" value={morningTime} onChange={(e) => setMorningTime(e.target.value)} onBlur={() => patchConfig({ morning_time: morningTime })} disabled={saveBusy || !config.enabled} />
+            </div>
+            <div className="topx-tile-maps">{config.enabled ? `Daily at ${runTime}${config.do_morning ? ` · results at ${morningTime}` : ""}` : "Paused"}</div>
           </div>
           <div className="topx-tile sch-tile">
             <div className="topx-tile-label">Next run</div>

@@ -6596,12 +6596,6 @@ function SeasonTab({ onOpenSettings }) {
                       <span>{daysLeft} days left</span>
                     </>
                   ) : null}
-                  {(data.prizes || []).length > 0 ? (
-                    <>
-                      <span className="breakdown-id-sep">·</span>
-                      <span>{data.prizes.join(" / ")}</span>
-                    </>
-                  ) : null}
                 </div>
               </div>
             </div>

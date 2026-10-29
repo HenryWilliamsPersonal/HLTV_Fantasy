@@ -8872,7 +8872,6 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
   const [playerSort, setPlayerSort] = useState("name_asc");
   // "event": players with a fantasy price (they were in an event); "all" adds
   // the roster players the nightly team-data task creates from HLTV team pages.
-  const [playerScope, setPlayerScope] = useState("event");
   const [teamSearch, setTeamSearch] = useState("");
   const [teamSort, setTeamSort] = useState("name_asc");
   const [selectedPlayer, setSelectedPlayer] = useState(null);
@@ -9356,7 +9355,6 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
   const filteredSortedPlayers = useMemo(() => {
     const q = playerSearch.trim().toLowerCase();
     const list = players.filter((p) => {
-      if (playerScope === "event" && !(Number(p.price) > 0)) return false;
       if (!q) return true;
       const teamsText = (playerTeamLookup[p.player_id] || []).join(", ").toLowerCase();
       return (
@@ -9385,7 +9383,7 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
     });
 
     return list;
-  }, [playerScope, players, playerSearch, playerSort, playerTeamLookup]);
+  }, [players, playerSearch, playerSort, playerTeamLookup]);
   const filteredSortedTeams = useMemo(() => {
     const q = teamSearch.trim().toLowerCase();
     const list = teams.filter((t) => {
@@ -9459,15 +9457,6 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
           <div className="players-panel">
             <div className="players-controls">
               <Input label="Search Players" value={playerSearch} onChange={setPlayerSearch} placeholder="Name or team" className="search-field" />
-              <Select
-                label="Show"
-                value={playerScope}
-                onChange={setPlayerScope}
-                options={[
-                  { value: "event", label: `Event players (${players.filter((p) => Number(p.price) > 0).length})` },
-                  { value: "all", label: `All players (${players.length})` },
-                ]}
-              />
             </div>
             <div className="players-table-wrap">
             <table className="players-table">

@@ -1127,16 +1127,9 @@ def start_field_read(event_id: int, payload: Dict[str, Any] | None = None):
     payload = payload or {}
     league_id, team_id = payload.get("league_id"), payload.get("team_id")
     if not league_id or not team_id:
-        conn = connect()
-        try:
-            rows = conn.execute("SELECT team_json FROM my_team_cache WHERE event_id = ? AND team_json IS NOT NULL", (int(event_id),)).fetchall()
-        finally:
-            conn.close()
-        for r in rows:
-            t = my_team_cache._loads(r["team_json"]) or {}
-            if t.get("team_id") and t.get("league_id"):
-                league_id, team_id = league_id or t["league_id"], team_id or t["team_id"]
-                break
+        seed = fantasy_field.seed_for(int(event_id))
+        if seed:
+            league_id, team_id = league_id or seed[0], team_id or seed[1]
     if not league_id or not team_id:
         raise HTTPException(status_code=400, detail="league_id and team_id are needed: no team of a connected account is known in this event")
     return fantasy_field.start_read(int(event_id), int(league_id), int(team_id), int(payload.get("max_ids") or fantasy_field.MAX_IDS))

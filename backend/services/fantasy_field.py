@@ -427,6 +427,57 @@ def start_read(event_id: int, league_id: int, seed_team_id: int, max_ids: int = 
     return {"status": "started", "event_id": eid, "league_id": int(league_id), "seed_team_id": int(seed_team_id), "max_ids": int(max_ids)}
 
 
+FIELD_REFRESH = 20 * 3600.0  # a live event's field is read again once a day (points move with every match)
+
+
+def seed_for(event_id: int) -> Optional[tuple]:
+    """(league_id, team_id) of a team the app knows in the event (any
+    connected account's), the starting point of the id walk; None without."""
+    from backend.data import my_team_cache
+
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT team_json FROM my_team_cache WHERE event_id = ? AND team_json IS NOT NULL", (int(event_id),)).fetchall()
+    finally:
+        conn.close()
+    for r in rows:
+        t = my_team_cache._loads(r["team_json"]) or {}
+        if t.get("team_id") and t.get("league_id"):
+            return int(t["league_id"]), int(t["team_id"])
+    return None
+
+
+def auto_reads(now: Optional[float] = None) -> str:
+    """Start the field read of the live event that needs it most (never
+    read first, then the stalest past FIELD_REFRESH), one at a time — reads
+    share the browser with everything else. Returns the scheduler's note."""
+    from backend.services import live_state
+
+    now = float(now or time.time())
+    with _LOCK:
+        running = [eid for eid, r in _RUNS.items() if r.get("status") == "running"]
+    if running:
+        return f"field read already running for {', '.join(str(e) for e in running)}"
+    due = []
+    for e in live_state.live_events(now):
+        if e.get("status") != "live":
+            continue
+        eid = int(e["event_id"])
+        seed = seed_for(eid)
+        if not seed:
+            continue
+        st = status(eid)
+        last = float(st.get("finished_at") or st.get("stored_at") or 0.0) if st.get("teams_stored") else 0.0
+        if now - last >= FIELD_REFRESH:
+            due.append((last, eid, seed))
+    if not due:
+        return "every live field is fresh"
+    due.sort()
+    last, eid, (lid, tid) = due[0]
+    start_read(eid, lid, tid)
+    return f"field read started for {eid}" + (f" ({len(due) - 1} more due)" if len(due) > 1 else "")
+
+
 def stop_read(event_id: int) -> bool:
     with _LOCK:
         if int(event_id) in _RUNS:

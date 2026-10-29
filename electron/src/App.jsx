@@ -6438,6 +6438,7 @@ function SeasonTab({ onOpenSettings }) {
   const [state, setState] = useState("loading"); // loading | ready | disconnected | error
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sortBy, setSortBy] = useState("order_asc");
   const poll = useRef(null);
   const load = async (refresh = false) => {
     clearTimeout(poll.current);
@@ -6474,15 +6475,82 @@ function SeasonTab({ onOpenSettings }) {
     return () => clearTimeout(poll.current);
   }, []);
   const n = (v) => (v == null ? "-" : Number(v).toLocaleString());
+  const signed = (v) => (v == null ? "-" : `${Number(v) > 0 ? "+" : ""}${Number(v).toLocaleString()}`);
   const fmtDate = (s) => (s ? new Date(Number(s) * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "-");
   const me = data?.me || null;
-  const games = data?.games || [];
-  const finishedTotal = games.filter((g) => !g.live).reduce((a, g) => a + Number(g.season_points || 0), 0);
+  const games = useMemo(() => (data?.games || []).map((g, i) => {
+    const parts = g.parts || {};
+    const pts = (k) => (parts[k] ? Number(parts[k].points || 0) : null);
+    const known = ["player", "team", "role", "boost"].some((k) => parts[k]);
+    const points = known ? ["player", "team", "role", "boost"].reduce((acc, k) => acc + (pts(k) || 0), 0) : null;
+    const name = String(g.name || "");
+    const cut = name.indexOf(" - ");
+    const stage = cut > 0 && /^(group stage|playoffs|swiss stage|play-in|stage \d)/i.test(name.slice(0, cut)) ? name.slice(0, cut) : "";
+    return { ...g, order: i, event: stage ? name.slice(cut + 3) : name, stage, points, top: g.top_pct ? parseFloat(g.top_pct) : null };
+  }), [data]);
+  const sortedGames = useMemo(() => {
+    const [key, dir] = sortBy.split("_");
+    const sign = dir === "asc" ? 1 : -1;
+    const val = (g) => {
+      switch (key) {
+        case "event":
+          return g.event.toLowerCase();
+        case "placement":
+          return Number(g.placement || 0);
+        case "top":
+          return g.top == null ? 999 : g.top;
+        case "points":
+          return g.points == null ? -1e9 : g.points;
+        case "season":
+          return Number(g.season_points || 0);
+        case "player":
+        case "team":
+        case "role":
+        case "boost":
+          return g.parts?.[key] ? Number(g.parts[key].points || 0) : -1e9;
+        default:
+          return g.order;
+      }
+    };
+    return [...games].sort((x, y) => {
+      const vx = val(x);
+      const vy = val(y);
+      const c = typeof vx === "string" ? vx.localeCompare(vy) : vx - vy;
+      return c !== 0 ? c * sign : x.order - y.order;
+    });
+  }, [games, sortBy]);
+  const finished = games.filter((g) => !g.live);
+  const tiers = data?.tiers || [];
+  const tierCount = (t) => finished.filter((g) => Number(g.season_points || 0) === Number(t.points)).length;
   const leaders = data?.leaders || [];
   const around = (data?.around || []).filter((r) => !leaders.some((l) => l.placement === r.placement));
+  const myPts = me ? Number(me.season_points || 0) : null;
+  const daysLeft = data?.ends_at ? Math.max(0, Math.ceil((Number(data.ends_at) * 1000 - Date.now()) / 86400000)) : null;
+  const topPct = me && data?.total_users ? (100 * Number(me.placement)) / Number(data.total_users) : null;
+  const head = (label, key, opts = {}) => (
+    <SortHeader
+      sortValue={sortBy}
+      asc={`${key}_asc`}
+      desc={`${key}_desc`}
+      defaultDirection={opts.asc ? "asc" : "desc"}
+      onChange={setSortBy}
+      className={opts.num ? "num" : ""}
+    >
+      {label}
+    </SortHeader>
+  );
+  const part = (g, key) =>
+    g.parts && g.parts[key] ? (
+      <span className="season-part">
+        <span className={Number(g.parts[key].points) < 0 ? "neg" : ""}>{signed(g.parts[key].points)}</span>
+        <span className="muted">top {g.parts[key].pct}</span>
+      </span>
+    ) : (
+      <span className="muted">-</span>
+    );
   const standingRow = (r) => (
-    <tr key={`${r.placement}-${r.user_id}`} className={r.is_user ? "change" : ""}>
-      <td className="num tight">{n(r.placement)}</td>
+    <tr key={`${r.placement}-${r.user_id}`} className={r.is_user ? "season-me" : ""}>
+      <td className="num">{n(r.placement)}</td>
       <td>
         <strong>{r.username}</strong>
       </td>
@@ -6491,16 +6559,12 @@ function SeasonTab({ onOpenSettings }) {
       <td className="num">
         <strong>{n(r.season_points)}</strong>
       </td>
-      <td>{r.prize ? r.prize : <span className="muted">-</span>}</td>
+      <td className={`num ${myPts == null || r.is_user ? "" : Number(r.season_points) - myPts > 0 ? "neg" : Number(r.season_points) - myPts < 0 ? "pos" : ""}`}>
+        {myPts == null || r.is_user ? <span className="muted">-</span> : signed(Number(r.season_points) - myPts)}
+      </td>
+      <td>{r.prize ? <span className="season-prize">{r.prize}</span> : <span className="muted">-</span>}</td>
     </tr>
   );
-  const part = (g, key) => (g.parts && g.parts[key] ? (
-    <span>
-      {n(g.parts[key].points)} <span className="muted">{g.parts[key].pct}</span>
-    </span>
-  ) : (
-    <span className="muted">-</span>
-  ));
   return (
     <div className="stack">
       <Section title={data?.season_name || "Season"}>
@@ -6520,103 +6584,126 @@ function SeasonTab({ onOpenSettings }) {
           </div>
         )}
         {data && (
-          <div className="mt-overview">
-            <div className="card sub mt-box">
-              <h3>Standing</h3>
-              <div className="mt-rows">
-                <div className="mt-row">
-                  <span className="mt-row-label">Placement</span>
-                  <span className="mt-row-value">{me ? `${n(me.placement)} of ${n(data.total_users)}` : "-"}</span>
-                </div>
-                <div className="mt-row">
-                  <span className="mt-row-label">Season points</span>
-                  <span className="mt-row-value">{me ? n(me.season_points) : "-"}</span>
-                </div>
-                <div className="mt-row">
-                  <span className="mt-row-label">Live points</span>
-                  <span className="mt-row-value">{me ? n(me.live_points) : "-"}</span>
-                </div>
-                <div className="mt-row">
-                  <span className="mt-row-label">Games</span>
-                  <span className="mt-row-value">{me ? `${n(me.leagues)} of ${n(data.finished_games)}` : n(data.finished_games)}</span>
-                </div>
-                <div className="mt-row">
-                  <span className="mt-row-label">Season ends</span>
-                  <span className="mt-row-value">{fmtDate(data.ends_at)}</span>
-                </div>
-                <div className="mt-row">
-                  <span className="mt-row-label">Prizes</span>
-                  <span className="mt-row-value">{(data.prizes || []).join(" · ") || "-"}</span>
+          <div className="breakdown-hero season-hero">
+            <div className="breakdown-id">
+              <div className="breakdown-id-text">
+                <div className="breakdown-id-name">{me?.username || "-"}</div>
+                <div className="breakdown-id-meta">
+                  <span>Ends {fmtDate(data.ends_at)}</span>
+                  {daysLeft != null ? (
+                    <>
+                      <span className="breakdown-id-sep">·</span>
+                      <span>{daysLeft} days left</span>
+                    </>
+                  ) : null}
+                  {(data.prizes || []).length > 0 ? (
+                    <>
+                      <span className="breakdown-id-sep">·</span>
+                      <span>{data.prizes.join(" / ")}</span>
+                    </>
+                  ) : null}
                 </div>
               </div>
             </div>
-            <div className="card sub mt-box">
-              <h3>Season points</h3>
-              <div className="mt-rows">
-                {(data.tiers || []).map((t) => (
-                  <div className="mt-row" key={t.top_pct}>
-                    <span className="mt-row-label">Top {t.top_pct}</span>
-                    <span className="mt-row-value">{n(t.points)}</span>
-                  </div>
-                ))}
+            <div className="breakdown-stats">
+              <div className="breakdown-stat">
+                <div className="breakdown-stat-value">{me ? `#${n(me.placement)}` : "-"}</div>
+                <div className="breakdown-stat-label">of {n(data.total_users)}</div>
+              </div>
+              <div className="breakdown-stat">
+                <div className="breakdown-stat-value">{topPct == null ? "-" : `${topPct < 10 ? topPct.toFixed(1) : Math.round(topPct)}%`}</div>
+                <div className="breakdown-stat-label">Top</div>
+              </div>
+              <div className="breakdown-stat">
+                <div className="breakdown-stat-value">{me ? `${n(me.leagues)}/${n(data.finished_games)}` : n(data.finished_games)}</div>
+                <div className="breakdown-stat-label">Games</div>
+              </div>
+              <div className="breakdown-stat">
+                <div className="breakdown-stat-value">{me ? n(me.live_points) : "-"}</div>
+                <div className="breakdown-stat-label">Live pts</div>
+              </div>
+              <div className="breakdown-stat total">
+                <div className="breakdown-stat-value">{me ? n(me.season_points) : "-"}</div>
+                <div className="breakdown-stat-label">Season pts</div>
               </div>
             </div>
+          </div>
+        )}
+        {data && tiers.length > 0 && (
+          <div className="season-ladder">
+            {tiers.map((t) => {
+              const c = tierCount(t);
+              return (
+                <div className={`season-tier${c > 0 ? " hit" : ""}`} key={t.top_pct}>
+                  <span className="season-tier-top">Top {t.top_pct}</span>
+                  <span className="season-tier-pts">{n(t.points)}</span>
+                  <span className="season-tier-count">{c > 0 ? `${c}×` : ""}</span>
+                </div>
+              );
+            })}
           </div>
         )}
       </Section>
       {data && (
         <Section title="Games">
-          <table className="bp-table lb-table">
+          <table className="bp-table lb-table season-games">
             <thead>
               <tr>
-                <th>Event</th>
-                <th className="num">Placement</th>
-                <th className="num">Top</th>
-                <th className="num">Team pts</th>
-                <th className="num">Role pts</th>
-                <th className="num">Booster pts</th>
-                <th className="num">Season pts</th>
+                {head("Event", "event", { asc: true })}
+                {head("Placement", "placement", { num: true, asc: true })}
+                {head("Top", "top", { num: true, asc: true })}
+                {head("Rating", "player", { num: true })}
+                {head("Team", "team", { num: true })}
+                {head("Role", "role", { num: true })}
+                {head("Booster", "boost", { num: true })}
+                {head("Points", "points", { num: true })}
+                {head("Season pts", "season", { num: true })}
               </tr>
             </thead>
             <tbody>
-              {games.map((g) => (
-                <tr key={`${g.event_id}-${g.team_id}`} className={g.live ? "change" : ""}>
+              {sortedGames.map((g) => (
+                <tr key={`${g.event_id}-${g.team_id}`} className={g.live ? "season-live" : ""}>
                   <td>
-                    <strong>{g.name}</strong>
+                    <div className="season-event">
+                      <strong>{g.event}</strong>
+                      {g.stage || g.live ? (
+                        <span className="muted">
+                          {g.stage}
+                          {g.stage && g.live ? " · " : ""}
+                          {g.live ? "In progress" : ""}
+                        </span>
+                      ) : null}
+                    </div>
                   </td>
-                  <td className="num">
-                    {n(g.placement)} <span className="muted">of {n(g.total)}</span>
+                  <td className="num nowrap">
+                    {n(g.placement)} <span className="muted">/ {n(g.total)}</span>
                   </td>
                   <td className="num">{g.top_pct || "-"}</td>
+                  <td className="num">{part(g, "player")}</td>
                   <td className="num">{part(g, "team")}</td>
                   <td className="num">{part(g, "role")}</td>
                   <td className="num">{part(g, "boost")}</td>
                   <td className="num">
-                    <strong>{n(g.season_points)}</strong>
+                    <strong className={g.points == null ? "" : g.points < 0 ? "season-neg" : "season-pos"}>{g.points == null ? "-" : signed(g.points)}</strong>
                   </td>
+                  <td className="num">{Number(g.season_points || 0) > 0 ? <strong className="season-pts">{n(g.season_points)}</strong> : <span className="muted">0</span>}</td>
                 </tr>
               ))}
-              <tr className="total">
-                <td>Total</td>
-                <td colSpan={5} />
-                <td className="num">
-                  <strong>{n(finishedTotal)}</strong>
-                </td>
-              </tr>
             </tbody>
           </table>
         </Section>
       )}
       {data && (
         <Section title="Standings">
-          <table className="bp-table lb-table">
+          <table className="bp-table lb-table season-standings">
             <thead>
               <tr>
-                <th className="num tight">#</th>
+                <th className="num">Place</th>
                 <th>User</th>
                 <th className="num">Games</th>
                 <th className="num">Live pts</th>
                 <th className="num">Season pts</th>
+                <th className="num">vs You</th>
                 <th>Prize</th>
               </tr>
             </thead>
@@ -6624,8 +6711,8 @@ function SeasonTab({ onOpenSettings }) {
               {leaders.map(standingRow)}
               {leaders.length > 0 && around.length > 0 ? (
                 <tr className="pad">
-                  <td className="num tight">…</td>
-                  <td colSpan={5} />
+                  <td className="num">…</td>
+                  <td colSpan={6} />
                 </tr>
               ) : null}
               {around.map(standingRow)}

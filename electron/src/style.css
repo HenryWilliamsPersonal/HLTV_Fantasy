@@ -3610,3 +3610,34 @@ button:disabled {
 .myteam-table .pill, .myteam-rounds .pill, .myteam-matches .pill { font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; font-size: 12px; padding: 3px 9px; white-space: nowrap; }
 @media (max-width: 1100px) { .myteam-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
+
+/* Season tab */
+.season-hero { margin-bottom: 14px; }
+.season-hero .breakdown-id-meta span { font-variant-numeric: tabular-nums; }
+.season-ladder { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 4px; }
+.season-tier {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 8px 4px 6px; background: #12161d; border: 1px solid #232a34;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
+}
+.season-tier-top { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #8fa3bf; }
+.season-tier-pts { font-family: var(--display); font-stretch: condensed; font-size: 22px; font-weight: 700; color: #f2f5f9; font-variant-numeric: tabular-nums; }
+.season-tier-count { min-height: 15px; font-size: 12px; font-weight: 700; color: #ff8a47; }
+.season-tier.hit { border-color: rgba(255, 107, 26, 0.55); background: rgba(255, 107, 26, 0.08); }
+.season-games td, .season-standings td { vertical-align: middle; }
+.season-event { display: flex; flex-direction: column; gap: 2px; }
+.season-event .muted { font-size: 12px; }
+.season-part { display: inline-flex; flex-direction: column; align-items: flex-end; line-height: 1.2; }
+.season-part .muted { font-size: 11px; }
+.season-part .neg { color: #ff9c9c; }
+.season-pts { color: #ff6b1a; }
+.lb-table td.nowrap { white-space: nowrap; }
+.season-standings tr.season-me td { background: rgba(255, 107, 26, 0.1); }
+.season-standings tr.season-me td:first-child { box-shadow: inset 3px 0 0 #ff6b1a; }
+.season-prize { color: #7ee2a0; font-weight: 700; font-variant-numeric: tabular-nums; }
+.season-live td { background: rgba(63, 191, 127, 0.06); }
+.season-games th.num { padding-left: 14px; }
+.season-games, .season-standings { table-layout: auto; }
+.season-games td:first-child { width: 40%; }
+.season-games strong.season-neg { color: #ff9c9c; }
+.season-games strong.season-pos { color: #7ee2a0; }

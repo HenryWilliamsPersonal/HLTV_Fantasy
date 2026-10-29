@@ -22,9 +22,16 @@ def _loop() -> None:
 
     while not _stop.wait(TICK_SECONDS):
         try:
-            live_state.live_events()
+            entries = live_state.live_events()
         except Exception:  # noqa: BLE001
             logger.exception("Live watch tick failed")
+            continue
+        try:
+            from backend.services import fantasy_field
+
+            fantasy_field.after_matches(entries)  # re-read the teams a finished match needs
+        except Exception:  # noqa: BLE001
+            logger.exception("Field match refresh tick failed")
 
 
 def start() -> None:

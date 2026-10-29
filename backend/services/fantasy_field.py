@@ -427,7 +427,23 @@ def start_read(event_id: int, league_id: int, seed_team_id: int, max_ids: int = 
     return {"status": "started", "event_id": eid, "league_id": int(league_id), "seed_team_id": int(seed_team_id), "max_ids": int(max_ids)}
 
 
-FIELD_REFRESH = 20 * 3600.0  # a live event's field is read again once a day (points move with every match)
+# ---------------------------------------------------------------- after a match
+# Every team that owns a player sees the same rating and team points for a
+# match; its role and booster points depend only on the role and booster it
+# chose. So once the field is stored, a finished match needs only enough
+# teams re-read to observe each (player, role) and (player, booster) of the
+# players who played it — a few hundred teams, not the whole league. Roles
+# are known from the stored lineups, so teams are picked greedily by the
+# (player, role) pairs they would add; boosters are only known once read, so
+# reading stops when every pair is seen and the booster pairs stop growing.
+MATCH_SETTLE = 20 * 60.0  # HLTV's scoring catches up in the minutes after a match
+MATCH_SECOND_PASS = 90 * 60.0  # one more pass this long after, for late-scored boosters
+MATCH_MAX_TEAMS = 2500  # cap per match
+MATCH_CHUNK = 60
+BOOSTER_STALL_CHUNKS = 2  # chunks without a new (player, booster) pair end the read
+_MATCH_DONE: Dict[tuple, Dict[str, float]] = {}  # (event_id, match_id) -> {"first", "last"}
+_CHECKED: Dict[int, float] = {}
+CHECK_EVERY = 120.0
 
 
 def seed_for(event_id: int) -> Optional[tuple]:
@@ -447,10 +463,164 @@ def seed_for(event_id: int) -> Optional[tuple]:
     return None
 
 
+def _read_team_ids(event_id: int, league_id: int, team_ids: List[int]) -> List[Dict[str, Any]]:
+    """Read these teams' feeds in one browser session, store them, return the parsed rows."""
+    from backend.services.hltv_browser import run_hltv_browser_session
+    from backend.services.my_team import ENTRY_URL
+
+    base = f"https://www.hltv.org/fantasy/{int(event_id)}/league/{int(league_id)}/overview/"
+    urls = [f"{base}{int(t)}/json" for t in team_ids]
+    answers = run_hltv_browser_session(ENTRY_URL, lambda d: _fetch_feeds(d, urls), wait_text=None, timeout_ms=60000) or []
+    rows = []
+    for tid, ans in zip(team_ids, answers):
+        if int((ans or {}).get("status") or 0) != 200:
+            continue
+        try:
+            parsed = parse_team_feed(json.loads(str(ans.get("text") or "")), int(event_id), int(league_id))
+        except Exception:  # noqa: BLE001
+            parsed = None
+        if parsed:
+            parsed["team_id"], parsed["read_at"] = int(tid), time.time()
+            rows.append(parsed)
+    _save_teams(int(event_id), int(league_id), rows)
+    return rows
+
+
+def refresh_match(event_id: int, match_id: int, team_keys: List[str]) -> Dict[str, Any]:
+    """Re-read the teams needed for one finished match (see above): the
+    players of the two teams (by team name key), every role each was given
+    somewhere in the field, read greedily until covered."""
+    from backend.data import team_aliases
+
+    eid, mid = int(event_id), int(match_id)
+    stored = teams(eid)
+    if not stored:
+        return {"status": "no field"}
+    league_id = int(stored[0]["league_id"])
+    keys = {str(k) for k in team_keys}
+    pids = set()
+    roles_needed: set = set()
+    by_team: Dict[int, List[tuple]] = {}
+    for t in stored:
+        pairs = []
+        for p in t.get("players") or []:
+            if team_aliases.key(str(p.get("team") or "")) in keys and p.get("player_id") is not None:
+                pid = int(p["player_id"])
+                pids.add(pid)
+                pair = (pid, p.get("role_name"))
+                roles_needed.add(pair)
+                pairs.append(pair)
+        if pairs:
+            by_team[int(t["team_id"])] = pairs
+    seen_roles: set = set()
+    seen_boosters: set = set()
+    read = 0
+    stall = 0
+    order = sorted(by_team, key=lambda tid: -len(set(by_team[tid])))
+    pending = list(order)
+    while pending and read < MATCH_MAX_TEAMS:
+        # the teams adding the most unseen (player, role) pairs first; once all
+        # are seen, the rest for booster variety (two players per team at most)
+        pending.sort(key=lambda tid: -len(set(by_team[tid]) - seen_roles))
+        chunk, pending = pending[:MATCH_CHUNK], pending[MATCH_CHUNK:]
+        rows = _read_team_ids(eid, league_id, chunk)
+        read += len(chunk)
+        new_boosters = 0
+        for row in rows:
+            for p in row.get("players") or []:
+                pid = p.get("player_id")
+                if pid is None or int(pid) not in pids:
+                    continue
+                for m in p.get("matches") or []:
+                    if f"/matches/{mid}/" not in str(m.get("match_url") or ""):
+                        continue
+                    seen_roles.add((int(pid), p.get("role_name")))
+                    if m.get("booster_name") and (int(pid), m["booster_name"]) not in seen_boosters:
+                        seen_boosters.add((int(pid), m["booster_name"]))
+                        new_boosters += 1
+        if roles_needed <= seen_roles:
+            stall = stall + 1 if new_boosters == 0 else 0
+            if stall >= BOOSTER_STALL_CHUNKS:
+                break
+        time.sleep(PAUSE_BETWEEN_CHUNKS)
+    logger.info("Field: match %s of event %s re-read from %s of %s teams (%s of %s player-role pairs, %s player-booster pairs)",
+                mid, eid, read, len(by_team), len(seen_roles & roles_needed), len(roles_needed), len(seen_boosters))
+    return {"status": "done", "teams_read": read, "teams_with_players": len(by_team), "roles": [len(seen_roles & roles_needed), len(roles_needed)], "boosters": len(seen_boosters)}
+
+
+def after_matches(entries: List[Dict[str, Any]], now: Optional[float] = None) -> Optional[str]:
+    """For the live events whose field is stored: start the re-read of a
+    finished match not yet covered (after MATCH_SETTLE, once more after
+    MATCH_SECOND_PASS), one at a time in a background thread."""
+    from backend.data import team_aliases
+
+    now = float(now or time.time())
+    with _LOCK:
+        if any(r.get("status") == "running" for r in _RUNS.values()):
+            return None
+    for e in entries or []:
+        if e.get("status") != "live":
+            continue
+        eid = int(e["event_id"])
+        if now - _CHECKED.get(eid, 0.0) < CHECK_EVERY:
+            continue
+        _CHECKED[eid] = now
+        if not status(eid).get("teams_stored"):
+            continue
+        names = {int(t): str(v.get("name") or "") for t, v in (e.get("teams") or {}).items()}
+        ended = {int(m["match_id"]): m for m in (e.get("matches") or []) if m.get("match_id") and m.get("winner") is not None}
+        for mid, m in sorted(ended.items()):
+            st = _MATCH_DONE.get((eid, mid))
+            if st is None:
+                _MATCH_DONE[(eid, mid)] = {"seen": now, "passes": 0, "last": 0.0}
+                continue
+            if st["passes"] >= 2:
+                continue
+            if st["passes"] == 0:
+                if now - st["seen"] < MATCH_SETTLE:
+                    continue
+                if _match_covered(eid, mid) and now - st["seen"] > MATCH_SECOND_PASS:
+                    st["passes"] = 2  # in the stored field already (an older match)
+                    continue
+            elif now - st["last"] < MATCH_SECOND_PASS:
+                continue
+            keys = [team_aliases.key(names.get(int(m["a"]), "")), team_aliases.key(names.get(int(m["b"]), ""))]
+            st["passes"] += 1
+            st["last"] = now
+            _start_match_refresh(eid, mid, keys)
+            return f"{eid}: match {mid}"
+    return None
+
+
+def _match_covered(event_id: int, match_id: int) -> bool:
+    facts = match_facts(int(event_id)).get("players") or {}
+    return any(int(m.get("match_id") or 0) == int(match_id) for f in facts.values() for m in f.get("matches") or [])
+
+
+def _start_match_refresh(event_id: int, match_id: int, keys: List[str]) -> None:
+    eid = int(event_id)
+    with _LOCK:
+        if any(r.get("status") == "running" for r in _RUNS.values()):
+            return
+        _RUNS[eid] = {"event_id": eid, "status": "running", "kind": "match", "match_id": int(match_id), "started_at": time.time()}
+
+    def work():
+        try:
+            refresh_match(eid, int(match_id), keys)
+        except Exception:  # noqa: BLE001
+            logger.warning("Field: match refresh failed for %s / %s", eid, match_id, exc_info=True)
+        finally:
+            with _LOCK:
+                if (_RUNS.get(eid) or {}).get("kind") == "match":
+                    _RUNS.pop(eid, None)
+
+    threading.Thread(target=work, name=f"fantasy-field-match-{eid}", daemon=True).start()
+
+
 def auto_reads(now: Optional[float] = None) -> str:
-    """Start the field read of the live event that needs it most (never
-    read first, then the stalest past FIELD_REFRESH), one at a time — reads
-    share the browser with everything else. Returns the scheduler's note."""
+    """Start the full field read of a live event that was never read (one at
+    a time; reads share the browser). A stored field is kept current match
+    by match (after_matches), so it is not read in full again."""
     from backend.services import live_state
 
     now = float(now or time.time())
@@ -458,24 +628,15 @@ def auto_reads(now: Optional[float] = None) -> str:
         running = [eid for eid, r in _RUNS.items() if r.get("status") == "running"]
     if running:
         return f"field read already running for {', '.join(str(e) for e in running)}"
-    due = []
     for e in live_state.live_events(now):
         if e.get("status") != "live":
             continue
         eid = int(e["event_id"])
         seed = seed_for(eid)
-        if not seed:
-            continue
-        st = status(eid)
-        last = float(st.get("finished_at") or st.get("stored_at") or 0.0) if st.get("teams_stored") else 0.0
-        if now - last >= FIELD_REFRESH:
-            due.append((last, eid, seed))
-    if not due:
-        return "every live field is fresh"
-    due.sort()
-    last, eid, (lid, tid) = due[0]
-    start_read(eid, lid, tid)
-    return f"field read started for {eid}" + (f" ({len(due) - 1} more due)" if len(due) > 1 else "")
+        if seed and not status(eid).get("teams_stored"):
+            start_read(eid, seed[0], seed[1])
+            return f"field read started for {eid}"
+    return "every live field is stored"
 
 
 def stop_read(event_id: int) -> bool:

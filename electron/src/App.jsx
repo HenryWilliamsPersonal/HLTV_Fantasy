@@ -7196,7 +7196,13 @@ function MyTeamPanel({ ev, onOpenSettings }) {
                 <div className="mt-name">{p.name}</div>
                 <div className="mt-team">{p.team || ""}</div>
                 <div className={`mt-points${Number(p.points) < 0 ? " neg" : ""}`}>{p.points ?? 0} points</div>
-                <div className="mt-expected">expected {x ? fmt1(x.so_far != null ? x.so_far : x.total) : "-"}</div>
+                {x && x.so_far != null && Number(x.so_far_rounds || 0) > 0 ? (
+                  <div className="mt-expected">
+                    <span className="mt-scope">exp. so far</span> {fmt1(x.so_far)}
+                  </div>
+                ) : (
+                  <div className="mt-expected" />
+                )}
                 <div className="mt-next">
                   {n ? (
                     <>
@@ -7205,7 +7211,11 @@ function MyTeamPanel({ ev, onOpenSettings }) {
                         vs. {n.opp}
                         {n.bo ? <span className="muted"> · Bo{n.bo}</span> : null}
                       </div>
-                      {p.next_match?.predicted ? <div className="mt-next-pred">predicted {fmt1(p.next_match.predicted.total)}</div> : null}
+                      {p.next_match?.predicted ? (
+                        <div className="mt-next-pred">
+                          <span className="mt-scope">exp. this match</span> {fmt1(p.next_match.predicted.total)}
+                        </div>
+                      ) : null}
                     </>
                   ) : (
                     <div className="mt-next-none">No upcoming match</div>
@@ -7245,7 +7255,7 @@ function MyTeamPanel({ ev, onOpenSettings }) {
               <span className={`mt-row-value${Number(actualTotal) - Number(expectedSoFar) < 0 ? " neg" : " pos"}`}>{signed(Math.round((Number(actualTotal) - Number(expectedSoFar)) * 10) / 10)}</span>
             </div>
             <div className="mt-row">
-              <span className="mt-row-label">End of round predicted</span>
+              <span className="mt-row-label">Expected after this round</span>
               <span className="mt-row-value">{hasPrediction ? fmt1(endOfRound) : actualTotal}</span>
             </div>
           </div>
@@ -7276,11 +7286,11 @@ function MyTeamPanel({ ev, onOpenSettings }) {
                   {cards.length > 0 && <div className="mt-tracker">{cards.map((t, i) => trackCard(t, i))}</div>}
                   <div className="mt-round-foot">
                     {[
-                      ["Expected", r.expected_total != null ? fmt1(r.expected_total) : "-", ""],
-                      ["Actual", r.status === "TBA" ? "-" : signed(r.subtotal), r.difference != null ? diffClass(r.difference) : ""],
+                      ["Round expected", r.expected_total != null ? fmt1(r.expected_total) : "-", ""],
+                      ["Round points", r.status === "TBA" ? "-" : signed(r.subtotal), r.difference != null ? diffClass(r.difference) : ""],
                       ["Placement", r.placement != null ? `${Number(r.placement).toLocaleString()} / ${Number(key.league_size || 0).toLocaleString()}` : "-", ""],
-                      ["Total", r.status === "TBA" ? "-" : r.total ?? "-", " strong"],
-                      ["Expected total", r.running_expected_parts && r.running_expected_parts.total != null ? fmt1(r.running_expected_parts.total) : "-", ""],
+                      ["Total points", r.status === "TBA" ? "-" : r.total ?? "-", " strong"],
+                      ["Total expected", r.running_expected_parts && r.running_expected_parts.total != null ? fmt1(r.running_expected_parts.total) : "-", ""],
                     ].map(([label, v, cls]) => (
                       <div className={`mt-round-num${cls}`} key={label}>
                         <span className="mt-round-num-value">{v}</span>

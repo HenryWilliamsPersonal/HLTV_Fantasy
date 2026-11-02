@@ -443,7 +443,7 @@ def parse_team_page(html: str) -> Dict[str, Any]:
         # booster", "No booster assigned", "No upcoming match") means none.
         booster = ""
         if "assign-booster-button assigned" in block:
-            slug = re.search(r'boost/([a-z0-9_\-]+)\.png', block)
+            slug = re.search(r'boost/([A-Za-z0-9_\-]+)\.png', block)
             booster = _booster_name_from_slug(slug.group(1)) if slug else "Booster"
         # <div class="upcoming-match">Today - 17:00<br><div class="opponent">vs. X</div></div>
         upcoming_html = re.search(r'<div class="upcoming-match[^"]*">(.*?)<div class="assign-booster-button', block, flags=re.S)
@@ -779,6 +779,79 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
         value = float(st.get(comp) or 0.0)
         return value / play if play > 0.05 else value
 
+    # One match's expectation, the same wherever it is shown (the coming
+    # match's prediction and its round card): the run's rating + win for that
+    # opponent at that stage given the pairing, the team's own role, and the
+    # booster — the one assigned on HLTV for the coming match, the run's
+    # expectation for a played one (the page does not say which was used).
+    from backend.services.role_assignment import extract_role_scores_for_player
+    from backend.services.swiss_booster_assignment import BOOSTER_POINT_VALUE
+
+    stage_meta = {str(st.get("key")): st for st in (stage_stats.get("stages") or [])}
+    rows_by_pid: Dict[int, Dict[str, Any]] = {}
+
+    def prow(pid: int) -> Dict[str, Any]:
+        if int(pid) not in rows_by_pid:
+            rows_by_pid[int(pid)] = get_player(int(pid)) or {}
+        return rows_by_pid[int(pid)]
+
+    def match_ev(pid: int, tid: Optional[int], stage_key: Optional[str], opp: Optional[int], role_index: Optional[int], booster: Any) -> Optional[Dict[str, float]]:
+        st = (((stage_players.get(str(pid)) or {}).get("stages") or {}).get(stage_key)) if stage_key else None
+        if not st or tid is None:
+            return None
+        rnd = (((stage_teams.get(str(tid)) or {}).get("rounds") or {}).get(stage_key)) or {}
+        po = (st.get("opponents") or {}).get(str(opp)) if opp is not None else None
+        pair = ((rnd.get("opponents") or {}).get(str(opp)) or {}) if opp is not None else {}
+        pp = float(pair.get("play") or 0.0)
+        if po and pp > 1e-6:
+            rating, win, run_boost = float(po.get("rating") or 0.0) / pp, float(po.get("win") or 0.0) / pp, float(po.get("booster") or 0.0) / pp
+            p_win = float(pair.get("win")) if pair.get("win") is not None else None
+        else:
+            play = float(rnd.get("play") or 0.0)
+            div = play if play > 0.05 else 1.0
+            rating, win, run_boost = float(st.get("rating") or 0.0) / div, float(st.get("win") or 0.0) / div, float(st.get("booster") or 0.0) / div
+            p_win = None
+        role = 0.0
+        if role_index is not None:
+            leader = (results.get("leader_odds") or {}).get(str(tid)) if int(role_index) == 3 else None
+            role = float(extract_role_scores_for_player(prow(pid), leader=leader).get(int(role_index), 0.0))
+        if booster == "run":
+            boost = run_boost
+        elif booster is None:
+            boost = 0.0
+        else:
+            try:
+                boost = BOOSTER_POINT_VALUE * float(json.loads(prow(pid).get("boosters_json") or "{}").get(str(int(booster)), 0.0))
+            except Exception:  # noqa: BLE001
+                boost = 0.0
+        return {"rating": rating, "win": win, "role": role, "booster": boost, "total": rating + win + role + boost, "p_win": p_win}
+
+    def stage_plan(pid: int, opponents: List[Optional[int]], results_so_far: List[str]) -> List[Optional[str]]:
+        """The stage of each of the player's matches in order: the next stage
+        after the previous one where the run has him meeting that opponent,
+        in the upper bracket until the team's first loss and the lower after
+        (double elimination); else the next stage."""
+        stages = ((stage_players.get(str(pid)) or {}).get("stages") or {})
+        out: List[Optional[str]] = []
+        last = -1
+        losses = 0
+        for n, opp in enumerate(opponents):
+            cands = []
+            for i, k in enumerate(stage_order):
+                if i <= last:
+                    continue
+                side = str((stage_meta.get(k) or {}).get("bracket") or "")
+                if side == "upper" and losses > 0 or side == "lower" and losses == 0:
+                    continue
+                cands.append(i)
+            pick = next((i for i in cands if opp is not None and str(opp) in ((stages.get(stage_order[i]) or {}).get("opponents") or {})), cands[0] if cands else None)
+            out.append(stage_order[pick] if pick is not None else None)
+            if pick is not None:
+                last = pick
+            if n < len(results_so_far) and results_so_far[n] == "LOST":
+                losses += 1
+        return out
+
     for pl in page["players"]:
         pid = pl.get("player_id")
         row = get_player(int(pid)) if pid else None
@@ -786,13 +859,20 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
         pl["team_id"] = tid
         pl["team"] = names.get(tid) if tid else None
         pl["hltv_team_id"] = hltv_ids.get(tid) if tid else None
-        played = sum(1 for t in page["tracker"] if t.get("player_id") == pid and t.get("result") in ("WON", "LOST"))
+        played_items = [t for t in page["tracker"] if t.get("player_id") == pid and t.get("result") in ("WON", "LOST")]
+        played = len(played_items)
         ev = expected_by_pid.get(int(pid)) if pid else None
         stages = ((stage_players.get(str(pid)) or {}).get("stages") or {}) if pid else {}
-        so_far = {
-            comp: round(sum(float(round_ev(pid, tid, k, comp) or 0.0) for k in stage_order[:played]), 1)
-            for comp in ("total", "rating", "win", "role", "booster")
-        }
+        nxt_item = next((t for t in page["tracker"] if t.get("player_id") == pid and t.get("result") == "NEXT"), None)
+        opp_list = [t.get("opponent_team_id") for t in played_items] + ([nxt_item.get("opponent_team_id")] if nxt_item else [])
+        plan = stage_plan(int(pid), opp_list, [str(t.get("result")) for t in played_items]) if pid else []
+        pl["stage_plan"] = plan
+        so_far = {comp: 0.0 for comp in ("total", "rating", "win", "role", "booster")}
+        for i, t in enumerate(played_items):
+            m_ev = match_ev(int(pid), tid, plan[i] if i < len(plan) else None, t.get("opponent_team_id"), pl.get("role_index"), "run")
+            for comp in so_far:
+                so_far[comp] += float((m_ev or {}).get(comp) or 0.0)
+        so_far = {k: round(v, 1) for k, v in so_far.items()}
         pl["expected"] = (
             {
                 "total": round(float(ev.get("total_points") or 0.0), 1),
@@ -812,9 +892,22 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
         if nxt and row:
             opp = int(m_b) if (m_b := nxt["b"]) != tid else int(nxt["a"])
             bo = int(nxt.get("bo") or 3)
+            stage_next = plan[played] if len(plan) > played else None
+            if stage_next is None:
+                stage_next = stage_plan(int(pid), [t.get("opponent_team_id") for t in played_items] + [opp], [str(t.get("result")) for t in played_items])[-1]
+            m_ev = match_ev(int(pid), tid, stage_next, opp, pl.get("role_index"), pl.get("booster_index"))
+            if m_ev is not None:
+                predicted = {
+                    "rating": round(1.0 + m_ev["rating"] / 50.0, 3), "rating_points": round(m_ev["rating"], 1),
+                    "win_probability": None if m_ev["p_win"] is None else round(m_ev["p_win"], 3), "win_points": round(m_ev["win"], 1),
+                    "role_points": round(m_ev["role"], 1), "booster_points": round(m_ev["booster"], 1), "total": round(m_ev["total"], 1),
+                    "stage": stage_next,
+                }
+            else:
+                predicted = _predict_match(row, int(tid), opp, bo, ranks, results, pl.get("role_index"), pl.get("booster_index"))
             pl["next_match"] = {
                 "opponent_id": opp, "opponent": names.get(opp), "start_at": nxt.get("start_at"), "status": nxt.get("status"), "bo": bo, "url": nxt.get("url"),
-                "predicted": _predict_match(row, int(tid), opp, bo, ranks, results, pl.get("role_index"), pl.get("booster_index")),
+                "predicted": predicted,
             }
         else:
             pl["next_match"] = None
@@ -834,12 +927,28 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
     round_actual_keys = {"rating": "rating_points", "team": "team_points", "role": "role_points", "booster": "booster_points", "total": "subtotal"}
     running_exp = {k: 0.0 for k, _ in comps}
     running_act = {k: 0.0 for k, _ in comps}
+    lineup_by_pid = {int(p["player_id"]): p for p in page["players"] if p.get("player_id") is not None}
+    card_no: Dict[int, int] = {}
     for i, r in enumerate(rounds):
         stage_key = stage_order[i] if i < len(stage_order) else None
+        card_parts: List[Dict[str, float]] = []
         for c in r.get("players") or []:
-            c_tid = team_of_player.get(int(c["player_id"])) if c.get("player_id") is not None else None
-            parts = {k: round_ev(c.get("player_id"), c_tid, stage_key, src) for k, src in comps} if stage_key else {}
+            c_pid = int(c["player_id"]) if c.get("player_id") is not None else None
+            c_tid = team_of_player.get(c_pid) if c_pid is not None else None
+            lp = lineup_by_pid.get(c_pid) or {}
+            k = card_no.get(c_pid, 0)
+            card_no[c_pid] = k + 1
+            c_plan = lp.get("stage_plan") or []
+            c_stage = c_plan[k] if k < len(c_plan) else stage_key
+            coming = c.get("result") not in ("WON", "LOST")
+            m_ev = match_ev(c_pid, c_tid, c_stage, c.get("opponent_team_id"), lp.get("role_index"), lp.get("booster_index") if coming else "run") if c_pid is not None else None
+            if m_ev is not None:
+                parts = {"rating": m_ev["rating"], "team": m_ev["win"], "role": m_ev["role"], "booster": m_ev["booster"], "total": m_ev["total"]}
+            else:
+                parts = {k2: round_ev(c.get("player_id"), c_tid, stage_key, src) for k2, src in comps} if stage_key else {}
             known = parts and parts.get("total") is not None
+            if known:
+                card_parts.append(parts)
             c["expected"] = round(float(parts["total"]), 1) if known else None
             c["expected_parts"] = {k: (round(float(v), 1) if v is not None else None) for k, v in parts.items()} if known else None
             c["difference"] = round(float(c["points"]) - float(parts["total"]), 1) if known and c.get("points") is not None else None
@@ -848,7 +957,10 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
                 if known and c.get("points") is not None else None
             )
         # the round for the lineup: expected by component, actual by component, running sums
-        exp_parts = {k: sum(float(round_ev(pid, tid, stage_key, src) or 0.0) for pid, tid in lineup) for k, src in comps} if stage_key else None
+        if card_parts:
+            exp_parts = {k: sum(float(cp.get(k) or 0.0) for cp in card_parts) for k, _ in comps}
+        else:
+            exp_parts = {k: sum(float(round_ev(pid, tid, stage_key, src) or 0.0) for pid, tid in lineup) for k, src in comps} if stage_key else None
         played_round = r.get("status") != "TBA" and r.get("subtotal") is not None
         act_parts = {k: float(r.get(round_actual_keys[k]) or 0.0) for k, _ in comps} if played_round else None
         if exp_parts:

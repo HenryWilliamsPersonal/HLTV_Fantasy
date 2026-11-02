@@ -3656,3 +3656,7 @@ button:disabled {
 .team-lb-mini th:not(.num), .team-lb-mini td:not(.num) { text-align: left; }
 .season-stand-controls { align-items: flex-end; }
 .season-stand-controls > button { margin-bottom: 10px; }
+/* My Team: an expectation names its scope (so far / this match) */
+.mt-expected { min-height: 18px; font-variant-numeric: tabular-nums; }
+.mt-scope { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #8fa3bf; margin-right: 4px; }
+.mt-next-pred .mt-scope { color: #c98a5f; }

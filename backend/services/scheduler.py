@@ -416,7 +416,11 @@ class DataScheduler:
         self._set_state(running=True, current_task="season", trigger=trigger, started_at=time.time(),
                         processed=0, total=0, message="Reading the fantasy season...")
         try:
-            schedule_db.finish_run(run_id, "success", fantasy_season.refresh_all())
+            note = fantasy_season.refresh_all()
+            from backend.services import season_standings
+
+            note += f"; {season_standings.start()}"  # the whole leaderboard, in the background (~40 min)
+            schedule_db.finish_run(run_id, "success", note)
         except Exception as exc:  # noqa: BLE001 — never let it break a batch
             schedule_db.finish_run(run_id, "error", f"season read failed: {exc}")
             logger.exception("Season refresh failed")

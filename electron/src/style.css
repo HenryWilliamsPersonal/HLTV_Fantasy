@@ -3654,3 +3654,5 @@ button:disabled {
 .team-lb-mini { min-width: 560px; }
 .team-lb-mini th, .team-lb-mini td { padding: 4px 10px; }
 .team-lb-mini th:not(.num), .team-lb-mini td:not(.num) { text-align: left; }
+.season-stand-controls { align-items: flex-end; }
+.season-stand-controls > button { margin-bottom: 10px; }

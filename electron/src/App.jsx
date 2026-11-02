@@ -6433,12 +6433,36 @@ function LiveTab({ onOpenSettings }) {
 // booster points behind them), the leaders and the users around them, and
 // the season-points table (services/fantasy_season: stored per user,
 // refreshed by the nightly batch after each event and when opened stale).
+const SEASON_STAND_PAGE = 50;
 function SeasonTab({ onOpenSettings }) {
   const [data, setData] = useState(null);
   const [state, setState] = useState("loading"); // loading | ready | disconnected | error
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sortBy, setSortBy] = useState("order_asc");
+  const [standQ, setStandQ] = useState("");
+  const [standQuery, setStandQuery] = useState("");
+  const [standPage, setStandPage] = useState(0);
+  const [standings, setStandings] = useState(null);
+  const standReq = useRef(0);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setStandQuery(standQ.trim());
+      setStandPage(0);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [standQ]);
+  useEffect(() => {
+    const id = ++standReq.current;
+    api
+      .get(`/my-team/season/standings?q=${encodeURIComponent(standQuery)}&page=${standPage}&size=${SEASON_STAND_PAGE}`, 60000)
+      .then((d) => {
+        if (id === standReq.current) setStandings(d);
+      })
+      .catch(() => {
+        if (id === standReq.current) setStandings(null);
+      });
+  }, [standQuery, standPage]);
   const poll = useRef(null);
   const load = async (refresh = false) => {
     clearTimeout(poll.current);
@@ -6689,29 +6713,58 @@ function SeasonTab({ onOpenSettings }) {
       )}
       {data && (
         <Section title="Standings">
-          <table className="bp-table lb-table season-standings">
-            <thead>
-              <tr>
-                <th className="num">Place</th>
-                <th>User</th>
-                <th className="num">Games</th>
-                <th className="num">Live pts</th>
-                <th className="num">Season pts</th>
-                <th className="num">vs You</th>
-                <th>Prize</th>
-              </tr>
-            </thead>
-            <tbody>
-              {leaders.map(standingRow)}
-              {leaders.length > 0 && around.length > 0 ? (
-                <tr className="pad">
-                  <td className="num">…</td>
-                  <td colSpan={6} />
+          {standings && Number(standings.total || 0) + (standQuery ? 1 : 0) > 0 ? (
+            <>
+              <div className="players-controls season-stand-controls">
+                <Input label="Search Users" value={standQ} onChange={setStandQ} placeholder="Username" className="search-field" />
+                {standings.me_page != null && !standQuery ? (
+                  <button className="secondary" onClick={() => setStandPage(standings.me_page)}>
+                    Find me
+                  </button>
+                ) : null}
+              </div>
+              <ComboPager page={standPage} pageSize={SEASON_STAND_PAGE} total={standings.total} onPage={setStandPage} />
+              <table className="bp-table lb-table season-standings">
+                <thead>
+                  <tr>
+                    <th className="num">Place</th>
+                    <th>User</th>
+                    <th className="num">Games</th>
+                    <th className="num">Live pts</th>
+                    <th className="num">Season pts</th>
+                    <th className="num">vs You</th>
+                    <th>Prize</th>
+                  </tr>
+                </thead>
+                <tbody>{(standings.rows || []).map(standingRow)}</tbody>
+              </table>
+              <ComboPager page={standPage} pageSize={SEASON_STAND_PAGE} total={standings.total} onPage={setStandPage} />
+            </>
+          ) : (
+            <table className="bp-table lb-table season-standings">
+              <thead>
+                <tr>
+                  <th className="num">Place</th>
+                  <th>User</th>
+                  <th className="num">Games</th>
+                  <th className="num">Live pts</th>
+                  <th className="num">Season pts</th>
+                  <th className="num">vs You</th>
+                  <th>Prize</th>
                 </tr>
-              ) : null}
-              {around.map(standingRow)}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {leaders.map(standingRow)}
+                {leaders.length > 0 && around.length > 0 ? (
+                  <tr className="pad">
+                    <td className="num">…</td>
+                    <td colSpan={6} />
+                  </tr>
+                ) : null}
+                {around.map(standingRow)}
+              </tbody>
+            </table>
+          )}
         </Section>
       )}
     </div>
@@ -8173,7 +8226,21 @@ function LiveEventBody({ ev }) {
   };
   // The board (Swiss or bracket) already shows every result; the results
   // table only stands in for events without one.
-  const boardShown = Boolean((ev.group_format === "swiss" && ev.swiss) || (ev.group_format === "bracket" && ev.bracket));
+  // Group formats the Tournament page draws as brackets (GSL, double-elim
+  // groups): the same group bracket here, from each group's seeded slots.
+  const groupBoards =
+    ["gsl4", "de8", "de8_top3"].includes(String(ev.group_format || "")) &&
+    Array.isArray(ev.groups) &&
+    ev.groups.length > 0 &&
+    ev.groups.every((g) => Array.isArray(g.slots) && g.slots.length === (String(ev.group_format) === "gsl4" ? 4 : 8));
+  const hltvIdByTeamId = useMemo(() => {
+    const m = {};
+    Object.entries(ev.teams || {}).forEach(([tid, t]) => {
+      m[Number(tid)] = t?.hltv_team_id;
+    });
+    return m;
+  }, [ev]);
+  const boardShown = Boolean((ev.group_format === "swiss" && ev.swiss) || (ev.group_format === "bracket" && ev.bracket) || groupBoards);
   const swissShown = Boolean(ev.group_format === "swiss" && ev.swiss);
   const today = new Date().toDateString();
   const upcomingToday = (ev.upcoming_matches || []).filter((m) => m.start_at && new Date(Number(m.start_at) * 1000).toDateString() === today);
@@ -8191,7 +8258,24 @@ function LiveEventBody({ ev }) {
           <BracketPicker bracket={ev.bracket} teamLookup={teamLookup} teams={teamRows} picks={ev.bracket_picks || {}} onPick={() => {}} readOnly />
         </div>
       )}
-      {Array.isArray(ev.groups) && ev.groups.length > 0 && (
+      {Array.isArray(ev.groups) && ev.groups.length > 0 && groupBoards && (
+        <div className="stack">
+          {ev.groups.map((g, i) => (
+            <div className="card sub" key={i}>
+              <h3>Group {String.fromCharCode(65 + i)}</h3>
+              <GroupBracketVisual
+                format={ev.group_format}
+                slotIds={(g.slots || []).map(String)}
+                nameOf={(v) => teamLookup[v] || String(v)}
+                hltvIdByTeamId={hltvIdByTeamId}
+                combined={Boolean(ev.combined_playoffs)}
+                results={ev.matches || []}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+      {Array.isArray(ev.groups) && ev.groups.length > 0 && !groupBoards && (
         <div className="live-groups">
           {ev.groups.map((g, i) => (
             <div className="card sub live-group" key={i}>
@@ -10920,8 +11004,56 @@ function BracketLayout({ byStage, card, meta }) {
   );
 }
 
-function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined, bo = 3 }) {
+function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined, bo = 3, results = null }) {
   const meta = `BO${bo}`;
+  // With results (finished matches {a, b, winner}): each match's two sides
+  // from the seeds and the earlier matches' winners / losers, and its winner
+  // when the pair has played — the Live page's view of the same bracket.
+  const resolved = (() => {
+    if (!Array.isArray(results)) return null;
+    const sid = (i) => {
+      const v = slotIds[i];
+      return v && v !== "unknown" ? Number(v) : 0;
+    };
+    const R = {};
+    const play = (key, a, b) => {
+      let w = 0;
+      if (a && b) {
+        const m = results.find((x) => x.winner != null && ((Number(x.a) === a && Number(x.b) === b) || (Number(x.a) === b && Number(x.b) === a)));
+        if (m) w = Number(m.winner);
+      }
+      R[key] = { a, b, w, l: w ? (w === a ? b : a) : 0 };
+    };
+    const W = (k) => R[k]?.w || 0;
+    const L = (k) => R[k]?.l || 0;
+    if (format === "de8_top3" || format === "de8") {
+      [0, 1, 2, 3].forEach((m) => play(`ub${m}`, sid(2 * m), sid(2 * m + 1)));
+      [0, 1].forEach((m) => play(`us${m}`, W(`ub${2 * m}`), W(`ub${2 * m + 1}`)));
+      if (format === "de8_top3") play("uf", W("us0"), W("us1"));
+      [0, 1].forEach((m) => play(`lb${m}`, L(`ub${2 * m}`), L(`ub${2 * m + 1}`)));
+      [0, 1].forEach((m) => play(`ls${m}`, L(`us${1 - m}`), W(`lb${m}`)));
+      if (format === "de8_top3") play("lf", W("ls0"), W("ls1"));
+    } else {
+      [0, 1].forEach((m) => play(`ub${m}`, sid(2 * m), sid(2 * m + 1)));
+      play("wm", W("ub0"), W("ub1"));
+      play("em", L("ub0"), L("ub1"));
+      play("dc", L("wm"), W("em"));
+    }
+    return R;
+  })();
+  const cell = (mk, side, fallback) => {
+    const m = resolved?.[mk];
+    const id = m ? m[side] : 0;
+    if (!id) return fallback;
+    const cls = m.w ? (m.w === id ? " winner" : " loser") : "";
+    return (
+      <div className={`playoff-team-row outcome-row${cls}`} key={side}>
+        <TeamLogo hltvTeamId={hltvIdByTeamId[id]} name={nameOf(String(id))} size={24} />
+        <span>{nameOf(String(id))}</span>
+        {m.w === id && <span className="outcome-row-mark">W</span>}
+      </div>
+    );
+  };
   const seed = (i, key) => {
     const v = slotIds[i];
     const id = v && v !== "unknown" ? Number(v) : 0;
@@ -11071,6 +11203,14 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
     ];
   }
 
+  if (resolved) {
+    [...upper, ...lower].forEach((round) =>
+      round.matches.forEach((m) => {
+        m.rows = [cell(m.key, "a", m.rows[0]), cell(m.key, "b", m.rows[1])];
+        m.places = null;
+      })
+    );
+  }
   const bracket = (rounds) => (
     <div className="pb-bracket">
       {rounds.map((round, r) => (

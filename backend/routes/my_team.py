@@ -67,6 +67,23 @@ def get_season(request: Request, refresh: bool = False) -> dict:
     return out
 
 
+@router.get("/season/standings")
+def get_season_standings(request: Request, q: str = "", page: int = 0, size: int = 50) -> dict:
+    """The whole season leaderboard (services/season_standings: every user,
+    read once for everyone), by placement, searchable by username, paged;
+    the caller's own row is marked and `me_page` is the page that holds it."""
+    from backend.data import season_cache
+    from backend.services import season_standings
+
+    me_id = None
+    try:
+        stored = season_cache.get(_user_key(request)) or {}
+        me_id = ((stored.get("season") or {}).get("me") or {}).get("user_id")
+    except HTTPException:
+        pass
+    return season_standings.page(None, q=q, page_no=page, size=size, me_user_id=me_id)
+
+
 @router.get("/session")
 def get_session(request: Request) -> dict:
     from backend.data import my_team_settings

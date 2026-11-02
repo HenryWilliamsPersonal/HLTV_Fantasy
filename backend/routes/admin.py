@@ -1149,6 +1149,28 @@ def stop_field_read(event_id: int):
     return {"status": "stopping" if fantasy_field.stop_read(int(event_id)) else "idle"}
 
 
+@router.post("/season/standings/read")
+def read_season_standings():
+    """Read the whole season leaderboard now (services/season_standings)."""
+    from backend.services import season_standings
+
+    return {"status": season_standings.start()}
+
+
+@router.get("/season/standings")
+def season_standings_status():
+    from backend.services import season_standings
+
+    return season_standings.status()
+
+
+@router.post("/season/standings/stop")
+def stop_season_standings():
+    from backend.services import season_standings
+
+    return {"status": "stopping" if season_standings.stop() else "idle"}
+
+
 @router.post("/fetch-page")
 def fetch_page(payload: Dict[str, Any]):
     """Dev helper: fetch one HLTV page through the shared browser — which

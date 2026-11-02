@@ -260,7 +260,7 @@ def _groups_state(matches: List[Dict[str, Any]], groups: List[List[int]]) -> Lis
                 recs[b if int(w) == a else a][1] += 1
                 stage_by_url[str(m.get("url"))] = f"Group {chr(65 + gi)}"
         order = sorted(recs, key=lambda t: (-recs[t][0], recs[t][1]))
-        out.append({"teams": order, "records": {str(t): recs[t] for t in recs}, "played": played, "stage_by_url": stage_by_url})
+        out.append({"teams": order, "slots": [int(t) for t in g], "records": {str(t): recs[t] for t in recs}, "played": played, "stage_by_url": stage_by_url})
     return out
 
 
@@ -374,6 +374,7 @@ def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float, fetch_if_mi
         stage_by_url = st.get("stage_by_url") or {}
     else:
         entry["groups"] = _groups_state(matches, [[int(t) for t in g] for g in (results.get("groups") or [])])
+        entry["combined_playoffs"] = bool(results.get("combined_playoffs"))
         entry["played"] = sum(g["played"] for g in entry["groups"])
         entry["total"] = None
         for g in entry["groups"]:

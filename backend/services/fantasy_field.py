@@ -255,7 +255,7 @@ def status(event_id: int) -> Dict[str, Any]:
         conn.close()
     out = {"event_id": eid, "teams_stored": int(n["c"] or 0), "stored_at": float(n["t"]) if n["t"] else None, "running": bool(live) and live.get("status") == "running"}
     run = live or (dict(last) if last else {})
-    for k in ("league_id", "status", "scanned", "found", "errors", "lowest_id", "highest_id", "league_size", "started_at", "finished_at", "message", "statuses"):
+    for k in ("kind", "match_id", "league_id", "status", "scanned", "found", "errors", "lowest_id", "highest_id", "league_size", "started_at", "finished_at", "message", "statuses"):
         if k in run:
             out[k] = run[k]
     return out
@@ -549,7 +549,10 @@ def refresh_match(event_id: int, match_id: int, team_keys: List[str]) -> Dict[st
                     if m.get("booster_name") and (int(pid), m["booster_name"]) not in seen_boosters:
                         seen_boosters.add((int(pid), m["booster_name"]))
                         new_boosters += 1
-        if roles_needed <= seen_roles:
+        # every (player, role) seen — or none of the teams left can add one
+        # (pairs from lineups that no longer show the match: stale stored rows)
+        roles_done = roles_needed <= seen_roles or not any(set(by_team[tid]) - seen_roles for tid in pending)
+        if roles_done:
             stall = stall + 1 if new_boosters == 0 else 0
             if stall >= BOOSTER_STALL_CHUNKS:
                 break
@@ -583,7 +586,14 @@ def after_matches(entries: List[Dict[str, Any]], now: Optional[float] = None) ->
         for mid, m in sorted(ended.items()):
             st = _MATCH_DONE.get((eid, mid))
             if st is None:
-                _MATCH_DONE[(eid, mid)] = {"seen": now, "passes": 0, "last": 0.0}
+                ended_at = _match_end(eid, mid)
+                if ended_at is not None:
+                    # already in the stored field: its first pass is the read
+                    # that stored it; only the late pass is left, if still due
+                    late = now - ended_at <= MATCH_SECOND_PASS * 2
+                    _MATCH_DONE[(eid, mid)] = {"seen": ended_at, "passes": 1 if late else 2, "last": ended_at}
+                else:
+                    _MATCH_DONE[(eid, mid)] = {"seen": now, "passes": 0, "last": 0.0}
                 continue
             if st["passes"] >= 2:
                 continue
@@ -601,6 +611,15 @@ def after_matches(entries: List[Dict[str, Any]], now: Optional[float] = None) ->
             _start_match_refresh(eid, mid, keys)
             return f"{eid}: match {mid}"
     return None
+
+
+def _match_end(event_id: int, match_id: int) -> Optional[float]:
+    """When the match ended, from the stored field (None when no stored
+    team shows it yet)."""
+    facts = match_facts(int(event_id)).get("players") or {}
+    ends = [float(m["end_time"]) for f in facts.values() for m in f.get("matches") or []
+            if int(m.get("match_id") or 0) == int(match_id) and m.get("end_time")]
+    return max(ends) if ends else None
 
 
 def _match_covered(event_id: int, match_id: int) -> bool:

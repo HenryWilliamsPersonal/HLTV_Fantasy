@@ -14,7 +14,6 @@ Started by the nightly batch after the season read (scheduler tail step
 """
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time

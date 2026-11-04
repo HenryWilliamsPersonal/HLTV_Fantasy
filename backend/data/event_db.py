@@ -248,23 +248,6 @@ def get_historical_team_map_stats_keys() -> set[tuple[str, str, str]]:
         conn.close()
 
 
-def get_historical_team_map_stats(normalized_name: str, start_date: str, end_date: str) -> Optional[Dict[str, Any]]:
-    ensure_event_schema()
-    conn = connect()
-    try:
-        row = conn.execute(
-            """
-            SELECT normalized_name, team_name, hltv_team_id, start_date, end_date, maps_json, source_url, imported_at
-            FROM historical_team_map_stats
-            WHERE normalized_name = ? AND start_date = ? AND end_date = ?
-            """,
-            (str(normalized_name), str(start_date), str(end_date)),
-        ).fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
-
-
 def get_all_historical_team_map_stats_json() -> Dict[tuple, str]:
     """All stored windows as {(normalized_name, start_date, end_date): maps_json}.
 
@@ -376,27 +359,6 @@ def upsert_event_snapshot(
                     """,
                     (eid, int(pid), team["team_name"], int(price)),
                 )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def set_event_hltv_ref(event_id: int, hltv_event_id: Optional[int], hltv_event_url: Optional[str] = None) -> None:
-    conn = connect()
-    try:
-        conn.execute(
-            """
-            UPDATE events
-            SET hltv_event_id = COALESCE(?, hltv_event_id),
-                hltv_event_url = COALESCE(?, hltv_event_url)
-            WHERE event_id = ?
-            """,
-            (
-                int(hltv_event_id) if hltv_event_id is not None else None,
-                str(hltv_event_url or "").strip() or None,
-                int(event_id),
-            ),
-        )
         conn.commit()
     finally:
         conn.close()

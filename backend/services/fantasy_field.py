@@ -255,9 +255,11 @@ def status(event_id: int) -> Dict[str, Any]:
         conn.close()
     out = {"event_id": eid, "teams_stored": int(n["c"] or 0), "stored_at": float(n["t"]) if n["t"] else None, "running": bool(live) and live.get("status") == "running"}
     run = live or (dict(last) if last else {})
-    for k in ("kind", "match_id", "league_id", "status", "scanned", "found", "errors", "lowest_id", "highest_id", "league_size", "started_at", "finished_at", "message", "statuses"):
+    for k in ("kind", "match_id", "league_id", "status", "scanned", "found", "errors", "lowest_id", "highest_id", "league_size", "started_at", "finished_at", "message", "statuses", "teams_read", "teams_target"):
         if k in run:
             out[k] = run[k]
+    if not out.get("league_size") and last and last["league_size"]:
+        out["league_size"] = int(last["league_size"])  # a match re-read does not carry it
     return out
 
 
@@ -529,6 +531,8 @@ def refresh_match(event_id: int, match_id: int, team_keys: List[str]) -> Dict[st
     stall = 0
     order = sorted(by_team, key=lambda tid: -len(set(by_team[tid])))
     pending = list(order)
+    run = _RUNS.get(eid) if (_RUNS.get(eid) or {}).get("kind") == "match" else {}
+    run.update(teams_read=0, teams_target=min(len(order), MATCH_MAX_TEAMS))
     while pending and read < MATCH_MAX_TEAMS:
         # the teams adding the most unseen (player, role) pairs first; once all
         # are seen, the rest for booster variety (two players per team at most)
@@ -536,6 +540,7 @@ def refresh_match(event_id: int, match_id: int, team_keys: List[str]) -> Dict[st
         chunk, pending = pending[:MATCH_CHUNK], pending[MATCH_CHUNK:]
         rows = _read_team_ids(eid, league_id, chunk)
         read += len(chunk)
+        run["teams_read"] = read
         new_boosters = 0
         for row in rows:
             for p in row.get("players") or []:
@@ -647,10 +652,15 @@ def _start_match_refresh(event_id: int, match_id: int, keys: List[str]) -> None:
     threading.Thread(target=work, name=f"fantasy-field-match-{eid}", daemon=True).start()
 
 
+FIELD_LEAD = 2 * 86400.0  # an upcoming event's field is read this long before it starts (lineups are open)
+
+
 def auto_reads(now: Optional[float] = None) -> str:
-    """Start the full field read of a live event that was never read (one at
-    a time; reads share the browser). A stored field is kept current match
-    by match (after_matches), so it is not read in full again."""
+    """Start the full field read an event needs (one at a time; reads share
+    the browser): an upcoming event within FIELD_LEAD of its start, for
+    Season Maximum's field; a live event never read, cut off by a restart, or
+    last read before it started (lineups change until roster lock). A field
+    read after the start is kept current match by match (after_matches)."""
     from backend.services import live_state
 
     now = float(now or time.time())
@@ -659,14 +669,20 @@ def auto_reads(now: Optional[float] = None) -> str:
     if running:
         return f"field read already running for {', '.join(str(e) for e in running)}"
     for e in live_state.live_events(now):
-        if e.get("status") != "live":
+        live = e.get("status") == "live"
+        if not live and not (e.get("status") == "upcoming" and float(e.get("start_at") or 0) - now <= FIELD_LEAD):
             continue
         eid = int(e["event_id"])
         seed = seed_for(eid)
-        if seed and not status(eid).get("teams_stored"):
+        if not seed:
+            continue
+        st = status(eid)
+        stale = live and st.get("stored_at") and float(st["stored_at"]) < float(e.get("start_at") or 0)
+        cut_off = not st.get("running") and st.get("status") == "running"
+        if not st.get("teams_stored") or cut_off or stale:
             start_read(eid, seed[0], seed[1])
             return f"field read started for {eid}"
-    return "every live field is stored"
+    return "every field is stored"
 
 
 def stop_read(event_id: int) -> bool:
@@ -740,7 +756,11 @@ def player_summary(event_id: int) -> Dict[str, Any]:
 # matches than a 3-2 team, and HLTV pads the missing rounds with the
 # player's average so far — rating and role points truncated toward zero
 # (int(mean): -0.67 -> 0, 1.5 -> 1), team points a flat 6, no booster.
-# Checked on 29,000 padding items of PGL Masters Bucharest 2026.
+# Checked on 29,000 padding items of PGL Masters Bucharest 2026. "So far"
+# means the matches BEFORE the padded round: a group bracket pads a round
+# the team skips mid-run (IEM Beijing 2026: MOUZ's LB Round 2 is the mean
+# of its first two matches, not of all three), so each padding item is
+# matched to the number of matches it averages.
 PADDING_TEAM_POINTS = 6
 BOOSTER_VALUE = 5
 
@@ -808,16 +828,26 @@ def match_facts(event_id: int) -> Dict[str, Any]:
                 if e is None:
                     e = s["matches"][mk] = {
                         "match_url": m.get("match_url") or None, "match_id": _match_id(m.get("match_url")), "opponent": m.get("opponent"), "result": m.get("result"),
-                        "end_time": m.get("end_time"), "rating": 0, "team": 0, "_at": -1.0, "roles": {}, "boosters": {},
+                        "end_time": m.get("end_time"), "rating": 0, "team": 0, "_at": -1.0, "roles": {}, "boosters": {}, "_role_at": {}, "_boost_at": {},
                     }
                 if read_at >= e["_at"]:  # the latest read's figures: scoring catches up in the hour after a match
                     e["_at"], e["rating"], e["team"] = read_at, int(m.get("rating") or 0), int(m.get("team") or 0)
+                # role and booster points as of the latest read (HLTV revises them
+                # after a match; the highest ever seen would keep a stale figure)
                 if role:
-                    e["roles"][role] = max(e["roles"].get(role, -99), int(m.get("role") or 0))
+                    at, _v = e["_role_at"].get(role, (-1.0, None))
+                    if read_at >= at:
+                        e["_role_at"][role] = (read_at, int(m.get("role") or 0))
+                        e["roles"][role] = int(m.get("role") or 0) if read_at > at else max(int(e["roles"].get(role, -99)), int(m.get("role") or 0))
                 b = m.get("booster_name")
                 if b:
-                    e["boosters"][b] = max(e["boosters"].get(b, 0), int(m.get("booster") or 0))
+                    at = e["_boost_at"].get(b, -1.0)
+                    if read_at >= at:
+                        e["_boost_at"][b] = read_at
+                        e["boosters"][b] = int(m.get("booster") or 0) if read_at > at else max(int(e["boosters"].get(b, 0)), int(m.get("booster") or 0))
             s["padding"] = max(int(s["padding"]), len(p.get("padding") or []))
+            if p.get("padding") and read_at >= float(s.get("_pad_at", -1.0)):
+                s["_pad_at"], s["pad_items"] = read_at, (role, list(p["padding"]))
 
     out: Dict[int, Dict[str, Any]] = {}
     for pid, s in players.items():
@@ -825,15 +855,28 @@ def match_facts(event_id: int) -> Dict[str, Any]:
         n, pad = len(ms), int(s["padding"])
         ratings = [int(e["rating"]) for e in ms]
         wins = [int(e["team"]) for e in ms]
-        pad_rating = _trunc_mean(ratings) if pad else 0
+        # how many matches each padding round averages: the latest k whose
+        # truncated means give HLTV's own item (rating, and role when known)
+        pad_role_name, pad_items = s.get("pad_items") or (None, [])
+        ks: List[int] = []
+        for item in pad_items[:pad]:
+            fit = [
+                k for k in range(1, n + 1)
+                if _trunc_mean(ratings[:k]) == int(item.get("rating") or 0)
+                and (item.get("role") is None or not pad_role_name or _trunc_mean([int(v) for v in (e["roles"].get(pad_role_name) for e in ms[:k]) if v is not None]) == int(item.get("role") or 0))
+            ]
+            ks.append(fit[-1] if fit else n)
+        ks += [n] * (pad - len(ks))
+        pad_rating = _trunc_mean(ratings[:ks[0]]) if pad else 0
         roles = []
         for r in sorted({r for e in ms for r in e["roles"]}, key=lambda r: (ROLE_INDEX_BY_NAME.get(str(r).lower(), 99), r)):
             vals = [e["roles"].get(r) for e in ms]
             seen = [int(v) for v in vals if v is not None]
-            pad_role = _trunc_mean(seen) if (pad and seen) else 0
+            pads = [_trunc_mean([int(v) for v in vals[:k] if v is not None]) for k in ks]
+            pad_role = pads[0] if pads else 0
             roles.append({
                 "role_name": r, "role_index": ROLE_INDEX_BY_NAME.get(str(r).lower()), "per_match": vals, "padding": pad_role,
-                "total": sum(seen) + pad * pad_role, "complete": len(seen) == n, "seen": len(seen),
+                "total": sum(seen) + sum(pads), "complete": len(seen) == n, "seen": len(seen),
             })
         complete = [r for r in roles if r["complete"]]
         best_role = max(complete, key=lambda r: (r["total"], -(r["role_index"] if r["role_index"] is not None else 99))) if complete else None
@@ -841,7 +884,7 @@ def match_facts(event_id: int) -> Dict[str, Any]:
         triggered = {b: {i for i, e in enumerate(ms) if int(e["boosters"].get(b) or 0) > 0} for b in booster_names}
         plan = _max_matching({b: v for b, v in triggered.items() if v})
         boosters = [{"booster_name": b, "per_match": [e["boosters"].get(b) for e in ms], "triggers": len(triggered[b])} for b in booster_names]
-        rating_total = sum(ratings) + pad * pad_rating
+        rating_total = sum(ratings) + sum(_trunc_mean(ratings[:k]) for k in ks)
         win_total = sum(wins) + pad * PADDING_TEAM_POINTS
         booster_total = BOOSTER_VALUE * len(plan)
         matches = []
@@ -899,11 +942,14 @@ def best_team(event_id: int, budget: int = BUDGET, max_per_team: int = MAX_PER_T
         hit = _BEST_CACHE.get(eid)
         if hit and hit.get("_key") == key:
             return hit
+    from backend.data.event_db import get_event_price_map
+
+    event_prices = get_event_price_map(eid)  # this event's prices, not the last import's
     rows: List[Dict[str, Any]] = []
     role_names: List[str] = []
     for pid, f in (facts.get("players") or {}).items():
         p = get_player(int(pid)) or {}
-        price = p.get("price")
+        price = event_prices.get(int(pid))
         if not price:
             continue
         roles = {r["role_name"]: r for r in f.get("roles") or [] if r.get("complete")}
@@ -975,7 +1021,6 @@ def best_team(event_id: int, budget: int = BUDGET, max_per_team: int = MAX_PER_T
             _BEST_CACHE[eid] = empty
         return empty
 
-    from backend.data.event_db import get_event_detail
     from backend.services import live_state
 
     entry = live_state.live_event(eid, fetch_if_missing=False) or {}

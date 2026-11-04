@@ -4,7 +4,7 @@ run-history log. Kept in the main SQLite DB alongside the rest of the app state.
 
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from backend.data.db import connect as _connect
 

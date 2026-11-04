@@ -1,18 +1,8 @@
 # player_db.py
 import json
-import time
 from typing import Any, Dict, List, Optional
 
 from backend.data.db import DB_PATH, connect  # noqa: F401  (DB_PATH re-exported for routes)
-
-# HLTV Top-X tier columns (rating / maps vs top-N opponents). Nothing prices
-# through them since 2026-10-21 (the learned rating model replaced the Top-X
-# curve and its nightly scrape); the columns stay for the rows that hold them.
-_TOPX_TIERS = (5, 10, 20, 30, 50)
-_TOPX_TIER_COLS = tuple(
-    col for t in _TOPX_TIERS for col in (f"rating_top{t}", f"maps_top{t}")
-)
-
 
 def ensure_schema() -> None:
     """

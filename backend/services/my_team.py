@@ -22,7 +22,6 @@ from __future__ import annotations
 import html as htmllib
 import json
 import logging
-import os
 import re
 import threading
 import time
@@ -649,7 +648,7 @@ def _win_probability(results: Dict[str, Any], a: int, b: int, bo: int) -> Option
 def _predict_match(player_row: Dict[str, Any], own_tid: int, opp_tid: int, bo: int, ranks: Dict[int, int], results: Dict[str, Any], role_index: Optional[int], booster_index: Optional[int]) -> Dict[str, Any]:
     from backend.services import rating_model
     from backend.services.role_assignment import extract_role_scores_for_player
-    from backend.services.swiss_booster_assignment import BOOSTER_POINT_VALUE
+    from backend.services.swiss_booster_assignment import BOOSTER_POINT_VALUE, match_rate
 
     pid = int(player_row["player_id"])
     own_rank, opp_rank = ranks.get(own_tid, 999), ranks.get(opp_tid, 999)
@@ -670,7 +669,7 @@ def _predict_match(player_row: Dict[str, Any], own_tid: int, opp_tid: int, bo: i
     if booster_index is not None:
         try:
             rates = json.loads(player_row.get("boosters_json") or "{}")
-            booster_points = BOOSTER_POINT_VALUE * float(rates.get(str(int(booster_index)), 0.0))
+            booster_points = BOOSTER_POINT_VALUE * match_rate(float(rates.get(str(int(booster_index)), 0.0)), int(bo))
         except Exception:  # noqa: BLE001
             booster_points = 0.0
     return {
@@ -678,6 +677,61 @@ def _predict_match(player_row: Dict[str, Any], own_tid: int, opp_tid: int, bo: i
         "win_points": round(win_points, 1), "role_points": round(role_points, 1), "booster_points": round(booster_points, 1),
         "total": round(rating_points + win_points + role_points + booster_points, 1),
     }
+
+
+def _bracket_round_cards(fmt: str, by_player: Dict[int, List[Dict[str, Any]]], n_rounds: int) -> Optional[Dict[int, Dict[int, Dict[str, Any]]]]:
+    """Group brackets: each player's card per fantasy round (index), from his
+    played matches walked through the bracket (a round is the stage's round,
+    not his match count). A round his team skips while still in, or after
+    qualifying, gets HLTV's padding card (the whole-number mean of his rating
+    and role points so far, +6 team, no booster); a round after his team is
+    out gets the Eliminated card (-3 team); his coming match sits in its
+    stage's round. None when the format has no bracket table or HLTV shows
+    a different number of rounds."""
+    from backend.services.booster_advisor import BRACKET_NEXT, BRACKET_ROUND, QUALIFY_ON_LOSS
+
+    table, round_of = BRACKET_NEXT.get(fmt), BRACKET_ROUND.get(fmt)
+    if not table or not round_of or n_rounds != max(round_of.values()) + 1:
+        return None
+    out: Dict[int, Dict[int, Dict[str, Any]]] = {}
+    for pid, entries in by_player.items():
+        cards: Dict[int, Dict[str, Any]] = {}
+        at: Optional[str] = next(iter(table))
+        out_after: Optional[int] = None  # the round he was knocked out in
+        done_after: Optional[int] = None  # the round his run ended in
+        for t in [t for t in entries if t.get("result") in ("WON", "LOST")]:
+            if at is None:
+                break
+            rd = round_of[at]
+            cards[rd] = t
+            win_next, loss_next = table[at]
+            won = t.get("result") == "WON"
+            nxt = win_next if won else loss_next
+            if nxt is None:
+                done_after = rd
+                if not won and (fmt, at) not in QUALIFY_ON_LOSS:
+                    out_after = rd
+            at = nxt
+        played = sorted(cards.items())
+        coming = next((t for t in entries if t.get("result") == "NEXT"), None)
+        if at is not None and coming is not None:
+            cards[round_of[at]] = coming
+        current = round_of[at] if at is not None else None
+        name = (entries[0].get("name") if entries else "") or ""
+        for i in range(n_rounds):
+            if i in cards:
+                continue
+            if out_after is not None and i > out_after:
+                cards[i] = {"player_id": pid, "name": name, "result": "ELIMINATED", "opponent": "", "points": -3, "team_points": -3, "rating_points": None, "role_points": None, "booster_points": None}
+            elif i < (current if current is not None else (done_after if done_after is not None else 0)) or (done_after is not None and i > done_after):
+                before = [t for rd, t in played if rd < i]
+                if not before:
+                    continue
+                rating = int(sum(int(t.get("rating_points") or 0) for t in before) / len(before))
+                role = int(sum(int(t.get("role_points") or 0) for t in before) / len(before))
+                cards[i] = {"player_id": pid, "name": name, "result": "PADDING", "opponent": "", "points": rating + 6 + role, "rating_points": rating, "team_points": 6, "role_points": role, "booster_points": 0}
+        out[pid] = cards
+    return out
 
 
 def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
@@ -732,8 +786,13 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
     for t in page["tracker"]:
         if t.get("player_id") is not None:
             by_player.setdefault(int(t["player_id"]), []).append(t)
+    bracket_cards = _bracket_round_cards(str(results.get("group_format") or ""), by_player, len(rounds))
     for i, r in enumerate(rounds):
         if r.get("players"):
+            continue
+        if bracket_cards is not None:
+            cards = [bracket_cards[pid_key][i] for pid_key in bracket_cards if bracket_cards[pid_key].get(i) and (bracket_cards[pid_key][i].get("result") != "NEXT" or r.get("status") != "ENDED")]
+            r["players"] = sorted(cards, key=lambda t: lineup_order.get(int(t.get("player_id") or -1), 99))
             continue
         cards = []
         for pid_key, entries in by_player.items():
@@ -785,17 +844,21 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
     # booster — the one assigned on HLTV for the coming match, the run's
     # expectation for a played one (the page does not say which was used).
     from backend.services.role_assignment import extract_role_scores_for_player
-    from backend.services.swiss_booster_assignment import BOOSTER_POINT_VALUE
+    from backend.services.swiss_booster_assignment import BOOSTER_POINT_VALUE, match_rate
 
     stage_meta = {str(st.get("key")): st for st in (stage_stats.get("stages") or [])}
     rows_by_pid: Dict[int, Dict[str, Any]] = {}
 
+    snapshot_rows = ((results.get("input_snapshot") or {}).get("players")) or {}
+
     def prow(pid: int) -> Dict[str, Any]:
+        # the row the event was valued with (its roles, boosters and price),
+        # as the Top 5 use it; the players table only holds the last import
         if int(pid) not in rows_by_pid:
-            rows_by_pid[int(pid)] = get_player(int(pid)) or {}
+            rows_by_pid[int(pid)] = snapshot_rows.get(str(int(pid))) or get_player(int(pid)) or {}
         return rows_by_pid[int(pid)]
 
-    def match_ev(pid: int, tid: Optional[int], stage_key: Optional[str], opp: Optional[int], role_index: Optional[int], booster: Any) -> Optional[Dict[str, float]]:
+    def match_ev(pid: int, tid: Optional[int], stage_key: Optional[str], opp: Optional[int], role_index: Optional[int], booster: Any, bo: int = 3) -> Optional[Dict[str, float]]:
         st = (((stage_players.get(str(pid)) or {}).get("stages") or {}).get(stage_key)) if stage_key else None
         if not st or tid is None:
             return None
@@ -821,7 +884,8 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
             boost = 0.0
         else:
             try:
-                boost = BOOSTER_POINT_VALUE * float(json.loads(prow(pid).get("boosters_json") or "{}").get(str(int(booster)), 0.0))
+                rate = float(json.loads(prow(pid).get("boosters_json") or "{}").get(str(int(booster)), 0.0))
+                boost = BOOSTER_POINT_VALUE * match_rate(rate, int(bo))  # HLTV's rate is per best-of-three
             except Exception:  # noqa: BLE001
                 boost = 0.0
         return {"rating": rating, "win": win, "role": role, "booster": boost, "total": rating + win + role + boost, "p_win": p_win}
@@ -854,7 +918,7 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
 
     for pl in page["players"]:
         pid = pl.get("player_id")
-        row = get_player(int(pid)) if pid else None
+        row = prow(int(pid)) if pid else None
         tid = team_of_player.get(int(pid)) if pid else None
         pl["team_id"] = tid
         pl["team"] = names.get(tid) if tid else None
@@ -895,7 +959,7 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
             stage_next = plan[played] if len(plan) > played else None
             if stage_next is None:
                 stage_next = stage_plan(int(pid), [t.get("opponent_team_id") for t in played_items] + [opp], [str(t.get("result")) for t in played_items])[-1]
-            m_ev = match_ev(int(pid), tid, stage_next, opp, pl.get("role_index"), pl.get("booster_index"))
+            m_ev = match_ev(int(pid), tid, stage_next, opp, pl.get("role_index"), pl.get("booster_index"), bo)
             if m_ev is not None:
                 predicted = {
                     "rating": round(1.0 + m_ev["rating"] / 50.0, 3), "rating_points": round(m_ev["rating"], 1),
@@ -935,6 +999,9 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
         for c in r.get("players") or []:
             c_pid = int(c["player_id"]) if c.get("player_id") is not None else None
             c_tid = team_of_player.get(c_pid) if c_pid is not None else None
+            if c.get("result") in ("PADDING", "ELIMINATED"):
+                c["expected"] = c["expected_parts"] = c["difference"] = c["difference_parts"] = None
+                continue
             lp = lineup_by_pid.get(c_pid) or {}
             k = card_no.get(c_pid, 0)
             card_no[c_pid] = k + 1

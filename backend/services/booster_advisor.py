@@ -50,7 +50,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from backend.services.swiss_booster_assignment import BOOSTER_NAMES, BOOSTER_POINT_VALUE, _max_weight_assignment, parse_booster_rates
+from backend.services.swiss_booster_assignment import BOOSTER_NAMES, BOOSTER_POINT_VALUE, _max_weight_assignment, match_rate, parse_booster_rates
 
 logger = logging.getLogger(__name__)
 
@@ -59,18 +59,6 @@ HLTV_ID_BY_INDEX = [2, 3, 5, 8, 9, 13, 16, 18, 19, 20, 21, 22, 23, 26, 27, 28, 2
 FEED_MAX_AGE = 120.0
 RATES_MAX_AGE = 600.0  # HLTV's trigger rates move with maps played, not minutes
 AUTO_TICK_SECONDS = 300.0
-EXPECTED_MAPS = {1: 1.0, 2: 2.0, 3: 2.4, 5: 3.9}
-
-
-def match_rate(rate_bo3: float, bo: int) -> float:
-    """The chance a booster triggers in a series of this length, from
-    HLTV's best-of-three rate."""
-    maps = EXPECTED_MAPS.get(int(bo or 3), 2.4)
-    r = min(1.0, max(0.0, float(rate_bo3)))
-    if r >= 1.0:
-        return 1.0
-    return 1.0 - (1.0 - r) ** (maps / EXPECTED_MAPS[3])
-
 
 def swiss_condition(wins: int, losses: int, rounds_ahead: int, target: int = 3) -> str:
     """On what results a Swiss team plays the match `rounds_ahead` matches
@@ -295,6 +283,57 @@ def _swiss_odds(event_id: int, results: Dict[str, Any]) -> Optional[Dict[str, An
     return {"order": order, "idx": {t: i for i, t in enumerate(order)}, "wp": wp, "records": records, "pending_opp": pending_opp, "name_to_tid": names}
 
 
+# Group brackets: per stage (next stage on a win, next stage on a loss);
+# None = the team's group run ends there (qualified or out)
+BRACKET_NEXT: Dict[str, Dict[str, tuple]] = {
+    "gsl4": {"opening": ("winners", "elimination"), "winners": (None, "decider"), "elimination": ("decider", None), "decider": (None, None)},
+    "de8": {"ub_r1": ("ub_sf", "lb_r1"), "ub_sf": (None, "lb_sf"), "lb_r1": ("lb_sf", None), "lb_sf": (None, None)},
+    "de8_top3": {
+        "ub_r1": ("ub_sf", "lb_r1"), "ub_sf": ("ub_final", "lb_sf"), "ub_final": (None, None),
+        "lb_r1": ("lb_sf", None), "lb_sf": ("lb_final", None), "lb_final": (None, None),
+    },
+}
+
+
+# The fantasy round (HLTV's round rows, in order) each group stage is played in
+BRACKET_ROUND: Dict[str, Dict[str, int]] = {
+    "gsl4": {"opening": 0, "winners": 1, "elimination": 1, "decider": 2},
+    "de8": {"ub_r1": 0, "ub_sf": 1, "lb_r1": 1, "lb_sf": 2},
+    "de8_top3": {"ub_r1": 0, "ub_sf": 1, "lb_r1": 1, "lb_sf": 2, "ub_final": 3, "lb_final": 3},
+}
+# stages whose loser still qualifies
+QUALIFY_ON_LOSS = {("de8_top3", "ub_final")}
+
+
+def _bracket_paths(event_id: int, fmt: str) -> Optional[Dict[int, Optional[str]]]:
+    """Each team's current group stage (None = its group run is over),
+    walked through BRACKET_NEXT with its finished group matches in order
+    from the live state; None when the format or the live state is missing."""
+    from backend.services import live_state
+
+    table = BRACKET_NEXT.get(fmt)
+    if not table:
+        return None
+    try:
+        entry = live_state.live_event(int(event_id), fetch_if_missing=False) or {}
+    except Exception:  # noqa: BLE001
+        logger.warning("Live state unavailable for event %s", event_id, exc_info=True)
+        return None
+    if not entry.get("teams"):
+        return None
+    first = next(iter(table))
+    at: Dict[int, Optional[str]] = {int(t): first for t in entry["teams"]}
+    done = [m for m in entry.get("matches") or [] if m.get("winner") is not None and str(m.get("stage") or "").lower().startswith("group")]
+    for m in sorted(done, key=lambda m: (str(m.get("date") or ""), int(m.get("match_id") or 0))):
+        for side in ("a", "b"):
+            t = m.get(side)
+            if t is None or at.get(int(t)) is None:
+                continue
+            win_next, loss_next = table[at[int(t)]]
+            at[int(t)] = win_next if int(m["winner"]) == int(t) else loss_next
+    return at
+
+
 def _p_win(odds: Dict[str, Any], a: int, b: int, bo: int) -> Optional[float]:
     """P(a beats b) in a series of this length from the bake's matrices."""
     m = odds["wp"].get(f"bo{int(bo)}")
@@ -404,6 +443,9 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
     bo3_mode = str(swiss.get("bo3_mode") or "all")
     is_swiss = results.get("group_format") == "swiss"
     odds = _swiss_odds(eid, results) if is_swiss else None
+    group_fmt = str(results.get("group_format") or "")
+    paths = None if is_swiss else _bracket_paths(eid, group_fmt)
+    leader_odds = results.get("leader_odds") or {}
 
     def series_len(wins: int, losses: int) -> int:
         """The coming match's series length from the Swiss record (brackets: Bo3)."""
@@ -462,6 +504,38 @@ def suggestions(event_id: int, user_key: str, max_age: float = FEED_MAX_AGE) -> 
         if assigned and assigned.get("index") is not None and match and match["assignable"]:
             pool.add(int(assigned["index"]))
         if not rates:
+            continue
+        if paths is not None and tid is not None and tid in paths:
+            # group brackets: the stage comes from the team's path, not its match count
+            here = paths[tid]
+            if match and match["assignable"]:
+                columns.append({"player_id": pid, "kind": "coming", "slot": 0, "stage": here, "branches": [(1.0, int(match["bo"]))]})
+            if here is None:
+                continue
+            p = float((leader_odds.get(str(tid)) or {}).get("win") or 0.5)
+            if match:
+                win_next, loss_next = BRACKET_NEXT[group_fmt][here]
+                reach = {}
+                for st, pr in ((win_next, p), (loss_next, 1.0 - p)):
+                    if st is not None:
+                        reach[st] = reach.get(st, 0.0) + pr
+                slot = 1
+            else:
+                entry["next_round"] = {"stage": here, "bo": 3}
+                reach = {here: 1.0}
+                slot = 1
+            while reach:
+                prob = sum(reach.values())
+                if prob > 0.01:
+                    columns.append({"player_id": pid, "kind": "next" if (not match and slot == 1) else "later", "slot": slot, "stage": max(reach, key=reach.get), "branches": [(min(1.0, prob), 3)]})
+                nxt: Dict[str, float] = {}
+                for st, pr in reach.items():
+                    win_next, loss_next = BRACKET_NEXT[group_fmt][st]
+                    for st2, pr2 in ((win_next, pr * p), (loss_next, pr * (1.0 - p))):
+                        if st2 is not None:
+                            nxt[st2] = nxt.get(st2, 0.0) + pr2
+                reach = nxt
+                slot += 1
             continue
         here = stage_order[played] if played < len(stage_order) else None
         if here is None:

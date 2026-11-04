@@ -13,19 +13,15 @@ from backend.services.hltv_rankings import (
     get_hltv_team_lineup,
     HLTVRankingError,
     RankingPageParseError,
-    TeamNotRankedError,
     get_hltv_team_map_stats,
     get_latest_hltv_rankings,
     get_latest_vrs_rankings,
-    get_team_hltv_rating_and_points_on_date,
-    get_team_vrs_rank_and_points_on_date,
 )
 from backend.data.team_db import (
     update_team_roster,
     connect as connect_team_db,
     get_all_teams,
     get_team_by_id,
-    get_team_by_name,
     add_or_update_team,
     delete_team,
     update_team_map_stats,
@@ -438,31 +434,6 @@ def list_teams():
     return _with_aliases(get_all_teams())
 
 
-@router.get("/hltv-ranking/by-date")
-def fetch_hltv_ranking_by_date(team_name: str, on_date: str):
-    """
-    Fetch HLTV ranking position ("hltv_rating") and points for a team on a specific date.
-    `on_date` must be YYYY-MM-DD.
-    """
-    if not team_name or not team_name.strip():
-        raise HTTPException(status_code=400, detail="team_name is required")
-
-    try:
-        parsed_date = date.fromisoformat(on_date)
-    except Exception:
-        raise HTTPException(status_code=400, detail="on_date must be in YYYY-MM-DD format")
-
-    try:
-        return get_team_hltv_rating_and_points_on_date(team_name, parsed_date)
-    except TeamNotRankedError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    except RankingPageParseError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-    except HLTVRankingError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-
-
-@router.post("/refresh-hltv-today")
 def refresh_hltv_for_all_teams_today():
     """
     Refresh all teams' HLTV rank and HLTV points for today's date.
@@ -595,27 +566,6 @@ def refresh_hltv_for_all_teams_today():
     }
 
 
-@router.get("/vrs-ranking/by-date")
-def fetch_vrs_ranking_by_date(team_name: str, on_date: str):
-    if not team_name or not team_name.strip():
-        raise HTTPException(status_code=400, detail="team_name is required")
-
-    try:
-        parsed_date = date.fromisoformat(on_date)
-    except Exception:
-        raise HTTPException(status_code=400, detail="on_date must be in YYYY-MM-DD format")
-
-    try:
-        return get_team_vrs_rank_and_points_on_date(team_name, parsed_date)
-    except TeamNotRankedError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    except RankingPageParseError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-    except HLTVRankingError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-
-
-@router.post("/refresh-vrs-today")
 def refresh_vrs_for_all_teams_today():
     today = date.today()
     teams = get_all_teams()
@@ -729,7 +679,6 @@ def refresh_vrs_for_all_teams_today():
     }
 
 
-@router.post("/refresh-rankings-today")
 def refresh_all_rankings_for_all_teams_today():
     """
     Run HLTV + VRS refresh in one call.
@@ -1004,70 +953,6 @@ def _get_latest_rankings_job() -> dict | None:
     return _get_rankings_job_for_response(str(row["job_id"])) if row else None
 
 
-@router.post("/rankings-refresh/start")
-def start_rankings_refresh_job():
-    latest = _get_latest_rankings_job()
-    if latest and latest.get("status") in {"queued", "running", "pausing", "canceling"}:
-        return {"job_id": latest["job_id"], "status": latest.get("status"), "reused": True}
-    now = time.time()
-    job_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    job = {
-        "job_id": job_id,
-        "status": "queued",
-        "error": "",
-        "last_error": "",
-        "progress": 0.0,
-        "processed_phases": 0,
-        "total_phases": len(_RANKINGS_PHASES),
-        "pause_requested": False,
-        "cancel_requested": False,
-        "results": [],
-        "created_at": now,
-        "updated_at": now,
-        "started_at": None,
-        "finished_at": None,
-    }
-    _publish_rankings_job(job)
-    _start_rankings_worker(job_id)
-    return {"job_id": job_id, "status": "queued"}
-
-
-@router.get("/rankings-refresh/latest")
-def get_latest_rankings_refresh_job():
-    job = _get_latest_rankings_job()
-    if not job:
-        return {"exists": False}
-    return {"exists": True, **_rankings_job_response(job)}
-
-
-@router.get("/rankings-refresh/job/{job_id}")
-def get_rankings_refresh_job(job_id: str):
-    return _rankings_job_response(_get_rankings_job_for_response(job_id))
-
-
-@router.post("/rankings-refresh/job/{job_id}/pause")
-def pause_rankings_refresh_job(job_id: str):
-    job = _get_rankings_job_for_response(job_id)
-    if job.get("status") in {"completed", "canceled", "failed", "paused"}:
-        return _rankings_job_response(job)
-    job["pause_requested"] = True
-    job["status"] = "pausing" if _rankings_worker_is_active(job_id) else "paused"
-    _publish_rankings_job(job)
-    return _rankings_job_response(job)
-
-
-@router.post("/rankings-refresh/job/{job_id}/cancel")
-def cancel_rankings_refresh_job(job_id: str):
-    job = _get_rankings_job_for_response(job_id)
-    if job.get("status") in {"completed", "canceled", "failed"}:
-        return _rankings_job_response(job)
-    job["cancel_requested"] = True
-    job["status"] = "canceling" if _rankings_worker_is_active(job_id) else "canceled"
-    _publish_rankings_job(job)
-    return _rankings_job_response(job)
-
-
-@router.post("/rankings-refresh/job/{job_id}/resume")
 def resume_rankings_refresh_job(job_id: str):
     job = _get_rankings_job_for_response(job_id)
     if job.get("status") in {"completed", "canceled"}:
@@ -1086,7 +971,6 @@ def resume_rankings_refresh_job(job_id: str):
     return _rankings_job_response(_get_rankings_job_for_response(job_id))
 
 
-@router.post("/map-stats-import/start")
 def start_map_stats_import_job(payload: dict | None = None):
     latest = _get_latest_map_stats_job(include_completed=False)
     if latest and latest.get("status") in {"queued", "running", "pausing", "canceling"}:
@@ -1120,20 +1004,6 @@ def start_map_stats_import_job(payload: dict | None = None):
     return {"job_id": job_id, "status": "queued"}
 
 
-@router.get("/map-stats-import/latest")
-def get_latest_map_stats_import_job():
-    job = _get_latest_map_stats_job()
-    if not job:
-        return {"exists": False}
-    return {"exists": True, **_map_stats_job_response(job)}
-
-
-@router.get("/map-stats-import/job/{job_id}")
-def get_map_stats_import_job(job_id: str):
-    return _map_stats_job_response(_get_map_stats_job_for_response(job_id))
-
-
-@router.post("/map-stats-import/job/{job_id}/pause")
 def pause_map_stats_import_job(job_id: str):
     job = _get_map_stats_job_for_response(job_id)
     if job.get("status") in {"completed", "failed", "canceled"}:
@@ -1146,23 +1016,6 @@ def pause_map_stats_import_job(job_id: str):
     return _map_stats_job_response(job)
 
 
-@router.post("/map-stats-import/job/{job_id}/cancel")
-def cancel_map_stats_import_job(job_id: str):
-    job = _get_map_stats_job_for_response(job_id)
-    if job.get("status") in {"completed", "failed", "canceled"}:
-        return _map_stats_job_response(job)
-    job["cancel_requested"] = True
-    job["pause_requested"] = False
-    job["last_error"] = "Cancel requested"
-    job["status"] = "canceling" if job.get("status") == "running" or _map_stats_worker_is_active(job_id) else "canceled"
-    if job["status"] == "canceled":
-        job["cancel_requested"] = False
-        job["finished_at"] = time.time()
-    _publish_map_stats_job(job)
-    return _map_stats_job_response(job)
-
-
-@router.post("/map-stats-import/job/{job_id}/resume")
 def resume_map_stats_import_job(job_id: str):
     job = _get_map_stats_job_for_response(job_id)
     if job.get("status") in {"completed", "canceled"}:
@@ -1398,14 +1251,6 @@ def refresh_team_map_stats(team_id: int, payload: dict | None = None):
         "source_url": stats.get("url"),
         "maps": stats.get("maps") or [],
     }
-
-
-@router.get("/by-name/{name}")
-def fetch_team_by_name(name: str):
-    team = get_team_by_name(name)
-    if not team:
-        raise HTTPException(status_code=404, detail="Team not found")
-    return team
 
 
 @router.post("/")
@@ -1741,7 +1586,6 @@ def get_roster_coverage(top_n: int = 0):
     return {"status": "ok", **_roster_coverage(n)}
 
 
-@router.post("/rosters/start")
 def start_roster_import_job(payload: dict | None = None):
     body = payload or {}
     top_n = max(1, min(500, int(body.get("top_n") or 0))) if int(body.get("top_n") or 0) > 0 else _configured_roster_top_n()
@@ -1761,20 +1605,6 @@ def start_roster_import_job(payload: dict | None = None):
     return {"job_id": job_id, "status": "queued"}
 
 
-@router.get("/rosters/latest")
-def get_latest_roster_import_job():
-    job = _get_latest_roster_job()
-    if not job:
-        return {"exists": False}
-    return {"exists": True, **_roster_job_response(job)}
-
-
-@router.get("/rosters/job/{job_id}")
-def get_roster_import_job(job_id: str):
-    return _roster_job_response(_get_roster_job_for_response(job_id))
-
-
-@router.post("/rosters/job/{job_id}/pause")
 def pause_roster_import_job(job_id: str):
     job = _get_roster_job_for_response(job_id)
     if job.get("status") in {"completed", "canceled", "failed", "paused"}:
@@ -1785,23 +1615,6 @@ def pause_roster_import_job(job_id: str):
     return _roster_job_response(job)
 
 
-@router.post("/rosters/job/{job_id}/cancel")
-def cancel_roster_import_job(job_id: str):
-    job = _get_roster_job_for_response(job_id)
-    if job.get("status") in {"completed", "canceled", "failed"}:
-        return _roster_job_response(job)
-    job["cancel_requested"] = True
-    job["pause_requested"] = False
-    job["status"] = "canceling" if _roster_worker_is_active(job_id) else "canceled"
-    if job["status"] == "canceled":
-        job["cancel_requested"] = False
-        job["last_error"] = "Canceled"
-        job["finished_at"] = time.time()
-    _publish_roster_job(job)
-    return _roster_job_response(job)
-
-
-@router.post("/rosters/job/{job_id}/resume")
 def resume_roster_import_job(job_id: str):
     job = _get_roster_job_for_response(job_id)
     if job.get("status") in {"completed", "canceled"}:

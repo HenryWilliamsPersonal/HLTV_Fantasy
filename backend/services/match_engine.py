@@ -12,6 +12,7 @@ import random
 
 from backend.data.player_db import get_player
 from backend.services import rating_model
+from backend.services.swiss_booster_assignment import BOOSTER_POINT_VALUE, match_rate
 from backend.swiss_stage.fantasy_scoring import (
     compute_booster_points,
     compute_rating_points,
@@ -98,6 +99,14 @@ def simulate_match_outcome(
     return MatchResult(team_b.team_id, team_a.team_id, prob_a_wins)
 
 
+def _series_of(match_type: str) -> int:
+    """3 for "bo3", 5 for "BO5", ...; a best-of-three when unreadable."""
+    try:
+        return int(str(match_type).lower().lstrip("bo") or 3)
+    except ValueError:
+        return 3
+
+
 def apply_fantasy_points_for_team(
     team: TeamState,
     opponent_team_id: int,
@@ -142,7 +151,9 @@ def apply_fantasy_points_for_team(
 
         role_pts = compute_role_points(player)
         win_pts = compute_win_points(win_probability, did_win)
-        booster_pts = compute_booster_points(player, match_number)
+        # HLTV's trigger rate is per best-of-three: scale it to this series
+        series = _series_of(match_type)
+        booster_pts = BOOSTER_POINT_VALUE * match_rate(compute_booster_points(player, match_number) / BOOSTER_POINT_VALUE, series)
         booster_idx = match_number - 1
         booster_id = None
         if 0 <= booster_idx < len(player.booster_ids):
@@ -155,7 +166,7 @@ def apply_fantasy_points_for_team(
                 "booster_id": int(option_id),
                 "booster_name": BOOSTER_NAMES.get(int(option_id), f"Booster {int(option_id)}"),
                 "booster_trigger_rate": float(option_rate),
-                "booster_points": 5.0 * float(option_rate),
+                "booster_points": BOOSTER_POINT_VALUE * match_rate(float(option_rate), series),
             }
             for option_id, option_rate in sorted(
                 (player.booster_rates or {}).items(),

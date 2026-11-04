@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 TICK_SECONDS = 15.0
+FIELD_START_EVERY = 600.0  # how often to look for a live event whose field was never read
 _stop = threading.Event()
 _thread: Optional[threading.Thread] = None
 
@@ -20,6 +22,7 @@ _thread: Optional[threading.Thread] = None
 def _loop() -> None:
     from backend.services import live_state
 
+    field_checked = 0.0
     while not _stop.wait(TICK_SECONDS):
         try:
             entries = live_state.live_events()
@@ -30,6 +33,9 @@ def _loop() -> None:
             from backend.services import fantasy_field
 
             fantasy_field.after_matches(entries)  # re-read the teams a finished match needs
+            if time.time() - field_checked >= FIELD_START_EVERY:
+                field_checked = time.time()
+                fantasy_field.auto_reads()  # an event gone live since the nightly batch
         except Exception:  # noqa: BLE001
             logger.exception("Field match refresh tick failed")
 

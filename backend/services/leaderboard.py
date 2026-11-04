@@ -25,7 +25,7 @@ import logging
 import math
 import threading
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 from backend.data.db import connect
 
@@ -174,7 +174,7 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
     """{players: [{player_id, name, team_id, team, hltv_team_id, price, matches,
     rating_points, win_points, total}] best first, matches_scored,
     matches_pending, read_at}."""
-    from backend.data.event_db import get_event_detail
+    from backend.data.event_db import get_event_detail, get_event_price_map
     from backend.data.player_db import get_player
     from backend.services import event_rosters, live_state
 
@@ -192,13 +192,14 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
     for t in detail.get("teams") or []:
         for pid in t.get("player_ids") or []:
             price_of[int(pid)] = (t.get("prices") or {}).get(str(pid)) if isinstance(t.get("prices"), dict) else None
+    event_prices = get_event_price_map(eid)  # the players table's price is the last import's
     rows: Dict[int, Dict[str, Any]] = {}
     for tid, pids in (event_rosters.rosters(eid) or {}).items():
         for pid in pids:
             p = get_player(int(pid)) or {}
             rows[int(pid)] = {
                 "player_id": int(pid), "name": str(p.get("name") or pid), "team_id": int(tid), "team": team_names.get(int(tid), ""),
-                "hltv_team_id": (teams.get(int(tid)) or {}).get("hltv_team_id"), "price": p.get("price") if p.get("price") is not None else price_of.get(int(pid)),
+                "hltv_team_id": (teams.get(int(tid)) or {}).get("hltv_team_id"), "price": event_prices.get(int(pid), price_of.get(int(pid))),
                 "matches": 0, "wins": 0, "rating_points": 0, "win_points": 0, "total": 0, "rating_sum": 0.0,
                 "played": [],
             }

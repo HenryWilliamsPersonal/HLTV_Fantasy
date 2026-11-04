@@ -14,10 +14,6 @@ class HLTVRankingError(RuntimeError):
     """Base error for HLTV team ranking lookups."""
 
 
-class TeamNotRankedError(HLTVRankingError):
-    """Raised when a team is not present on the selected ranking date."""
-
-
 class RankingPageParseError(HLTVRankingError):
     """Raised when HLTV ranking page format cannot be parsed."""
 
@@ -66,11 +62,6 @@ _DATE_HEADER_RE = re.compile(
 )
 _MONTH_DAY_YEAR_RE = re.compile(
     r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:,)?\s+\d{4}\b",
-    re.IGNORECASE,
-)
-_MAP_LINE_RE = re.compile(
-    r"\b(?P<map>Mirage|Inferno|Nuke|Ancient|Anubis|Dust2|Train|Overpass|Vertigo|Cache|Cobblestone)\b"
-    r"[^0-9]{0,32}(?P<score1>\d{1,2})\s*[-:]\s*(?P<score2>\d{1,2})",
     re.IGNORECASE,
 )
 _HLTV_MAP_NAMES = {
@@ -1250,41 +1241,3 @@ def get_latest_vrs_rankings() -> Dict[str, object]:
         "rankings_by_team": rankings,
     }
 
-
-def get_team_hltv_rating_and_points_on_date(team_name: str, on_date: date) -> Dict[str, int | str]:
-    normalized_team = team_name.strip().lower()
-    if not normalized_team:
-        raise ValueError("team_name is required")
-
-    rankings, url = _get_rankings_map_for_date(on_date)
-    data = rankings.get(normalized_team)
-    if not data:
-        raise TeamNotRankedError(f"Team '{team_name}' was not found in HLTV ranking for {on_date.isoformat()}.")
-
-    return {
-        "team_name": str(data["team_name"]),
-        "date": on_date.isoformat(),
-        "url": url,
-        "hltv_rating": int(data["hltv_rating"]),
-        "points": int(data["points"]),
-        "hltv_team_id": int(data["hltv_team_id"]) if data.get("hltv_team_id") else None,
-    }
-
-
-def get_team_vrs_rank_and_points_on_date(team_name: str, on_date: date) -> Dict[str, int | str]:
-    normalized_team = team_name.strip().lower()
-    if not normalized_team:
-        raise ValueError("team_name is required")
-
-    rankings, url = _get_vrs_rankings_map_for_date(on_date)
-    data = rankings.get(normalized_team)
-    if not data:
-        raise TeamNotRankedError(f"Team '{team_name}' was not found in VRS ranking for {on_date.isoformat()}.")
-
-    return {
-        "team_name": str(data["team_name"]),
-        "date": on_date.isoformat(),
-        "url": url,
-        "vrs_rank": int(data["vrs_rank"]),
-        "points": int(data["points"]),
-    }

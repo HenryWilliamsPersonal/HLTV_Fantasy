@@ -59,6 +59,17 @@ def get_live_best_team(event_id: int) -> dict:
     return out
 
 
+@router.get("/events/{event_id}/field")
+def get_live_field(event_id: int) -> dict:
+    """Where the read of the event's user teams stands: teams stored of the
+    league, and the run going (the full read or a match's re-read)."""
+    from backend.services import fantasy_field
+
+    st = fantasy_field.status(int(event_id))
+    keep = ("teams_stored", "league_size", "stored_at", "running", "kind", "match_id", "found", "scanned", "teams_read", "teams_target", "started_at")
+    return {k: st.get(k) for k in keep}
+
+
 @router.get("/events/{event_id}/teams")
 def get_live_teams(event_id: int, request: Request, q: str = "", sort: str = "expected_final", desc: int = 1, page: int = 0, size: int = 50) -> dict:
     """Every user team of the event's fantasy league: points so far, the

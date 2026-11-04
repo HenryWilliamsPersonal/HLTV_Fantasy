@@ -42,8 +42,6 @@ UNRANKED = 400.0  # the rank unranked teams take in every aggregate
 WINDOW_DAYS = 182
 MIN_MAPS = 5
 FOLDS = 13
-STUDY_VERSION = 6  # bump when the features or the methods change (the cache's signature)
-
 # Every input the row builder computes. Backward elimination (2026-10-19,
 # walk-forward) showed the twelve in FEATURES match all 33 (per-map MAE
 # 0.2811 vs 0.2812); the rest are near-copies of them (the window means
@@ -386,7 +384,6 @@ def _rank_bucket_masks(opp_rank: np.ndarray) -> Dict[str, np.ndarray]:
 
 # ----------------------------------------------------------------- study
 def run_study(conn: sqlite3.Connection, window_days: int = WINDOW_DAYS, folds: int = FOLDS, min_maps: int = MIN_MAPS) -> Dict[str, Any]:
-    from sklearn.ensemble import HistGradientBoostingRegressor
     from sklearn.inspection import permutation_importance
     from sklearn.linear_model import Ridge
 

@@ -10,8 +10,6 @@ except Exception:  # pragma: no cover - scipy is in requirements, but keep the p
 
 
 BOOSTER_POINT_VALUE = 5.0
-DEFAULT_EXPECTED_MAPS = 2.4
-
 BOOSTER_NAMES = {
     0: "Best Pistol Round",
     1: "Bottom of scoreboard",
@@ -33,17 +31,20 @@ BOOSTER_NAMES = {
     17: "Hellcase",
 }
 
-SWISS_SLOTS = [
-    {"match_number": 1, "record": "0-0", "match_format": "BO1"},
-    {"match_number": 2, "record": "1-0", "match_format": "BO1"},
-    {"match_number": 2, "record": "0-1", "match_format": "BO1"},
-    {"match_number": 3, "record": "2-0", "match_format": "BO3"},
-    {"match_number": 3, "record": "1-1", "match_format": "BO1"},
-    {"match_number": 3, "record": "0-2", "match_format": "BO3"},
-    {"match_number": 4, "record": "2-1", "match_format": "BO3"},
-    {"match_number": 4, "record": "1-2", "match_format": "BO3"},
-    {"match_number": 5, "record": "2-2", "match_format": "BO3"},
-]
+# HLTV's trigger rate is the chance over a BEST-OF-THREE (the user's word,
+# 2026-10-27); a best-of-three runs 2.4 maps on average, so a series of m
+# expected maps triggers with 1 - (1 - R)^(m / 2.4).
+EXPECTED_MAPS = {1: 1.0, 2: 2.0, 3: 2.4, 5: 3.9}
+
+
+def match_rate(rate_bo3: float, bo: int) -> float:
+    """The chance a booster triggers in a series of this length, from
+    HLTV's best-of-three rate."""
+    maps = EXPECTED_MAPS.get(int(bo or 3), 2.4)
+    r = min(1.0, max(0.0, float(rate_bo3)))
+    if r >= 1.0:
+        return 1.0
+    return 1.0 - (1.0 - r) ** (maps / EXPECTED_MAPS[3])
 
 
 def normalize_probability(value: Any) -> float:

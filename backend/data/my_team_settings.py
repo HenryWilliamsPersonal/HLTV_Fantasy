@@ -4,7 +4,7 @@ by itself (auto mode), the per-user switch that does it in EVERY event
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from backend.data.db import connect
 

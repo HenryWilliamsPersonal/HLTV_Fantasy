@@ -1,6 +1,4 @@
 import base64
-import heapq
-import itertools
 import json
 import logging
 import math
@@ -10,7 +8,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import List, Dict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException
 
@@ -20,7 +18,7 @@ from backend.data.db import connect as _connect
 from backend.data.player_db import get_player
 from backend.data.singleton_state import SingletonState
 from backend.data.team_db import get_team_by_id
-from backend.services.team_optimizer import iter_valid_rosters, optimize_rosters, parse_optimizer_payload, serialize_roster
+from backend.services.team_optimizer import optimize_rosters, parse_optimizer_payload, serialize_roster
 from backend.swiss_stage.fantasy_scoring import compute_elimination_penalty_components, compute_role_points
 from backend.swiss_stage.team_initialization import initialize_teams
 from backend.swiss_stage.swiss_models import TeamState, PlayerState
@@ -234,6 +232,8 @@ def seed_playoff_queries(variant: str = "main", event_id=None) -> dict:
 def _saved_combo_metric(team: dict, mode: str) -> float:
     if mode == "single_outcome":
         return float(team.get("ceiling_points") or 0.0)
+    if mode == "season_max":
+        return float(team.get("season_points") or 0.0)
     if mode == "most_outcomes":
         # Rank by chance this roster ends up the winner; blobs saved before the
         # probability field existed fall back to the raw outcome-win count.
@@ -1419,7 +1419,6 @@ def _decode_bracket_code(code: int, template: Dict, prob_cache: Dict | None = No
     teams) for one outcome code of an exactly enumerated bracket."""
     team_slots = [int(t) for t in template.get("team_slots") or []]
     n = len(team_slots)
-    rounds_total = int(template.get("rounds") or round(math.log2(max(n, 2))))
     decider = bool(template.get("third_place"))
     n_matches = (n - 1) + (1 if decider else 0)
     prob_cache = prob_cache if prob_cache is not None else {}
@@ -2596,21 +2595,6 @@ def autofill_playoff_from_hltv_event(payload: dict | None = None):
     return {"status": "ok", **result}
 
 
-@router.post("/run")
-def run_playoff(payload: dict):
-    """
-    Simulate a single-elimination playoff bracket (BO3 all matches).
-
-    Expects:
-      - team_slots: list of 8 team_ids in bracket order:
-          [QF1_A, QF1_B, QF2_A, QF2_B, QF3_A, QF3_B, QF4_A, QF4_B]
-    """
-    normalized = _normalize_playoff_payload(payload)
-    response = _compute_playoff_result(normalized)
-    save_latest_playoff(normalized, response, normalized.get("variant"))
-    return response
-
-
 def _store_playoff_combos(result: dict, variant: str = "main", event_id=None) -> dict:
     """Rank every valid roster against the stored bracket outcomes and store
     the set the Top 5 tab reads; the tab's filters and ranking modes are
@@ -2793,10 +2777,6 @@ def _optimize_playoff_teams(
     )
 
 
-# A pool with more rosters than this triggers the two-phase optimiser instead
-# of the exhaustive per-outcome scan. 8-team = C(40,5) = 658k (stays exact);
-# 16-team = C(80,5) = 24M (would be billions of roster×outcome scores).
-_PLAYOFF_EXACT_ROSTER_LIMIT = 2_000_000
 # Candidates deep-scored (ceiling / most-likely) in phase 2 of the two-phase run.
 _PLAYOFF_TWO_PHASE_TOPK = 12000
 
@@ -3366,7 +3346,6 @@ def winning_player_detail(payload: dict | None = None, event_id: int | None = No
 
     if double:
         stages = list(_DOUBLE8_STAGES)
-        pad_stages = {v[0] for v in _DOUBLE8_PAD_AFTER.values()}
         missed_after = _DOUBLE8_MISSED_AFTER
     else:
         n = len(team_slots)
@@ -3376,7 +3355,6 @@ def winning_player_detail(payload: dict | None = None, event_id: int | None = No
             names.append(_round_name_for(k))
             k //= 2
         stages = names + (["third_place"] if template.get("third_place") else [])
-        pad_stages = set()
         missed_after = {st: [x for x in names[names.index(st) + 1 :]] for st in names}
 
     cells = {st: {"rating": 0.0, "win": 0.0, "role": 0.0, "booster": 0.0, "total": 0.0} for st in stages}
@@ -3859,7 +3837,7 @@ def _compute_completed_bracket_from_latest(payload: dict | None = None, progress
     for pid, score in scores_by_pid.items():
         if pid in options["exclude"]:
             continue
-        row = get_player(pid)
+        row = ((latest_results.get("input_snapshot") or {}).get("players") or {}).get(str(int(pid))) or get_player(pid)  # the run's own prices
         if not row:
             continue
         comps = components_by_pid.get(pid) or {}
@@ -4086,25 +4064,6 @@ def start_best_team_playoff_from_latest(payload: dict | None = None):
     return {"job_id": job_id}
 
 
-@router.get("/best-team/job/{job_id}")
-def get_best_team_playoff_job(job_id: str):
-    with PLAYOFF_BEST_TEAM_JOBS_LOCK:
-        job = PLAYOFF_BEST_TEAM_JOBS.get(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="job_id not found")
-        out = dict(job)
-    return {
-        "job_id": job_id,
-        "status": out.get("status", "queued"),
-        "error": out.get("error", ""),
-        "phase": out.get("phase", out.get("status", "queued")),
-        "progress": out.get("progress", 0.0),
-        "processed_combinations": out.get("processed_combinations", 0),
-        "total_combinations": out.get("total_combinations", 0),
-        "result_ready": out.get("result") is not None,
-    }
-
-
 @router.get("/best-team/from-latest/latest")
 def get_latest_best_team_playoff_from_latest(variant: str = "main", event_id: int | None = None):
     states = _states(variant)
@@ -4273,7 +4232,7 @@ def query_latest_best_team_for_completed_bracket(payload: dict | None = None, ev
 
     player_values = []
     for pid, score in scores_by_pid.items():
-        row = get_player(pid) or {}
+        row = ((latest_results.get("input_snapshot") or {}).get("players") or {}).get(str(int(pid))) or get_player(pid) or {}  # the run's own prices
         comps = components_by_pid.get(pid) or {}
         player_values.append(
             {

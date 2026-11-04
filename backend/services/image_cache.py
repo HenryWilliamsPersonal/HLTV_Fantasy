@@ -51,8 +51,6 @@ _PLAYER_PHOTO_RE = re.compile(r'"id":(\d+),"nick":"[^"]+","profileURL":"[^"]*","
 # per id, with the bracket-JSON source always outranking HTML finds.
 _TEAM_ANCHOR_RE = re.compile(r'href="/team/(\d+)/')
 _PLAYER_ANCHOR_RE = re.compile(r'href="/player/(\d+)/')
-_TEAM_IMG_RE = re.compile(r'src="(https://img-cdn\.hltv\.org/teamlogo/[^"]+)"')
-_PLAYER_IMG_RE = re.compile(r'src="(https://img-cdn\.hltv\.org/playerbodyshot/[^"]+)"')
 _SIZE_PARAM_RE = re.compile(r'[?&](?:w|h)=(\d+)')
 
 

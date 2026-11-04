@@ -16,48 +16,74 @@ The functions above `plan_for_roster` were moved here from groups.py unchanged.
 from __future__ import annotations
 from backend.services import roster_scores
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from backend.services.swiss_booster_assignment import (
     BOOSTER_NAMES,
     BOOSTER_POINT_VALUE,
     _max_weight_assignment,
+    match_rate,
 )
 from backend.services.team_optimizer import serialize_roster
 
 
+class SlotReach(dict):
+    """{team: {match number: P(team plays that match)}}, the booster slot
+    odds, plus `bo` {team: {match number: {series: P(plays it as that
+    best-of)}}} when the series varies (Swiss Bo1 rounds, Bo5 finals).
+    Without it every match counts as a best-of-three."""
+
+    def __init__(self, data=None, bo=None):
+        super().__init__(data or {})
+        self.bo = bo or {}
+
+
+def slot_trigger(reach_by_team, team_id: int, n: int, rate: float) -> float:
+    """P(team plays its nth match AND the booster triggers in it), from
+    HLTV's best-of-three rate and the series that match is played in (the
+    part of the slot's odds the series split does not cover is a Bo3)."""
+    p = float((reach_by_team.get(int(team_id)) or {}).get(int(n), 0.0))
+    mix = (getattr(reach_by_team, "bo", None) or {}).get(int(team_id), {}).get(int(n))
+    if not mix:
+        return p * float(rate)
+    split = sum(float(q) for q in mix.values())
+    return float(sum(float(q) * match_rate(rate, int(bo)) for bo, q in mix.items())) + max(0.0, p - split) * float(rate)
+
+
 def _player_booster_ub(team_id: int, reach_by_team: Dict[int, Dict[int, float]], rates: Dict[int, float]) -> float:
-    """Upper bound on a single player's booster EV: pair their most-reached
-    match slots with their highest trigger rates (a player can hold at most one
-    booster per match slot). Ignores that boosters are shared across the roster,
-    so summing this over 5 players over-counts — exactly what makes it a safe
-    admissible bound for pruning / ranking before the exact assignment."""
-    reach_probs = sorted((reach_by_team.get(int(team_id)) or {}).values(), reverse=True)
-    if not reach_probs:
+    """Upper bound on a single player's booster EV: his own best booster
+    assignment over his match slots (a player holds at most one booster per
+    slot, each booster once). Ignores that boosters are shared across the
+    roster, so summing this over 5 players over-counts — exactly what makes
+    it a safe admissible bound for pruning / ranking before the exact
+    assignment."""
+    slots = [n for n, p in sorted((reach_by_team.get(int(team_id)) or {}).items()) if p > 0]
+    if not slots:
         return 0.0
-    triggers = sorted((rates or {}).values(), reverse=True)
-    ub = 0.0
-    for i, prob in enumerate(reach_probs):
-        trig = triggers[i] if i < len(triggers) else 0.0
-        ub += float(prob) * float(trig) * BOOSTER_POINT_VALUE
-    return ub
+    weights = [[slot_trigger(reach_by_team, team_id, n, float((rates or {}).get(b, 0.0))) * BOOSTER_POINT_VALUE for n in slots] for b in range(18)]
+    return float(sum(w for _b, _c, w in _max_weight_assignment(weights) if w > 0))
 
 
 def _booster_slot_weights(pid: int, tid: int, reach_by_team, rates_by_pid) -> tuple:
-    """(slot probabilities in match order, {booster_id: trigger rate}) for one player."""
-    slots = [float(p) for _n, p in sorted((reach_by_team.get(int(tid)) or {}).items()) if p > 0]
-    return slots, (rates_by_pid.get(int(pid)) or {})
+    """(per match slot in order, {booster_id: P(plays it and the booster
+    triggers)}) for one player."""
+    rates = rates_by_pid.get(int(pid)) or {}
+    slots = [
+        {b: slot_trigger(reach_by_team, tid, n, float(rates.get(b, 0.0))) for b in range(18)}
+        for n, p in sorted((reach_by_team.get(int(tid)) or {}).items()) if p > 0
+    ]
+    return slots, rates
 
 
-def _player_booster_sub(slots: List[float], rates: Dict[int, float], lam: List[float]) -> tuple:
+def _player_booster_sub(slots: List[Dict[int, float]], rates: Dict[int, float], lam: List[float]) -> tuple:
     """One player's Lagrangian sub-problem: assign boosters to their match
-    slots (one per slot, each booster once) maximising Σ (slot × rate × value −
-    λ_booster), negative reduced weights clipped to 0 (booster unused).
-    Returns (value, {booster_id used})."""
+    slots (one per slot, each booster once) maximising Σ (P(play and
+    trigger) × value − λ_booster), negative reduced weights clipped to 0
+    (booster unused). Returns (value, {booster_id used})."""
     if not slots:
         return 0.0, set()
     weights = [
-        [max(0.0, sp * float(rates.get(b, 0.0)) * BOOSTER_POINT_VALUE - lam[b]) for sp in slots]
+        [max(0.0, sp[b] * BOOSTER_POINT_VALUE - lam[b]) for sp in slots]
         for b in range(18)
     ]
     value = 0.0
@@ -120,7 +146,8 @@ def optimize_group_boosters_for_roster(
     """Assign the 18 booster types across a roster's (player, match-slot) columns
     to maximise total expected booster points (max-weight bipartite matching via
     min-cost flow). Group matches are all scored as BO3 (matching the outcome
-    enumeration), so trigger rates need no BO1 adjustment.
+    enumeration); where the series varies (SlotReach.bo) each slot's weight
+    is the trigger chance in the series it is played in.
     """
     columns: List[Dict[str, Any]] = []
     for player in players:
@@ -133,6 +160,7 @@ def optimize_group_boosters_for_roster(
                         "player_id": pid,
                         "player_name": player.get("name", f"Player {pid}"),
                         "match_number": int(n),
+                        "team_id": tid,
                         "slot_probability": float(prob),
                     }
                 )
@@ -144,7 +172,7 @@ def optimize_group_boosters_for_roster(
         row = []
         for col in columns:
             trig = float((rates_by_pid.get(col["player_id"]) or {}).get(booster_id, 0.0))
-            row.append(col["slot_probability"] * trig * BOOSTER_POINT_VALUE)
+            row.append(slot_trigger(reach_by_team, col["team_id"], col["match_number"], trig) * BOOSTER_POINT_VALUE)
         weights.append(row)
 
     assignments: List[Dict[str, Any]] = []
@@ -271,10 +299,14 @@ def plan_for_roster(
         r = role_of.get(pid)
         role_pm[pid] = float(rs.get(r, 0.0)) if r is not None else 0.0
     slot_rates: Dict[int, Dict[int, float]] = {}
+    team_of = {int(p["player_id"]): int(p.get("team_id", 0)) for p in players}
     for a in booster.get("assignments") or []:
         pid = int(a["player_id"])
+        n = int(a["match_number"])
         rate = float((rates_by_pid.get(pid) or {}).get(int(a["booster_id"]), 0.0))
-        slot_rates.setdefault(pid, {})[int(a["match_number"])] = rate
+        # the trigger chance GIVEN the match is played, in its series mix
+        reach = float((reach_by_team.get(team_of[pid]) or {}).get(n, 0.0))
+        slot_rates.setdefault(pid, {})[n] = (slot_trigger(reach_by_team, team_of[pid], n, rate) / reach) if reach > 0 else rate
     return {
         "role_of": role_of,
         "role_ev_of": role_ev_of,
@@ -319,7 +351,6 @@ def plan_outcome_scores(plan: Dict[str, Any], pids: List[int], rows: List[int], 
 def match_reach_from_played(pids: List[int], team_of: Dict[int, int], MP, probs) -> Dict[int, Dict[int, float]]:
     """{team: {match number: P(team plays that match)}} from the per-outcome
     matches-played table (any one player of the team stands for the team)."""
-    import numpy as np
 
     reach: Dict[int, Dict[int, float]] = {}
     seen: set = set()

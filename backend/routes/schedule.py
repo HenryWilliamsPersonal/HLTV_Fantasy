@@ -3,7 +3,6 @@
 from fastapi import APIRouter
 
 from backend.data import schedule_db
-from backend.data.schedule_db import ensure_schedule_schema  # re-exported for main's initializers
 from backend.services.scheduler import scheduler
 
 router = APIRouter()

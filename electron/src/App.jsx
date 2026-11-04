@@ -149,7 +149,7 @@ const ASSETS_BASE = `${API_BASE}/assets`;
 // total: `average` over every outcome, `outcome` in one specific outcome (the
 // roster's best one, or the completed one the operator picked), `winning`
 // over the outcomes the roster wins. A ranking mode shows exactly one kind.
-const POINTS_KIND_BY_MODE = { average: "average", single_outcome: "outcome", most_outcomes: "winning", completed: "outcome" };
+const POINTS_KIND_BY_MODE = { average: "average", single_outcome: "outcome", most_outcomes: "winning", season_max: "average", completed: "outcome" };
 const NO_POINTS = { rating: null, win: null, role: null, booster: null, total: 0 };
 const rosterPoints = (player, mode) => {
   const kind = POINTS_KIND_BY_MODE[mode] || "average";
@@ -822,7 +822,7 @@ const fmtWhen = (ts) => {
   return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 };
 
-function UsersTab({ notify, me }) {
+function UsersTab({ me }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState(null);
@@ -841,15 +841,14 @@ function UsersTab({ notify, me }) {
   }, []);
   const toggleAdmin = async (u) => {
     if (me && Number(me.id) === Number(u.id) && u.is_admin) {
-      notify("You can't remove your own admin access.");
       return;
     }
     setBusyId(u.id);
     try {
       await api.post(`/admin/users/${u.id}/admin`, { is_admin: !u.is_admin });
       await load();
-    } catch (e) {
-      notify(e?.message || "Could not update the account.");
+    } catch {
+      // nothing to show
     } finally {
       setBusyId(null);
     }
@@ -2539,225 +2538,6 @@ const formatBatchEta = (seconds) => {
   return `${minutes}m ${rem}s`;
 };
 
-const getBatchStartedAtMs = (status, fallback = Date.now()) => {
-  const startedAt = Number(status?.started_at || status?.created_at || 0);
-  return Number.isFinite(startedAt) && startedAt > 0 ? startedAt * 1000 : fallback;
-};
-
-const jobStatusLabel = (status) =>
-  ({
-    completed: "Completed",
-    failed: "Failed",
-    canceled: "Canceled",
-    canceling: "Canceling",
-    paused: "Paused",
-    pausing: "Pausing",
-    running: "Running",
-    queued: "Queued",
-  }[status] || "Queued");
-
-// Shared map-stats import job state. Owned by App so both the Maps tab (bulk
-// import) and the Database team modal (single-team import) drive the same job.
-function useMapStatsJob({ refresh, notify, modalRefreshRef }) {
-  const [status, setStatus] = useState("idle");
-  const [jobId, setJobId] = useState("");
-  const [processed, setProcessed] = useState(0);
-  const [total, setTotal] = useState(0);
-  const [ok, setOk] = useState(0);
-  const [failed, setFailed] = useState(0);
-  const [lastError, setLastError] = useState("");
-  const [etaSeconds, setEtaSeconds] = useState(null);
-  const pollingRef = useRef(false);
-
-  const applyStatus = (statusPayload, jobIdOverride = "") => {
-    const nextJobId = String(jobIdOverride || statusPayload?.job_id || "");
-    const nextProcessed = Number(statusPayload?.processed_teams || 0);
-    const nextTotal = Number(statusPayload?.total_teams || 0);
-    const nextOk = Number(statusPayload?.ok || 0);
-    const nextFailed = Number(statusPayload?.failed || 0);
-    const nextStatus = String(statusPayload?.status || "queued");
-    const nextLastError = String(statusPayload?.last_error || statusPayload?.error || "");
-
-    setStatus(nextStatus);
-    setJobId(nextJobId);
-    setProcessed(nextProcessed);
-    setTotal(nextTotal);
-    setOk(nextOk);
-    setFailed(nextFailed);
-    setLastError(nextLastError);
-
-    const startedAtMs = getBatchStartedAtMs(statusPayload);
-    if (nextProcessed > 0 && nextTotal > nextProcessed && ["queued", "running", "pausing", "canceling"].includes(nextStatus)) {
-      const elapsedSeconds = Math.max(1, (Date.now() - startedAtMs) / 1000);
-      const rate = nextProcessed / elapsedSeconds;
-      setEtaSeconds(rate > 0 ? (nextTotal - nextProcessed) / rate : null);
-    } else if (nextTotal > 0 && nextProcessed >= nextTotal) {
-      setEtaSeconds(0);
-    } else {
-      setEtaSeconds(null);
-    }
-
-    return { jobId: nextJobId, ok: nextOk, failed: nextFailed, nextStatus, lastError: nextLastError };
-  };
-
-  const poll = async (pollJobId) => {
-    if (!pollJobId || pollingRef.current) return;
-    pollingRef.current = true;
-    try {
-      let done = false;
-      let pollFailures = 0;
-      while (!done) {
-        let statusPayload;
-        try {
-          statusPayload = await api.get(`/teams/map-stats-import/job/${pollJobId}`, 60000);
-          pollFailures = 0;
-        } catch (pollError) {
-          // The job keeps running server-side; only give up after repeated failures.
-          pollFailures += 1;
-          if (pollFailures >= 5) throw pollError;
-          await new Promise((resolve) => setTimeout(resolve, 3000));
-          continue;
-        }
-        const applied = applyStatus(statusPayload, pollJobId);
-
-        if (applied.nextStatus === "completed") {
-          notify(`Map stats imported: ${applied.ok} ok, ${applied.failed} failed`);
-          await refresh();
-          await modalRefreshRef?.current?.();
-          done = true;
-          break;
-        }
-        if (applied.nextStatus === "failed") {
-          notify(applied.lastError || "Map stats import failed.");
-          done = true;
-          break;
-        }
-        if (["paused", "canceled"].includes(applied.nextStatus)) {
-          await refresh();
-          await modalRefreshRef?.current?.();
-          done = true;
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1200));
-      }
-    } catch (e) {
-      setStatus("failed");
-      setLastError(String(e?.message || "Failed to poll map stats job."));
-      notify(`Map stats import failed: ${e?.message || "unknown error"}`);
-    } finally {
-      pollingRef.current = false;
-    }
-  };
-
-  const start = async (missingOnly = false, teamIds = []) => {
-    setStatus("queued");
-    setProcessed(0);
-    setTotal(0);
-    setOk(0);
-    setFailed(0);
-    setLastError("");
-    setEtaSeconds(null);
-    try {
-      const startPayload = await api.post("/teams/map-stats-import/start", {
-        missing_only: missingOnly,
-        team_ids: teamIds,
-      });
-      const startedJobId = String(startPayload?.job_id || "");
-      if (!startedJobId) throw new Error("Failed to start map stats import job.");
-      setJobId(startedJobId);
-      await poll(startedJobId);
-    } catch (e) {
-      setStatus("failed");
-      setLastError(String(e?.message || "Failed to start map stats import job."));
-      notify(`Map stats import failed: ${e?.message || "unknown error"}`);
-    }
-  };
-
-  const pause = async () => {
-    if (!jobId) return;
-    setStatus("pausing");
-    try {
-      const statusPayload = await api.post(`/teams/map-stats-import/job/${jobId}/pause`, {});
-      const applied = applyStatus(statusPayload, jobId);
-      if (["pausing", "running", "queued"].includes(applied.nextStatus)) {
-        poll(jobId);
-      }
-    } catch (e) {
-      setStatus("running");
-      notify(`Failed to pause map stats import: ${e?.message || "unknown error"}`);
-    }
-  };
-
-  const cancel = async () => {
-    if (!jobId) return;
-    setStatus("canceling");
-    try {
-      const statusPayload = await api.post(`/teams/map-stats-import/job/${jobId}/cancel`, {});
-      const applied = applyStatus(statusPayload, jobId);
-      if (["canceling", "running", "queued", "pausing"].includes(applied.nextStatus)) {
-        poll(jobId);
-      }
-    } catch (e) {
-      notify(`Failed to cancel map stats import: ${e?.message || "unknown error"}`);
-    }
-  };
-
-  const resume = async () => {
-    if (!jobId) return;
-    try {
-      const statusPayload = await api.post(`/teams/map-stats-import/job/${jobId}/resume`, {});
-      const applied = applyStatus(statusPayload, jobId);
-      if (["queued", "running", "pausing"].includes(applied.nextStatus)) {
-        poll(jobId);
-      }
-    } catch (e) {
-      notify(`Failed to resume map stats import: ${e?.message || "unknown error"}`);
-    }
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    const hydrateLatest = async () => {
-      try {
-        const latest = await api.get("/teams/map-stats-import/latest");
-        if (cancelled || !latest?.exists) return;
-        if (latest?.status === "completed") return;
-        const applied = applyStatus(latest);
-        if (["queued", "running", "pausing", "canceling"].includes(applied.nextStatus)) {
-          poll(applied.jobId);
-        }
-      } catch {
-        // The map-stats progress panel is optional on startup.
-      }
-    };
-    hydrateLatest();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const active = ["queued", "running", "pausing", "canceling"].includes(status);
-  return {
-    status,
-    jobId,
-    processed,
-    total,
-    ok,
-    failed,
-    lastError,
-    etaSeconds,
-    start,
-    pause,
-    cancel,
-    resume,
-    active,
-    resumable: ["paused", "failed"].includes(status),
-    show: status !== "idle" && status !== "completed",
-    progressPct: total > 0 ? Math.min(100, Math.max(0, (processed / total) * 100)) : 0,
-    statusLabel: jobStatusLabel(status),
-  };
-}
-
 const MapsBarTooltip = ({ active, payload, label }) => {
   if (!active || !payload || !payload.length) return null;
   const row = payload[0]?.payload || {};
@@ -3438,7 +3218,6 @@ function PlayoffTab({
 }) {
   const isBounty = variant === "bounty";
   const [playoffTab, setPlayoffTab] = useState("stage");
-  const [events, setEvents] = useState([]);
   const [selectedEventId, setSelectedEventId] = useState("");
   const [eventTeamNames, setEventTeamNames] = useState(new Set());
   const [latestPayload, setLatestPayload] = useState(null);
@@ -3474,7 +3253,6 @@ function PlayoffTab({
   // single-elimination playoff bracket (16/8), in bracket order.
   const autofillPlayoffFromEvent = async () => {
     if (PUBLIC_BUILD) return;
-    setPlayoffAutofillBusy(true);
     setPlayoffAutofillMessage("");
     try {
       const data = await api.post(
@@ -3512,8 +3290,6 @@ function PlayoffTab({
       );
     } catch (e) {
       setPlayoffAutofillMessage(e?.message || "Autofill from HLTV event failed.");
-    } finally {
-      setPlayoffAutofillBusy(false);
     }
   };
   const [hasThirdPlaceDecider, setHasThirdPlaceDecider] = useState(Boolean(playoffThirdPlace));
@@ -3530,23 +3306,19 @@ function PlayoffTab({
   const [allTeams, setAllTeams] = useState(null);
   const [baseTeams, setBaseTeams] = useState(null);
   const [sharedComboCount, setSharedComboCount] = useState(0);
-  const [combosApproximate, setCombosApproximate] = useState(false);
-  const [sharedCombosUpdatedAt, setSharedCombosUpdatedAt] = useState("");
   const [filteredCount, setFilteredCount] = useState(0);
   const [page, setPage] = useState(0);
   const [topMessage, setTopMessage] = useState("");
   const [includeSet, setIncludeSet] = useState(new Set());
   const [excludeSet, setExcludeSet] = useState(new Set());
-  const [includeTeamSet, setIncludeTeamSet] = useState(new Set());
-  const [excludeTeamSet, setExcludeTeamSet] = useState(new Set());
   const [appliedIncludeSet, setAppliedIncludeSet] = useState(new Set());
   const [appliedExcludeSet, setAppliedExcludeSet] = useState(new Set());
-  const [appliedIncludeTeamSet, setAppliedIncludeTeamSet] = useState(new Set());
-  const [appliedExcludeTeamSet, setAppliedExcludeTeamSet] = useState(new Set());
+  const [appliedIncludeTeamSet] = useState(() => new Set());
+  const [appliedExcludeTeamSet] = useState(() => new Set());
   const [comboSearch, setComboSearch] = useState("");
   const [showFilterModal, setShowFilterModal] = useState(false);
   const [filterSearch, setFilterSearch] = useState("");
-  const [sortKey, setSortKey] = useState("ev_desc");
+  const sortKey = "ev_desc";
   const [playoffTopSubtab, setPlayoffTopSubtab] = useState("average");
   const [playoffBestMode, setPlayoffBestMode] = useState("average");
   // `rounds` holds one winner-array per round in bracket order (round 0 first,
@@ -3558,7 +3330,6 @@ function PlayoffTab({
   });
   const [completedBracketResult, setCompletedBracketResult] = useState(null);
   const [completedBracketMessage, setCompletedBracketMessage] = useState("");
-  const [completedBracketUpdatedAt, setCompletedBracketUpdatedAt] = useState("");
   const [showCompletedBracketGraph, setShowCompletedBracketGraph] = useState(false);
   const [completedPlayerBreakdown, setCompletedPlayerBreakdown] = useState(null);
   const [processedSims, setProcessedSims] = useState(0);
@@ -3570,7 +3341,6 @@ function PlayoffTab({
   const [completedEtaSeconds, setCompletedEtaSeconds] = useState(null);
   const [etaSeconds, setEtaSeconds] = useState(null);
   const [runMessage, setRunMessage] = useState("");
-  const [playoffAutofillBusy, setPlayoffAutofillBusy] = useState(false);
   const [playoffAutofillMessage, setPlayoffAutofillMessage] = useState("");
   const playoffPollingRef = useRef(false);
   const comboQuerySeqRef = useRef(0);
@@ -3578,13 +3348,6 @@ function PlayoffTab({
   const playerLookup = useMemo(() => {
     const m = {};
     players.forEach((p) => (m[p.player_id] = p.name));
-    return m;
-  }, [players]);
-  const playerById = useMemo(() => {
-    const m = {};
-    players.forEach((p) => {
-      m[Number(p.player_id)] = p;
-    });
     return m;
   }, [players]);
   const playerTeamById = useMemo(() => {
@@ -3597,27 +3360,6 @@ function PlayoffTab({
     });
     return m;
   }, [teams]);
-  const teamByName = useMemo(() => {
-    const m = {};
-    teams.forEach((t) => {
-      const key = String(t?.name || "").trim().toLowerCase();
-      if (key) m[key] = t.team_id;
-    });
-    return m;
-  }, [teams]);
-  const teamPlayerOptions = useMemo(() => {
-    const safePlayers = Array.isArray(players)
-      ? players.filter((p) => p && p.player_id !== null && p.player_id !== undefined)
-      : [];
-    const sorted = [...safePlayers].sort((a, b) => String(a?.name || "").localeCompare(String(b?.name || "")));
-    return [
-      { value: "", label: "-" },
-      ...sorted.map((p) => ({
-        value: String(p.player_id),
-        label: p.name || `Player ${p.player_id}`,
-      })),
-    ];
-  }, [players]);
   const playerNameById = playerLookup;
   const filteredTeams = useMemo(() => {
     if (!selectedEventId) return [];
@@ -3718,12 +3460,6 @@ function PlayoffTab({
     ],
     [filteredTeams]
   );
-  const teamInitials = (teamId) => {
-    const name = teamLookup[Number(teamId)] || "";
-    const parts = String(name).trim().split(/\s+/).filter(Boolean);
-    if (parts.length >= 2) return `${parts[0][0] || ""}${parts[1][0] || ""}`.toUpperCase();
-    return String(name || "?").slice(0, 2).toUpperCase();
-  };
   const hltvIdByTeamId = useMemo(() => {
     const m = {};
     teams.forEach((t) => {
@@ -4570,7 +4306,6 @@ function PlayoffTab({
     setBusy(true);
     setCompletedBracketMessage("");
     setCompletedBracketResult(null);
-    setCompletedBracketUpdatedAt("");
     setProcessedCombos(0);
     setTotalCombos(0);
     setCompletedEtaSeconds(null);
@@ -4638,7 +4373,6 @@ function PlayoffTab({
         return;
       }
       setCompletedBracketResult(data);
-      setCompletedBracketUpdatedAt(new Date().toISOString());
     } catch (e) {
       setCompletedBracketMessage(e?.message || "Failed to evaluate completed bracket.");
     } finally {
@@ -4663,17 +4397,6 @@ function PlayoffTab({
       setPlayoffBestMode(key);
       setTopMessage("");
     }
-  };
-  const playoffTeamMetric = (team) => {
-    if (playoffBestMode === "single_outcome") return Number(team?.ceiling_points || 0);
-    if (playoffBestMode === "most_outcomes") {
-      // Percent chance this roster is the winning pick; older stored runs only
-      // have the raw outcome-win count.
-      const prob = team?.outcome_win_probability;
-      if (prob !== undefined && prob !== null) return Number(prob) * 100;
-      return Number(team?.outcome_wins || 0);
-    }
-    return Number(team?.average_ev ?? team?.total_ev ?? 0);
   };
   const playoffPlayerModeScore = (player) => Number(rosterPoints(player, playoffBestMode).total || 0);
   const playoffOutcomeCount = Number(results?.outcomes_count || (hasThirdPlaceDecider ? 256 : 128));
@@ -4884,8 +4607,6 @@ function PlayoffTab({
       return;
     }
     if (data?.detail) return;
-    const allEvents = Array.isArray(data.events) ? data.events : [];
-    setEvents(allEvents);
     const active = data.active_event_id;
     setSelectedEventId(active == null ? "" : String(active));
   };
@@ -4960,7 +4681,6 @@ function PlayoffTab({
       ];
     }
     setCompletedBracket({ rounds, third: payload.third_place_winner ? String(payload.third_place_winner) : "" });
-    setCompletedBracketUpdatedAt(data.updated_at ? new Date(Number(data.updated_at) * 1000).toISOString() : "");
   };
 
   const loadLatestSharedCombinations = async () => {
@@ -4968,7 +4688,6 @@ function PlayoffTab({
     if (!data?.exists) return;
     setBaseTeams([]);
     setSharedComboCount(Number(data.total_teams || 0));
-    setSharedCombosUpdatedAt(data.updated_at ? new Date(Number(data.updated_at) * 1000).toISOString() : "");
   };
 
   useEffect(() => {
@@ -5113,11 +4832,9 @@ function PlayoffTab({
     setTopTeams(null);
     setAllTeams(null);
     setBaseTeams(null);
-    setSharedCombosUpdatedAt("");
     setSharedComboCount(0);
     setCompletedBracketResult(null);
     setCompletedBracketMessage("");
-    setCompletedBracketUpdatedAt("");
     setShowCompletedBracketGraph(false);
     setCompletedPlayerBreakdown(null);
     setFilteredCount(0);
@@ -5192,7 +4909,6 @@ function PlayoffTab({
       setAllTeams(data.page_teams || []);
       setFilteredCount(Number(data.filtered_count || 0));
       setSharedComboCount(data.total_teams != null ? Number(data.total_teams) : sharedComboCount);
-      setCombosApproximate(Boolean(data.approximate));
       setPage(Number(data.page ?? nextPage ?? 0));
       if (playoffTopSubtab === "completed") {
         setCompletedBracketResult(data);
@@ -5203,28 +4919,6 @@ function PlayoffTab({
     }
   };
 
-  const applyTop5ViewFilters = (teamsIn) => {
-    const base = Array.isArray(teamsIn) ? teamsIn : [];
-    let filtered = applyFilters(base, effectiveAppliedFilters.include, effectiveAppliedFilters.exclude);
-    const q = comboSearch.trim().toLowerCase();
-    if (q) {
-      filtered = filtered.filter((team) =>
-        (team.players || []).some((p) => String(p.name || "").toLowerCase().includes(q))
-      );
-    }
-    const sorted = [...filtered].sort((a, b) => {
-      if (sortKey === "cost_asc") return Number(a.cost || 0) - Number(b.cost || 0);
-      if (sortKey === "cost_desc") return Number(b.cost || 0) - Number(a.cost || 0);
-      if (sortKey === "cpp_asc") return playoffTeamMetric(a) / (Number(a.cost || 1)) - playoffTeamMetric(b) / (Number(b.cost || 1));
-      if (sortKey === "cpp_desc") return playoffTeamMetric(b) / (Number(b.cost || 1)) - playoffTeamMetric(a) / (Number(a.cost || 1));
-      if (sortKey === "ev_asc") return playoffTeamMetric(a) - playoffTeamMetric(b);
-      return playoffTeamMetric(b) - playoffTeamMetric(a);
-    });
-    setAllTeams(sorted);
-    setTopTeams(sorted.slice(0, 10));
-    setFilteredCount(sorted.length);
-    setPage(0);
-  };
   const playoffPlayerValueData = useMemo(
     () => buildPlayerValueRowsFromSimulation(results, players),
     [results, players]
@@ -6979,24 +6673,6 @@ function MyTeamPanel({ ev, onOpenSettings }) {
   const teamRows = useMemo(() => (report?.players || []).map((p) => ({ team_id: p.team_id, name: p.team })), [report]);
   // A scored match opens its scoreboard: the stored row when the nightly
   // import has it, else the page's scoreboards read on demand.
-  const openMatch = async (t) => {
-    const url = String(t.match_url || "");
-    if (!url) return;
-    const own = (report?.players || []).find((p) => p.player_id === t.player_id) || {};
-    const base = { match_url: url, team1: own.team || t.name, team2: t.opponent || "", score1: null, score2: null };
-    setMatchRow(base);
-    if (PUBLIC_BUILD) return;
-    try {
-      const d = await api.get(`/events/hltv-results/match-details?match_url=${encodeURIComponent(url)}`, 60000);
-      const stored = d?.stored || {};
-      const next = { ...base, ...stored, maps_json: JSON.stringify(Array.isArray(d?.maps) ? d.maps : []) };
-      if (!next.player_stats_json && Array.isArray(d?.player_stats) && d.player_stats.length > 0) next.player_stats_json = JSON.stringify(d.player_stats);
-      if (!next.map_player_stats_json && d?.map_player_stats && Object.keys(d.map_player_stats).length > 0) next.map_player_stats_json = JSON.stringify(d.map_player_stats);
-      setMatchRow((cur) => (cur && cur.match_url === url ? next : cur));
-    } catch {
-      /* the modal keeps the stored row */
-    }
-  };
   if (!report) {
     return (
       <Section title="My Team">
@@ -7090,7 +6766,7 @@ function MyTeamPanel({ ev, onOpenSettings }) {
             <div className={`mt-track-points${Number(t.points) < 0 ? " neg" : ""}`}>{t.points ?? 0} pts</div>
           )}
         </div>
-        {played && (
+        {(played || t.result === "PADDING") && (
           <div className="event-player-stats ev-mini mt-track-stats">
             {[
               ["Rating", t.rating_points],
@@ -7516,10 +7192,66 @@ function BoosterPanel({ ev, onOpenSettings }) {
 // change on the server.
 // The Leaderboard sub-tab: the players of the event, or every user team of
 // its fantasy league with the points it is expected to finish on.
+// Where the read of the league's user teams stands (GET /live/events/{id}/field):
+// teams stored of the league, and a match's re-read while one runs.
+function FieldImportStrip({ eventId }) {
+  const [st, setSt] = useState(null);
+  const timer = useRef(null);
+  const load = async () => {
+    clearTimeout(timer.current);
+    if (!eventId) return;
+    let d = null;
+    try {
+      d = await api.get(`/live/events/${eventId}/field`, 30000);
+      setSt(d);
+    } catch {
+      // nothing to show
+    }
+    timer.current = setTimeout(load, d?.running ? 15000 : 120000);
+  };
+  useEffect(() => {
+    setSt(null);
+    load();
+    return () => clearTimeout(timer.current);
+  }, [eventId]);
+  if (!st) return null;
+  const full = st.running && st.kind !== "match";
+  const stored = Number(full ? Math.max(st.found || 0, st.teams_stored || 0) : st.teams_stored || 0);
+  const size = Number(st.league_size || 0);
+  const bar = (done, total) => (
+    <div className="progress">
+      <div className="progress-bar determinate" style={{ width: `${total > 0 ? Math.min(100, (done / total) * 100) : 0}%` }} />
+    </div>
+  );
+  return (
+    <div className="card sub field-import">
+      <div className="field-import-row">
+        <span className="field-import-label">Teams imported</span>
+        <strong>{stored.toLocaleString()}</strong>
+        <span className="muted">/ {size ? size.toLocaleString() : "-"}</span>
+        {size ? <span className="muted">{Math.min(100, Math.round((stored / size) * 100))}%</span> : null}
+        {full ? <span className="field-import-live">Importing</span> : null}
+      </div>
+      {bar(stored, size)}
+      {st.running && st.kind === "match" ? (
+        <>
+          <div className="field-import-row">
+            <span className="field-import-label">Match re-read</span>
+            <strong>{Number(st.teams_read || 0).toLocaleString()}</strong>
+            <span className="muted">/ {Number(st.teams_target || 0).toLocaleString()}</span>
+          </div>
+          {bar(Number(st.teams_read || 0), Number(st.teams_target || 0))}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function LeaderboardPanel({ ev }) {
   const [view, setView] = useState("players");
   return (
     <div className="stack">
+      <FieldImportStrip eventId={ev?.event_id} />
       <div className="tab-bar small">
         {[
           ["players", "Players"],
@@ -8182,10 +7914,6 @@ function LiveEventBody({ ev }) {
   }, [ev]);
   const teamRows = useMemo(() => Object.entries(ev.teams || {}).map(([tid, t]) => ({ team_id: Number(tid), hltv_team_id: t?.hltv_team_id, name: t?.name })), [ev]);
   const hltvId = (tid) => ev.teams?.[String(tid)]?.hltv_team_id;
-  const dm = (ts) => {
-    const d = new Date(Number(ts) * 1000);
-    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
-  };
   const hhmm = (ts) => {
     const d = new Date(Number(ts) * 1000);
     return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -8438,7 +8166,7 @@ function LiveEventBody({ ev }) {
   );
 }
 
-function EventsTab({ refreshData, notify, players, teams = [], onOpenPlayer, onOpenTeam, viewEventId = null, onViewEvent = null }) {
+function EventsTab({ refreshData, players, teams = [], onOpenPlayer, onOpenTeam, viewEventId = null, onViewEvent = null }) {
   const [events, setEvents] = useState([]);
   const [activeEventId, setActiveEventId] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -8700,7 +8428,7 @@ function EventsTab({ refreshData, notify, players, teams = [], onOpenPlayer, onO
   );
 }
 
-function MatchesDataPanel({ notify, teams = [], players = [], onOpenPlayer, onOpenTeam }) {
+function MatchesDataPanel({ teams = [], players = [], onOpenPlayer, onOpenTeam }) {
   const [recentResults, setRecentResults] = useState([]);
   const [recentResultsLoading, setRecentResultsLoading] = useState(false);
   const [recentResultsError, setRecentResultsError] = useState("");
@@ -9232,7 +8960,7 @@ function MatchDetailModal({ row: listRow, onClose, teams = [], players = [], onO
   );
 }
 
-function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlayerId, onOpenPlayerHandled, openTeamId, onOpenTeamHandled, mapStats, mapStatsModalRefreshRef }) {
+function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, onOpenPlayerHandled, openTeamId, onOpenTeamHandled }) {
   const [dbTab, setDbTab] = useState("players");
   const [playerSearch, setPlayerSearch] = useState("");
   const [playerSort, setPlayerSort] = useState("name_asc");
@@ -9249,7 +8977,6 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
     rating: "",
   });
   const [playerCurve, setPlayerCurve] = useState(null);
-  const [playerCurveLoading, setPlayerCurveLoading] = useState(false);
   const [playerCurveError, setPlayerCurveError] = useState("");
 
   const [selectedTeam, setSelectedTeam] = useState(null);
@@ -9445,9 +9172,8 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
     try {
       const row = await api.get(`/events/hltv-results/stored?match_url=${encodeURIComponent(matchUrl)}`, 15000);
       if (row && row.team1) setPlayerMatchDetail(row);
-      else notify("No stored details for that match.");
-    } catch (e) {
-      notify(`Could not load match: ${e?.message || "unknown error"}`);
+    } catch {
+      // nothing to show
     }
   };
   useEffect(() => {
@@ -9529,7 +9255,6 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
     }
     let cancelled = false;
     const run = async () => {
-      setPlayerCurveLoading(true);
       setPlayerCurveError("");
       try {
         const res = await api.get(`/players/${pid}/rating-curve`);
@@ -9539,8 +9264,6 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
           setPlayerCurve(null);
           setPlayerCurveError("Failed to load Top-X graph.");
         }
-      } finally {
-        if (!cancelled) setPlayerCurveLoading(false);
       }
     };
     run();
@@ -9588,16 +9311,16 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
       await api.post("/admin/team-aliases", { old_team_id: oldId, new_team_id: newId });
       setAliasPick("");
       if (refresh) await refresh();
-    } catch (e) {
-      notify(`Could not link: ${e?.message || "unknown error"}`);
+    } catch {
+      // nothing to show
     }
   };
   const removeTeamAlias = async (oldKey) => {
     try {
       await api.delete(`/admin/team-aliases/${encodeURIComponent(oldKey)}`);
       if (refresh) await refresh();
-    } catch (e) {
-      notify(`Could not unlink: ${e?.message || "unknown error"}`);
+    } catch {
+      // nothing to show
     }
   };
 
@@ -9618,28 +9341,6 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
     setShowTeamModal(true);
   };
 
-  // Keep an open team modal's map stats fresh when the shared import job finishes.
-  useEffect(() => {
-    if (!mapStatsModalRefreshRef) return undefined;
-    mapStatsModalRefreshRef.current = async () => {
-      if (!selectedTeam) return;
-      try {
-        const refreshedTeam = await api.get(`/teams/${selectedTeam}`);
-        setTeamForm((prev) => ({
-          ...prev,
-          hltv_team_id: refreshedTeam?.hltv_team_id ?? prev.hltv_team_id,
-          map_stats_json: refreshedTeam?.map_stats_json || "",
-          map_stats_imported_at: refreshedTeam?.map_stats_imported_at || "",
-          map_stats_source_url: refreshedTeam?.map_stats_source_url || "",
-        }));
-      } catch {
-        // The main list refresh still covers this; the direct modal refresh is just for immediacy.
-      }
-    };
-    return () => {
-      mapStatsModalRefreshRef.current = null;
-    };
-  }, [selectedTeam, mapStatsModalRefreshRef]);
 
   const currentMapPool = ACTIVE_MAP_POOL;
   const canonicalMapName = (value) => {
@@ -10188,19 +9889,6 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
                     )}
                   </div>
                 </div>
-                {mapStats.show && (
-                  <div className="team-map-stats-progress">
-                    <p className="muted">
-                      {mapStats.processed.toLocaleString()} / {mapStats.total.toLocaleString()} | ok {mapStats.ok} | failed{" "}
-                      {mapStats.failed}
-                      {mapStats.active && mapStats.total > mapStats.processed ? ` | ETA: ${formatBatchEta(mapStats.etaSeconds)}` : ""}
-                    </p>
-                    <div className="progress">
-                      <div className="progress-bar determinate" style={{ width: `${mapStats.progressPct}%` }} />
-                    </div>
-                    <p className="muted">Status: {mapStats.statusLabel}</p>
-                  </div>
-                )}
                 <div className="team-map-stats-grid">
                   {teamMapStatsRows.length > 0 ? (
                     teamMapStatsRows.map((row) => (
@@ -10325,7 +10013,6 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
       {dbTab === "matches" && (
         <Section title="Matches">
           <MatchesDataPanel
-            notify={notify}
             teams={teams}
             players={players}
             onOpenPlayer={openPlayerDetailsFromTeam}
@@ -10338,16 +10025,8 @@ function DatabaseTab({ players, teams, loading, error, refresh, notify, openPlay
   );
 }
 
-const teamInitials = (name) =>
-  String(name || "?")
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0])
-    .join("")
-    .toUpperCase();
 
-function SchedulingTab({ notify, players, refresh }) {
+function SchedulingTab({ players, refresh }) {
   const [status, setStatus] = useState(null);
   const [runs, setRuns] = useState([]);
   const [saveBusy, setSaveBusy] = useState(false);
@@ -10458,7 +10137,6 @@ function SchedulingTab({ notify, players, refresh }) {
     try {
       const data = await api.post("/schedule/config", patch);
       setStatus(data);
-      notify("Schedule updated");
     } catch (e) {
       setMessage(e?.message || "Failed to update schedule.");
     } finally {
@@ -10475,8 +10153,6 @@ function SchedulingTab({ notify, players, refresh }) {
         setMessage(res.detail || "A run is already in progress.");
       } else if (res?.status === "error") {
         setMessage(res.detail || "Failed to start run.");
-      } else {
-        notify(`Started: ${(res.tasks || [task]).map((t) => TASK_LABELS[t] || t).join(", ")}`);
       }
       loadStatus();
     } catch (e) {
@@ -11828,9 +11504,7 @@ function GroupsTab({
   playoffLayoutDetected = "cross",
 }) {
   const [groupsTab, setGroupsTab] = useState("stage");
-  const [events, setEvents] = useState([]);
   const [selectedEventId, setSelectedEventId] = useState("");
-  const [eventTeamNames, setEventTeamNames] = useState(new Set());
   const [groupCount, setGroupCount] = useState(2);
   const [groupFormat, setGroupFormat] = useState("gsl4");
   const seedsPerGroup = groupFormat.startsWith("de8") ? 8 : 4;
@@ -11851,14 +11525,12 @@ function GroupsTab({
       await loadLatest();
     } catch (e) {
       setPlayoffLayout(prev);
-      notify?.(`Could not set the layout: ${e?.message || "unknown error"}`);
     } finally {
       setLayoutBusy(false);
     }
   };
   const [slots, setSlots] = useState(Array(8).fill(""));
   const [results, setResults] = useState(null);
-  const [updatedAt, setUpdatedAt] = useState("");
   // Combined playoffs run only for shapes whose playoff seeding has been
   // verified against a real HLTV bracket (backend allowlist): today that is
   // 2 groups of 8 with top 3 -> 6-team bracket. Anything else is refused and
@@ -11873,10 +11545,6 @@ function GroupsTab({
       if (groupFormat === "de8_top3") setPlayoffStopTeams("1");
     }
   }, [combinedDetected, combinedSupported, results, groupFormat]);
-  const [busy, setBusy] = useState(false);
-  const [runMessage, setRunMessage] = useState("");
-  const [runProgress, setRunProgress] = useState({ done: 0, total: 0 });
-  const [autofillBusy, setAutofillBusy] = useState(false);
   const [autofillMessage, setAutofillMessage] = useState("");
   const [comboMode, setComboMode] = useState("average");
   // Top 5 sub-tabs mirror the Playoff tab: the three combo modes plus the
@@ -11886,6 +11554,7 @@ function GroupsTab({
     { key: "average", label: "Average Player Value" },
     { key: "single_outcome", label: "Best Single Outcome" },
     { key: "most_outcomes", label: "Most Likely Winner" },
+    { key: "season_max", label: "Season Maximum" },
     { key: "completed", label: stageKind === "bracket" ? "Completed Bracket" : stageKind === "swiss" ? "Completed Swiss" : "Completed Groups" },
   ];
   const setGroupsTopMode = (key) => {
@@ -11923,60 +11592,22 @@ function GroupsTab({
       if (on) flip(setIncludeSet, false);
     }
   };
-  const clearFilters = () => {
-    setIncludeSet(new Set());
-    setExcludeSet(new Set());
-  };
-  const [sortKey, setSortKey] = useState("ev_desc");
+  const sortKey = "ev_desc";
   const [topTeams, setTopTeams] = useState(null);
   const [allTeams, setAllTeams] = useState(null);
   const [filteredCount, setFilteredCount] = useState(0);
   const [page, setPage] = useState(0);
   const [combosReady, setCombosReady] = useState(false);
-  const [liveMode, setLiveMode] = useState(false);
-  const [combosUpdatedAt, setCombosUpdatedAt] = useState("");
-  const [poolReduction, setPoolReduction] = useState(null);
-  const [comboProgress, setComboProgress] = useState({ done: 0, total: 0 });
   const [topMessage, setTopMessage] = useState("");
   const [completedPicks, setCompletedPicks] = useState({});
   const [completedResult, setCompletedResult] = useState(null);
   const [completedMessage, setCompletedMessage] = useState("");
-  const pollingRef = useRef(false);
   const querySeqRef = useRef(0);
 
-  const normalizeTeamName = (name) => String(name || "").trim().toLowerCase();
-  const filteredTeams = useMemo(() => {
-    if (!selectedEventId || !eventTeamNames || eventTeamNames.size === 0) return [];
-    return teams.filter((t) => eventTeamNames.has(normalizeTeamName(t.name)));
-  }, [teams, selectedEventId, eventTeamNames]);
   // Fantasy pools often cover only part of a big field (e.g. 35 of 64 open
   // qualifier teams); missing opponents are filled with generic rank-250
   // unknowns, selectable as many times as needed.
-  const teamOptions = useMemo(() => {
-    const base = [
-      { value: "", label: "Select team" },
-      { value: "unknown", label: "Unknown team (rank 250)" },
-      ...filteredTeams.map((t) => ({ value: String(t.team_id), label: t.name || `Team ${t.team_id}` })),
-    ];
-    // Slots restored from a stored run may reference materialized Unknown-N
-    // teams (or other non-event teams); keep them displayable.
-    const known = new Set(base.map((o) => o.value));
-    const extras = [];
-    slots.forEach((s) => {
-      if (!s || s === "unknown" || known.has(String(s))) return;
-      known.add(String(s));
-      extras.push({ value: String(s), label: `${teamLookup[Number(s)] || `Team ${s}`} (${s})` });
-    });
-    return [...base, ...extras];
-  }, [filteredTeams, slots, teamLookup]);
 
-  const setSlot = (idx, val) => {
-    setSlots((prev) => {
-      const next = [...prev];
-      next[idx] = val;
-      return next;
-    });
-  };
   const groupSlots = useMemo(() => {
     const out = [];
     for (let g = 0; g < groupCount; g++) out.push(slots.slice(g * seedsPerGroup, g * seedsPerGroup + seedsPerGroup));
@@ -11985,7 +11616,6 @@ function GroupsTab({
 
   const autofillFromHltv = async () => {
     if (PUBLIC_BUILD) return;
-    setAutofillBusy(true);
     setAutofillMessage("");
     try {
       const data = await api.post(
@@ -12012,12 +11642,8 @@ function GroupsTab({
       if (refresh) await refresh();
     } catch (e) {
       setAutofillMessage(e?.message || "Autofill failed.");
-    } finally {
-      setAutofillBusy(false);
     }
   };
-  const allSlotsFilled =
-    slots.length === groupCount * seedsPerGroup && slots.every((s) => s === "unknown" || Number(s) > 0);
   const teamName = (id) => {
     if (id === "unknown") return "Unknown team";
     return teamLookup[Number(id)] || (id ? `Team ${id}` : "TBD");
@@ -12032,19 +11658,15 @@ function GroupsTab({
       return;
     }
     if (data?.detail) return;
-    const allEvents = Array.isArray(data.events) ? data.events : [];
-    setEvents(allEvents);
     const active = data.active_event_id;
     setSelectedEventId(active == null ? "" : String(active));
   };
   const loadEventTeams = async (eventId) => {
     if (!eventId) {
-      setEventTeamNames(new Set());
       return;
     }
     const data = await api.get(`/events/${eventId}`);
     if (data?.detail) return;
-    setEventTeamNames(new Set((data.teams || []).map((t) => normalizeTeamName(t.team_name))));
   };
   const loadLatest = async () => {
     const data = await api.get("/groups/latest", 120000);
@@ -12059,12 +11681,10 @@ function GroupsTab({
       setSlots(savedGroups.flat().map((x) => String(x)));
     }
     setCombinedPlayoffs(Boolean(payload.combined_playoffs));
-    setBakedInfo(payload.baked || null);
     setBracketDraw(payload.bracket || null);
     if (payload.playoff_stop_teams) setPlayoffStopTeams(String(payload.playoff_stop_teams));
     if (payload.playoff_layout) setPlayoffLayout(String(payload.playoff_layout));
     setResults(data.results || null);
-    setUpdatedAt(data.updated_at ? new Date(Number(data.updated_at) * 1000).toISOString() : "");
     return savedGroups.length > 0;
   };
   // Prefill the group seeds from what was detected + parsed at import time, so
@@ -12097,17 +11717,9 @@ function GroupsTab({
   const loadLatestCombos = async () => {
     const data = await api.get("/groups/best-team/latest", 60000);
     if (!data?.exists) {
-      setLiveMode(false);
       return;
     }
-    setLiveMode(Boolean(data.live));
     setCombosReady(true);
-    setCombosUpdatedAt(data.updated_at ? new Date(Number(data.updated_at) * 1000).toISOString() : "");
-    if (data.pool_reduced_to && data.pool_reduced_from && data.pool_reduced_to < data.pool_reduced_from) {
-      setPoolReduction({ from: data.pool_reduced_from, to: data.pool_reduced_to });
-    } else {
-      setPoolReduction(null);
-    }
   };
 
   // Nothing renders until the stored simulation (or the event's draw) is in,
@@ -12129,114 +11741,8 @@ function GroupsTab({
     loadEventTeams(selectedEventId);
   }, [selectedEventId]);
 
-  const run = async () => {
-    if (PUBLIC_BUILD || !allSlotsFilled) return;
-    setBusy(true);
-    setRunMessage("");
-    setRunProgress({ done: 0, total: 0 });
-    try {
-      const start = await api.post("/groups/start", {
-        groups: groupSlots.map((g) => g.map((v) => (v === "unknown" ? "unknown" : Number(v)))),
-        group_format: groupFormat,
-        combined_playoffs: combinedPlayoffs,
-        playoff_stop_teams: groupFormat === "de8_top3" ? 1 : Number(playoffStopTeams) || 1,
-      });
-      if (start?.detail) {
-        setRunMessage(String(start.detail));
-        return;
-      }
-      let done = false;
-      while (!done) {
-        const status = await api.get(`/groups/job/${start.job_id}`);
-        if (status?.detail) {
-          setRunMessage(String(status.detail));
-          return;
-        }
-        setRunProgress({ done: Number(status.processed_units || 0), total: Number(status.total_units || 0) });
-        if (status.status === "failed") {
-          setRunMessage(status.error || "Group simulation failed.");
-          return;
-        }
-        if (status.status === "completed") {
-          await loadLatest();
-          setCombosReady(false);
-          setTopTeams(null);
-          setAllTeams(null);
-          await loadLatestCombos();
-          if (refresh) await refresh(); // pick up any newly created Unknown teams
-          done = true;
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 300));
-      }
-    } catch (e) {
-      setRunMessage(e?.message || "Failed to run group simulation.");
-    } finally {
-      setBusy(false);
-    }
-  };
 
-  const resetStored = async () => {
-    if (PUBLIC_BUILD) return;
-    await api.delete("/groups/latest");
-    setResults(null);
-    setUpdatedAt("");
-    setTopTeams(null);
-    setAllTeams(null);
-    setCombosReady(false);
-    setCombosUpdatedAt("");
-    setCompletedResult(null);
-    setTopMessage("");
-    // Start over from HLTV's current draw (live re-sync if it has TBD slots).
-    if (stageKind === "groups") await loadEventAutofill();
-  };
 
-  const runCombinations = async () => {
-    setBusy(true);
-    setTopMessage("");
-    setComboProgress({ done: 0, total: 0 });
-    try {
-      if (PUBLIC_BUILD) return;
-      const start = await api.post("/groups/best-team/start", {});
-      if (start?.detail) {
-        setTopMessage(String(start.detail));
-        return;
-      }
-      if (pollingRef.current) return;
-      pollingRef.current = true;
-      try {
-        let done = false;
-        while (!done) {
-          const status = await api.get(`/groups/best-team/job/${start.job_id}`);
-          if (status?.detail) {
-            setTopMessage(String(status.detail));
-            return;
-          }
-          setComboProgress({
-            done: Number(status.processed_combinations || 0),
-            total: Number(status.total_combinations || 0),
-          });
-          if (status.status === "failed") {
-            setTopMessage(status.error || "Combination job failed.");
-            return;
-          }
-          if (status.status === "completed") {
-            setCombosReady(true);
-            setCombosUpdatedAt(new Date().toISOString());
-            done = true;
-            break;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 500));
-        }
-      } finally {
-        pollingRef.current = false;
-      }
-    } catch (e) {
-      setTopMessage(e?.message || "Failed to run combinations.");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const queryCombos = async (nextPage = 0) => {
     if (!combosReady) return;
@@ -12565,78 +12071,13 @@ function GroupsTab({
       ? `Ceiling ${Number(team?.ceiling_points || 0).toFixed(2)}`
       : mode === "most_outcomes"
       ? `Win ${(Number(team?.outcome_win_probability || 0) * 100).toFixed(1)}%`
+      : mode === "season_max"
+      ? `Season ${Number(team?.season_points || 0).toFixed(2)} · Top 1% ${(Number(team?.season_tier_probs?.[0] || 0) * 100).toFixed(0)}%`
       : `EV ${Number(team?.average_ev ?? team?.total_ev ?? 0).toFixed(2)}`;
-  const groupTeamInitials = (teamId) => {
-    if (teamId === "unknown") return "??";
-    const name = teamLookup[Number(teamId)] || "";
-    const parts = String(name).trim().split(/\s+/).filter(Boolean);
-    if (parts.length >= 2) return `${parts[0][0] || ""}${parts[1][0] || ""}`.toUpperCase();
-    return String(name || "?").slice(0, 2).toUpperCase();
-  };
-  const GroupTeamRow = ({ teamId, placeholder }) => (
-    <div className={`playoff-team-row ${teamId ? "" : "muted"}`}>
-      <span className={`playoff-team-badge ${teamId ? "" : "empty"}`}>{teamId ? groupTeamInitials(teamId) : "?"}</span>
-      {teamId ? <span>{teamName(teamId)}</span> : <span className="playoff-team-tbd">{placeholder || "TBD"}</span>}
-    </div>
-  );
-  const GroupMatchCard = ({ title, rows, className = "" }) => (
-    <div className={`playoff-match-card ${className}`}>
-      <div className="playoff-match-head">
-        <strong>{title}</strong>
-        <span>BO3</span>
-      </div>
-      <div className="playoff-match-teams">{rows}</div>
-    </div>
-  );
-  const GroupPickRow = ({ teamId, selected, onSelect, placeholder }) => (
-    <button
-      type="button"
-      className={`playoff-team-row completed-pick ${teamId ? "" : "muted"} ${selected ? "active" : ""}`}
-      onClick={() => teamId && onSelect(String(teamId))}
-      disabled={!teamId}
-    >
-      <span className={`playoff-team-badge ${teamId ? "" : "empty"}`}>{teamId ? groupTeamInitials(teamId) : "?"}</span>
-      <span>{teamId ? teamName(teamId) : placeholder || "TBD"}</span>
-    </button>
-  );
-  const qualificationOdds = useMemo(() => {
-    const rates = results?.playoff?.advance_rate;
-    if (!rates) return [];
-    return Object.entries(rates)
-      .map(([tid, rate]) => ({ teamId: Number(tid), rate: Number(rate) }))
-      .sort((a, b) => b.rate - a.rate);
-  }, [results?.playoff?.advance_rate]);
 
   // Per-team probability of qualifying out of its group, from the exact
   // enumerated outcomes (probabilities sum to 1 per group). Available for both
   // GSL and 8-team formats regardless of the combined-playoff toggle.
-  const groupQualifyOdds = useMemo(() => {
-    const byTeam = {};
-    const ensure = (tid, g) => {
-      const key = Number(tid);
-      if (!byTeam[key]) byTeam[key] = { teamId: key, rate: 0, group: Number(g) || 0 };
-      return byTeam[key];
-    };
-    // Slim stored results carry the odds precomputed (the 80 MB outcomes list
-    // stays on the backend); every team in the draw gets a row, even at 0%.
-    const precomputed = results?.qualify_odds;
-    if (precomputed && typeof precomputed === "object") {
-      (results?.groups || []).forEach((ids, g) => (ids || []).forEach((tid) => ensure(tid, g)));
-      Object.entries(precomputed).forEach(([g, odds]) => {
-        Object.entries(odds || {}).forEach(([tid, p]) => (ensure(tid, g).rate += Number(p) || 0));
-      });
-      return Object.values(byTeam).sort((a, b) => a.group - b.group || b.rate - a.rate);
-    }
-    const outcomes = results?.outcomes;
-    if (!Array.isArray(outcomes) || outcomes.length === 0) return [];
-    outcomes.forEach((o) => {
-      const p = Number(o.probability) || 0;
-      const g = Number(o.group) || 0;
-      (o.qualified || []).forEach((tid) => (ensure(tid, g).rate += p));
-      (o.eliminated || []).forEach((tid) => ensure(tid, g));
-    });
-    return Object.values(byTeam).sort((a, b) => a.group - b.group || b.rate - a.rate);
-  }, [results]);
 
   // Per-player expected component split (rating/win/role/booster), keyed by
   // player id, so a clicked name can show where its points come from.
@@ -12651,7 +12092,6 @@ function GroupsTab({
   }, [results]);
 
   const [breakdownPlayer, setBreakdownPlayer] = useState(null);
-  const [bakedInfo, setBakedInfo] = useState(null);
   const [bracketDraw, setBracketDraw] = useState(null); // the stored draw (provisional or baked payload)
   // Collapsible group / playoff cards, remembered per browser so a long
   // page can be skipped past on every visit. { "group-0": true, playoff: true }
@@ -12888,16 +12328,6 @@ function GroupsTab({
     }
     openGroupPlayerAverage(p, rosterCtx);
   };
-  const renderPlayerLinks = (list) =>
-    (list || []).map((p, i) => (
-      <span key={`${p.player_id}-${i}`}>
-        {i > 0 ? ", " : ""}
-        <button type="button" className="inline-link-btn" onClick={() => openGroupPlayer(p)}>
-          {p.name}
-        </button>{" "}
-        ({teamLookup[p.team_id] || p.team_id})
-      </span>
-    ));
   // Completed Groups: components come from the exact-outcome player_values row,
   // so open with those concrete values and an outcome-specific note.
   const teamOfPid = useMemo(() => {
@@ -13569,7 +12999,7 @@ function BountyTab(props) {
   );
 }
 
-function TournamentTab({ teams, teamLookup, players, sortTeams, applyFilters, onOpenPlayer, refresh, notify, eventId = null, onSelectEvent = null }) {
+function TournamentTab({ teams, teamLookup, players, sortTeams, applyFilters, onOpenPlayer, refresh, eventId = null, onSelectEvent = null }) {
   // One adaptive page: the active fantasy event's kind (per-stage, e.g. a
   // "Cologne Groups" event shows only the group stage) picks which tournament
   // UI renders. Auto-detected on the backend; a manual override is stored on
@@ -13577,15 +13007,11 @@ function TournamentTab({ teams, teamLookup, players, sortTeams, applyFilters, on
   const [kindInfo, setKindInfo] = useState(null);
   const [message, setMessage] = useState("");
   // Imported events + the server's current one, for the public event picker.
-  const [eventList, setEventList] = useState([]);
-  const [serverActive, setServerActive] = useState(null);
 
   const loadKind = async () => {
     setMessage("");
     try {
       const evs = await api.get("/events/");
-      setEventList(evs?.events || []);
-      setServerActive(evs?.active_event_id ?? null);
       const active = eventId ?? evs?.active_event_id ?? null;
       if (active == null) {
         setKindInfo(null);
@@ -13720,18 +13146,8 @@ export default function App() {
     return map;
   }, [teams]);
 
-  const playerLookup = useMemo(() => {
-    const map = {};
-    players.forEach((p) => (map[p.player_id] = p.name));
-    return map;
-  }, [players]);
 
-  // Toast popups removed by request — components still call notify(), it just
-  // no longer surfaces anything.
-  const notify = () => {};
 
-  const mapStatsModalRefreshRef = useRef(null);
-  const mapStatsJob = useMapStatsJob({ refresh: load, notify, modalRefreshRef: mapStatsModalRefreshRef });
 
   const handleOpenPlayerFromAnywhere = (playerId) => {
     const pid = Number(playerId);
@@ -13799,19 +13215,15 @@ export default function App() {
         loading={loading}
         error={error}
         refresh={load}
-        notify={notify}
         openPlayerId={openPlayerId}
         onOpenPlayerHandled={() => setOpenPlayerId(null)}
         openTeamId={openTeamId}
         onOpenTeamHandled={() => setOpenTeamId(null)}
-        mapStats={mapStatsJob}
-        mapStatsModalRefreshRef={mapStatsModalRefreshRef}
       />
     ),
     events: (
       <EventsTab
         refreshData={load}
-        notify={notify}
         players={players}
         teams={teams}
         onOpenPlayer={handleOpenPlayerFromAnywhere}
@@ -13833,13 +13245,12 @@ export default function App() {
         applyFilters={applyFilters}
         onOpenPlayer={handleOpenPlayerFromAnywhere}
         refresh={load}
-        notify={notify}
         eventId={viewEventId}
         onSelectEvent={selectViewEvent}
       />
     ),
-    scheduling: <SchedulingTab notify={notify} players={players} refresh={load} />,
-    users: <UsersTab notify={notify} me={auth.user} />,
+    scheduling: <SchedulingTab players={players} refresh={load} />,
+    users: <UsersTab me={auth.user} />,
   };
 
   return (

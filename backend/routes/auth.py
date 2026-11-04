@@ -163,11 +163,6 @@ def verify_id_token(id_token: str) -> Dict[str, Any]:
 
 
 # ---- endpoints ----------------------------------------------------------------------
-@router.get("/config")
-def auth_config() -> dict:
-    return {"provider": "google", "configured": google_configured()}
-
-
 @router.get("/google/start")
 def google_start(state: str, challenge: str):
     """Opened in the user's browser by the app. Parks the handshake and sends

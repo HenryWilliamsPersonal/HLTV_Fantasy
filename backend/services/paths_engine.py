@@ -121,7 +121,6 @@ def _pairing_index(paths: Paths) -> tuple:
     import numpy as np
 
     T = len(paths.team_ids)
-    S = paths.n_stages
     mask = paths.opp >= 0
     t_idx = np.arange(T, dtype=np.int64)[None, :, None]
     mno = paths.match_no.astype(np.int64)
@@ -231,11 +230,20 @@ def _player_matrix(sc: Scored, pid: int, sel=None, plan: Optional[Dict[str, Any]
     if role_pm is not None:
         comps[:, :, 2] = mask * float(role_pm)
     if by_slot is not None:
-        slot_pts = np.zeros(int(match_no.max()) + 2 if match_no.size else 2, dtype=np.float64)
+        from backend.services.swiss_booster_assignment import BOOSTER_POINT_VALUE, match_rate
+
+        # the plan's booster per slot, triggering at the rate of the series each match is played in
+        slot_rate = np.zeros(int(match_no.max()) + 2 if match_no.size else 2, dtype=np.float64)
         for slot, b in by_slot.items():
-            if 0 <= int(slot) < len(slot_pts):
-                slot_pts[int(slot)] = float(b[3])
-        comps[:, :, 3] = slot_pts[match_no] * mask
+            if 0 <= int(slot) < len(slot_rate):
+                slot_rate[int(slot)] = float(b[2])
+        bos = p.bo[pick].astype(np.int64)
+        rates = slot_rate[match_no]
+        pts = np.zeros_like(rates)
+        for bo in np.unique(bos[mask]).tolist():
+            at = bos == bo
+            pts[at] = BOOSTER_POINT_VALUE * np.vectorize(lambda r, _bo=int(bo): match_rate(r, _bo))(rates[at]) if at.any() else 0.0
+        comps[:, :, 3] = pts * mask
     pads = p.pad[pick].astype(np.float64)  # (m, S)
     pad_comps = np.zeros(comps.shape[:2] + (3,), dtype=np.float64)
     if pads.any():
@@ -311,7 +319,9 @@ def build_model(sc: Scored) -> tuple:
 
 def team_summary(sc: Scored) -> Dict[str, Any]:
     """Per team over every outcome: the chance of playing each stage, of
-    advancing, and of playing its Nth match (the booster slot odds)."""
+    advancing, and of playing its Nth match (the booster slot odds), split by
+    the series that match is played in (match_bo: {n: {bo: P}}, summing to
+    the match's odds; a booster's trigger chance depends on it)."""
     import numpy as np
 
     p = sc.paths
@@ -319,13 +329,25 @@ def team_summary(sc: Scored) -> Dict[str, Any]:
     stage_reach: Dict[str, Dict[str, float]] = {}
     advance: Dict[str, float] = {}
     match_reach: Dict[str, Dict[str, float]] = {}
+    match_bo: Dict[str, Dict[str, Dict[str, float]]] = {}
     for t, tid in enumerate(p.team_ids):
         played = (p.opp[:, t, :] >= 0)
         stage_reach[str(tid)] = {st.key: float(w @ played[:, s]) for s, st in enumerate(p.stages)}
         advance[str(tid)] = float(w @ p.advance[:, t].astype(np.float64))
         n_played = played.sum(axis=1)
         match_reach[str(tid)] = {str(k): float(w @ (n_played >= k)) for k in range(1, int(n_played.max()) + 1)} if n_played.size else {}
-    return {"stage_reach": stage_reach, "advance": advance, "match_reach": match_reach}
+        mno, bos = p.match_no[:, t, :], p.bo[:, t, :]
+        per_k: Dict[str, Dict[str, float]] = {}
+        for k in range(1, int(mno.max()) + 1 if mno.size else 1):
+            at_k = mno == k
+            for bo in np.unique(bos[at_k]).tolist():
+                if int(bo) <= 0:
+                    continue
+                q = float(w @ (at_k & (bos == bo)).any(axis=1))
+                if q > 0:
+                    per_k.setdefault(str(k), {})[str(int(bo))] = q
+        match_bo[str(tid)] = per_k
+    return {"stage_reach": stage_reach, "advance": advance, "match_reach": match_reach, "match_bo": match_bo}
 
 
 # ------------------------------------------------------------ the modal view

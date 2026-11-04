@@ -150,27 +150,3 @@ def list_snapshot_urls(kind: str | None = None) -> List[str]:
     finally:
         conn.close()
 
-
-def snapshot_summary() -> Dict[str, Any]:
-    ensure_snapshot_schema()
-    conn = _connect()
-    try:
-        rows = conn.execute(
-            "SELECT kind, COUNT(*) AS n, SUM(LENGTH(html_gz)) AS stored, SUM(raw_bytes) AS raw FROM page_snapshots GROUP BY kind"
-        ).fetchall()
-        total = conn.execute("SELECT COUNT(*) AS n, SUM(LENGTH(html_gz)) AS stored FROM page_snapshots").fetchone()
-    finally:
-        conn.close()
-    return {
-        "total_pages": int(total["n"] or 0),
-        "stored_mb": round(float(total["stored"] or 0) / 1048576.0, 1),
-        "by_kind": [
-            {
-                "kind": r["kind"],
-                "pages": int(r["n"] or 0),
-                "stored_mb": round(float(r["stored"] or 0) / 1048576.0, 1),
-                "raw_mb": round(float(r["raw"] or 0) / 1048576.0, 1),
-            }
-            for r in rows
-        ],
-    }

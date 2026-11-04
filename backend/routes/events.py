@@ -1,5 +1,4 @@
 import math
-import random
 import re
 import json
 import threading
@@ -44,7 +43,6 @@ from backend.data.event_db import (
     get_hltv_result_by_url,
     get_imported_match_ids,
     get_all_historical_team_map_stats_json,
-    get_historical_team_map_stats,
     update_hltv_result_details,
     list_hltv_results,
     set_hltv_result_maps,
@@ -88,16 +86,6 @@ def _sigmoid(z: float) -> float:
 # maps each against fourteen inputs overfit; coefficients flipped sign between
 # maps and the held-out score fell below the rank-only baseline).
 _MAP_MODEL_L2 = 1e-2
-# The lab's evaluation is walk-forward: usable maps in date order, the oldest
-# _MAP_MODEL_INITIAL_TRAIN share fits the first model, then each of
-# _MAP_MODEL_BLOCKS chronological blocks is scored by a model fitted on
-# everything before it. Every scored map is out of sample and the scored set
-# is ~60% of the pool, so the calibration tails have samples (a 1,000-map
-# holdout left 20-40 maps in the 75%+ buckets). Chosen 2026-09-24.
-_MAP_MODEL_INITIAL_TRAIN = 0.4
-_MAP_MODEL_BLOCKS = 6
-
-
 def _lab_match_key(obj: Dict[str, Any]) -> str:
     """Stable per-match key shared by result rows and their map samples."""
     url = str(obj.get("match_url") or "").strip()
@@ -308,23 +296,6 @@ def list_all_events():
         "active_event_id": get_active_event_id(),
         "events": rows,
     }
-
-
-@router.get("/active")
-def get_active_event():
-    active_id = get_active_event_id()
-    if active_id is None:
-        return {"active_event_id": None, "event": None}
-    event = get_event_detail(active_id)
-    return {"active_event_id": active_id, "event": event}
-
-
-@router.get("/hltv-recent-results")
-def fetch_hltv_recent_results(limit: int = 100):
-    try:
-        return get_recent_hltv_results(limit=limit)
-    except HLTVRankingError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def _utc_now_iso() -> str:
@@ -982,48 +953,10 @@ def _start_hltv_results_import_thread(job_id: str) -> bool:
     return True
 
 
-@router.post("/hltv-results/import")
 def import_hltv_results(payload: Dict[str, Any] | None = None):
     return _import_hltv_results_work(payload)
 
 
-@router.post("/hltv-results/import/start")
-def start_hltv_results_import(payload: Dict[str, Any] | None = None):
-    with HLTV_RESULTS_IMPORT_JOBS_LOCK:
-        for existing_id, existing_job in HLTV_RESULTS_IMPORT_JOBS.items():
-            if existing_job.get("status") in {"queued", "running", "pausing", "canceling"}:
-                return {"job_id": existing_id, "status": existing_job.get("status"), "reused": True}
-        job_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-        normalized = _normalize_hltv_results_import_payload(payload)
-        HLTV_RESULTS_IMPORT_JOBS[job_id] = {
-            "job_id": job_id,
-            "status": "queued",
-            "phase": "queued",
-            "processed_units": 0,
-            "total_units": 0 if normalized.get("import_mode") == "until_date" else int(normalized.get("pages", 1)),
-            "fetched": 0,
-            "error": "",
-            "result": None,
-            "rows": [],
-            "page_index": 0,
-            "next_offset": int(normalized.get("start_offset") or 0),
-            "fetch_complete": False,
-            "detail_index": 0,
-            "detail_complete": False,
-            "pause_requested": False,
-            "cancel_requested": False,
-            "created_at": _utc_now_iso(),
-            "updated_at": _utc_now_iso(),
-            "payload": normalized,
-        }
-        snapshot = dict(HLTV_RESULTS_IMPORT_JOBS[job_id])
-
-    _persist_hltv_results_import_job(job_id, snapshot)
-    _start_hltv_results_import_thread(job_id)
-    return {"job_id": job_id, "status": "queued"}
-
-
-@router.get("/hltv-results/import/job/{job_id}")
 def get_hltv_results_import_job(job_id: str):
     data = _hydrate_hltv_results_import_job(job_id)
     if not data:
@@ -1038,7 +971,6 @@ def get_hltv_results_import_job(job_id: str):
     return data
 
 
-@router.get("/hltv-results/import/latest")
 def get_latest_hltv_results_import_job():
     with HLTV_RESULTS_IMPORT_JOBS_LOCK:
         active = sorted(
@@ -1063,19 +995,6 @@ def get_latest_hltv_results_import_job():
     return out
 
 
-@router.post("/hltv-results/import/job/{job_id}/pause")
-def pause_hltv_results_import_job(job_id: str):
-    data = _hydrate_hltv_results_import_job(job_id)
-    if not data:
-        raise HTTPException(status_code=404, detail="job_id not found")
-    status = str(data.get("status") or "")
-    if status in {"completed", "failed", "canceled", "paused"}:
-        return get_hltv_results_import_job(job_id)
-    _update_hltv_results_import_job(job_id, status="pausing", pause_requested=True, current="Pausing after current request")
-    return get_hltv_results_import_job(job_id)
-
-
-@router.post("/hltv-results/import/job/{job_id}/resume")
 def resume_hltv_results_import_job(job_id: str):
     data = _hydrate_hltv_results_import_job(job_id)
     if not data:
@@ -1085,32 +1004,6 @@ def resume_hltv_results_import_job(job_id: str):
         return get_hltv_results_import_job(job_id)
     _update_hltv_results_import_job(job_id, status="queued", pause_requested=False, cancel_requested=False, current="Resuming")
     _start_hltv_results_import_thread(job_id)
-    return get_hltv_results_import_job(job_id)
-
-
-@router.post("/hltv-results/import/job/{job_id}/cancel")
-def cancel_hltv_results_import_job(job_id: str):
-    data = _hydrate_hltv_results_import_job(job_id)
-    if not data:
-        raise HTTPException(status_code=404, detail="job_id not found")
-    status = str(data.get("status") or "")
-    if status in {"completed", "failed", "canceled"}:
-        return get_hltv_results_import_job(job_id)
-    if status in {"queued", "paused"}:
-        # No worker is mid-request; cancel immediately.
-        _update_hltv_results_import_job(
-            job_id,
-            status="canceled",
-            phase="canceled",
-            current="Canceled",
-            pause_requested=False,
-            cancel_requested=False,
-            finished_at=_utc_now_iso(),
-        )
-        return get_hltv_results_import_job(job_id)
-    _update_hltv_results_import_job(
-        job_id, status="canceling", cancel_requested=True, current="Canceling after current request"
-    )
     return get_hltv_results_import_job(job_id)
 
 
@@ -1214,11 +1107,6 @@ def reset_hltv_results():
         "status": "ok",
         "deleted": int(deleted),
     }
-
-
-@router.post("/hltv-results/enrich-historical-points")
-def enrich_hltv_results_historical_points(payload: Dict[str, Any] | None = None):
-    return _enrich_hltv_results_historical_points(payload)
 
 
 def _enrich_hltv_results_historical_points(
@@ -1997,7 +1885,6 @@ def get_historical_map_stats_coverage():
     return {"status": "ok", **coverage}
 
 
-@router.post("/hltv-results/historical-map-stats/start")
 def start_historical_map_stats_job():
     latest = _get_latest_historical_job()
     if latest and latest.get("status") in {"queued", "running", "pausing", "canceling"}:
@@ -2027,20 +1914,6 @@ def start_historical_map_stats_job():
     return {"job_id": job_id, "status": "queued"}
 
 
-@router.get("/hltv-results/historical-map-stats/latest")
-def get_latest_historical_map_stats_job():
-    job = _get_latest_historical_job()
-    if not job:
-        return {"exists": False}
-    return {"exists": True, **_historical_job_response(job)}
-
-
-@router.get("/hltv-results/historical-map-stats/job/{job_id}")
-def get_historical_map_stats_job(job_id: str):
-    return _historical_job_response(_get_historical_job_for_response(job_id))
-
-
-@router.post("/hltv-results/historical-map-stats/job/{job_id}/pause")
 def pause_historical_map_stats_job(job_id: str):
     job = _get_historical_job_for_response(job_id)
     if job.get("status") in {"completed", "canceled", "failed", "paused"}:
@@ -2051,21 +1924,6 @@ def pause_historical_map_stats_job(job_id: str):
     return _historical_job_response(job)
 
 
-@router.post("/hltv-results/historical-map-stats/job/{job_id}/cancel")
-def cancel_historical_map_stats_job(job_id: str):
-    job = _get_historical_job_for_response(job_id)
-    if job.get("status") in {"completed", "canceled", "failed"}:
-        return _historical_job_response(job)
-    job["cancel_requested"] = True
-    job["status"] = "canceling" if _historical_worker_is_active(job_id) else "canceled"
-    if job["status"] == "canceled":
-        job["cancel_requested"] = False
-        job["finished_at"] = time.time()
-    _publish_historical_job(job)
-    return _historical_job_response(job)
-
-
-@router.post("/hltv-results/historical-map-stats/job/{job_id}/resume")
 def resume_historical_map_stats_job(job_id: str):
     job = _get_historical_job_for_response(job_id)
     if job.get("status") in {"completed", "canceled"}:
@@ -2391,66 +2249,12 @@ def _get_latest_veto_job() -> Dict[str, Any] | None:
     return _get_veto_job_for_response(str(row["job_id"])) if row else None
 
 
-@router.get("/page-snapshots/summary")
-def get_page_snapshots_summary():
-    from backend.data.page_snapshots import snapshot_summary
-
-    return {"status": "ok", **snapshot_summary()}
-
-
-@router.post("/hltv-results/reparse-from-snapshots")
-def reparse_match_details_from_snapshots(limit: int = 0):
-    """Re-run the current match-page parsers over archived page snapshots and
-    update stored rows — no scraping. Parsed fields only overwrite when the
-    fresh parse found data, so a parser regression cannot wipe stored values.
-    """
-    from backend.data.page_snapshots import get_page_snapshot
-    from backend.services.hltv_rankings import parse_hltv_match_details_html
-
-    rows = list_hltv_results(limit=max(1, count_hltv_results()), offset=0)
-    if limit and int(limit) > 0:
-        rows = rows[: int(limit)]
-    checked = 0
-    with_snapshot = 0
-    updated = 0
-    for r in rows:
-        url = str(r.get("match_url") or "").strip()
-        if not url:
-            continue
-        checked += 1
-        snap = get_page_snapshot(url)
-        if not snap:
-            continue
-        with_snapshot += 1
-        details = parse_hltv_match_details_html(snap["html"], url)
-        maps = details.get("maps") or []
-        veto = details.get("veto") or []
-        player_stats = details.get("player_stats") or []
-        map_player_stats = details.get("map_player_stats") or {}
-        update_hltv_result_details(
-            url,
-            maps_json=json.dumps(maps) if maps else None,
-            veto_json=json.dumps(veto) if veto else None,
-            player_stats_json=json.dumps(player_stats) if player_stats else None,
-            map_player_stats_json=json.dumps(map_player_stats) if map_player_stats else None,
-        )
-        if maps or veto or player_stats or map_player_stats:
-            updated += 1
-    return {
-        "status": "ok",
-        "matches_checked": checked,
-        "matches_with_snapshot": with_snapshot,
-        "matches_updated": updated,
-    }
-
-
 @router.get("/hltv-results/veto-backfill/coverage")
 def get_veto_backfill_coverage():
     _missing, coverage = _veto_missing_items()
     return {"status": "ok", **coverage}
 
 
-@router.post("/hltv-results/veto-backfill/start")
 def start_veto_backfill_job():
     latest = _get_latest_veto_job()
     if latest and latest.get("status") in {"queued", "running", "pausing", "canceling"}:
@@ -2480,20 +2284,6 @@ def start_veto_backfill_job():
     return {"job_id": job_id, "status": "queued"}
 
 
-@router.get("/hltv-results/veto-backfill/latest")
-def get_latest_veto_backfill_job():
-    job = _get_latest_veto_job()
-    if not job:
-        return {"exists": False}
-    return {"exists": True, **_veto_job_response(job)}
-
-
-@router.get("/hltv-results/veto-backfill/job/{job_id}")
-def get_veto_backfill_job(job_id: str):
-    return _veto_job_response(_get_veto_job_for_response(job_id))
-
-
-@router.post("/hltv-results/veto-backfill/job/{job_id}/pause")
 def pause_veto_backfill_job(job_id: str):
     job = _get_veto_job_for_response(job_id)
     if job.get("status") in {"completed", "canceled", "failed", "paused"}:
@@ -2504,21 +2294,6 @@ def pause_veto_backfill_job(job_id: str):
     return _veto_job_response(job)
 
 
-@router.post("/hltv-results/veto-backfill/job/{job_id}/cancel")
-def cancel_veto_backfill_job(job_id: str):
-    job = _get_veto_job_for_response(job_id)
-    if job.get("status") in {"completed", "canceled", "failed"}:
-        return _veto_job_response(job)
-    job["cancel_requested"] = True
-    job["status"] = "canceling" if _veto_worker_is_active(job_id) else "canceled"
-    if job["status"] == "canceled":
-        job["cancel_requested"] = False
-        job["finished_at"] = time.time()
-    _publish_veto_job(job)
-    return _veto_job_response(job)
-
-
-@router.post("/hltv-results/veto-backfill/job/{job_id}/resume")
 def resume_veto_backfill_job(job_id: str):
     job = _get_veto_job_for_response(job_id)
     if job.get("status") in {"completed", "canceled"}:
@@ -2839,7 +2614,6 @@ def get_map_scoreboards_coverage():
     return {"status": "ok", **coverage}
 
 
-@router.post("/hltv-results/map-scoreboards/start")
 def start_map_scoreboards_job():
     ensure_map_sb_job_schema()
     latest = _get_latest_map_sb_job()
@@ -2870,21 +2644,6 @@ def start_map_scoreboards_job():
     return {"job_id": job_id, "status": "queued"}
 
 
-@router.get("/hltv-results/map-scoreboards/latest")
-def get_latest_map_scoreboards_job():
-    ensure_map_sb_job_schema()
-    job = _get_latest_map_sb_job()
-    if not job:
-        return {"exists": False}
-    return {"exists": True, **_veto_job_response(job)}
-
-
-@router.get("/hltv-results/map-scoreboards/job/{job_id}")
-def get_map_scoreboards_job(job_id: str):
-    return _veto_job_response(_get_map_sb_job_for_response(job_id))
-
-
-@router.post("/hltv-results/map-scoreboards/job/{job_id}/pause")
 def pause_map_scoreboards_job(job_id: str):
     job = _get_map_sb_job_for_response(job_id)
     if job.get("status") in {"completed", "canceled", "failed", "paused"}:
@@ -2895,21 +2654,6 @@ def pause_map_scoreboards_job(job_id: str):
     return _veto_job_response(job)
 
 
-@router.post("/hltv-results/map-scoreboards/job/{job_id}/cancel")
-def cancel_map_scoreboards_job(job_id: str):
-    job = _get_map_sb_job_for_response(job_id)
-    if job.get("status") in {"completed", "canceled", "failed"}:
-        return _veto_job_response(job)
-    job["cancel_requested"] = True
-    job["status"] = "canceling" if _map_sb_worker_is_active(job_id) else "canceled"
-    if job["status"] == "canceled":
-        job["cancel_requested"] = False
-        job["finished_at"] = time.time()
-    _publish_map_sb_job(job)
-    return _veto_job_response(job)
-
-
-@router.post("/hltv-results/map-scoreboards/job/{job_id}/resume")
 def resume_map_scoreboards_job(job_id: str):
     job = _get_map_sb_job_for_response(job_id)
     if job.get("status") in {"completed", "canceled"}:
@@ -3404,13 +3148,6 @@ VETO_FEATURES: Tuple[str, ...] = (
     "own_ban3", "own_ban10", "own_pick3", "own_pick10", "own_first_ban", "own_first_pick", "opp_ban3", "opp_pick3", "opp_first_ban",
     "step_no", "n_remaining", "is_bo1",
 )
-# Standard HLTV orders, side 0 acting first: bans until one map is left (Bo1),
-# ban ban pick pick ban ban + decider (Bo3), ban ban pick pick pick pick + decider (Bo5).
-_VETO_ORDER: Dict[int, List[tuple[str, int]]] = {
-    1: [("ban", 0), ("ban", 1)] * 3,
-    2: [("ban", 0), ("ban", 1), ("pick", 0), ("pick", 1), ("ban", 0), ("ban", 1)],
-    3: [("ban", 0), ("ban", 1), ("pick", 0), ("pick", 1), ("pick", 0), ("pick", 1)],
-}
 _VETO_MIN_CHOICES = 500
 
 
@@ -4259,7 +3996,10 @@ def _event_page_dates(event: Dict[str, Any]) -> tuple:
         return None, None
     start = stamps[0]
     end = stamps[1] if len(stamps) > 1 else stamps[0]
-    return float(min(start, end)), float(max(start, end))
+    # the stamps mark days (10:00 / 11:00 UTC), not the first match: an event
+    # whose day one opens earlier (Asia: 02:00 UTC) starts at that day's 00:00 UTC
+    first = min(start, end)
+    return float(first - first % 86400), float(max(start, end))
 
 
 def warm_kind_cache() -> None:
@@ -4577,13 +4317,6 @@ def _event_player_ids(event_id: int) -> set:
     return {int(p) for t in (detail.get("teams") or []) for p in (t.get("player_ids") or []) if p}
 
 
-@router.post("/pull-new")
-def pull_new_fantasy_events():
-    """Manual trigger for the nightly fantasy-event discovery."""
-    return discover_and_import_new_fantasy_events()
-
-
-@router.post("/import-hltv-event")
 def import_hltv_event(payload: Dict[str, Any]):
     event_id = str(payload.get("event_id", "")).strip()
     if not event_id.isdigit():
@@ -4779,56 +4512,3 @@ def production_series_probability(production: Dict[str, Any], team_a: Dict[str, 
         probs.append(_model_map_win_probability(model, values))
     return _best_of_series_win_probability(sum(probs) / len(probs), wins_needed)
 
-
-def predict_veto(production: Dict[str, Any], team_a: Dict[str, Any], team_b: Dict[str, Any], wins_needed: int) -> Dict[str, Any]:
-    """The veto as probabilities for a series between two live teams (team A
-    acting first): per map, the chance it is played and by whose pick, plus
-    the most likely draft. Inputs as for production_series_probability."""
-    veto_model = production.get("veto")
-    if not veto_model:
-        return {"maps": [], "most_likely": []}
-    model = production["model"]
-    rated = production.get("teams") or {}
-    h1 = float(max(1, int(team_a.get("hltv_rank") or 100)))
-    h2 = float(max(1, int(team_b.get("hltv_rank") or 100)))
-    v1 = float(team_a.get("vrs_rank") or h1)
-    v2 = float(team_b.get("vrs_rank") or h2)
-    a_info = rated.get(str(team_a.get("key") or "")) or {}
-    b_info = rated.get(str(team_b.get("key") or "")) or {}
-    pa, pb = a_info.get("players"), b_info.get("players")
-    gap = (float(pa) - float(pb)) if (pa is not None and pb is not None) else 0.0
-    stats_a = team_a.get("map_stats") or {}
-    stats_b = team_b.get("map_stats") or {}
-    sides = [
-        {"stats": stats_a, "ctx": a_info.get("veto") or _veto_empty_context(),
-         "p_win": lambda m: _neutral_map_win_minus_half(model, (h1, v1), (h2, v2), stats_a, stats_b, gap, m)},
-        {"stats": stats_b, "ctx": b_info.get("veto") or _veto_empty_context(),
-         "p_win": lambda m: _neutral_map_win_minus_half(model, (h2, v2), (h1, v1), stats_b, stats_a, -gap, m)},
-    ]
-    pool = sorted(MAP_POOL)
-    distribution = _veto_distribution(veto_model, pool, _VETO_ORDER.get(max(1, min(3, wins_needed)), _VETO_ORDER[2]), date.today().isoformat(), sides, wins_needed)
-    probs = _veto_play_probabilities(veto_model, distribution)
-    maps = []
-    for m in pool:
-        row = probs.get(m) or {"play": 0.0, "pick_a": 0.0, "pick_b": 0.0, "decider": 0.0}
-        maps.append({"map": m, "p_a": 0.5 + sides[0]["p_win"](m), **{k: round(v, 4) for k, v in row.items()}})
-    maps.sort(key=lambda x: -x["play"])
-    likely = max(distribution, key=lambda x: x[0]) if distribution else (0.0, [])
-    return {
-        "maps": maps,
-        "most_likely": {"probability": round(likely[0], 4), "maps": [{"map": m, "picked_by": "a" if f > 0 else "b" if f < 0 else "decider"} for m, f in likely[1]]},
-    }
-
-
-@router.get("/hltv-results/map-model/veto")
-def get_map_model_veto(team_a: int, team_b: int, match_type: str = "bo3"):
-    """The predicted veto for two teams from the teams table."""
-    from backend.services import team_strength
-
-    production = get_production_map_model()
-    if not production:
-        raise HTTPException(status_code=404, detail="No app model trained yet.")
-    a = {**team_strength._team_profile(team_a), "hltv_rank": team_strength.get_hltv_rank(team_a)}
-    b = {**team_strength._team_profile(team_b), "hltv_rank": team_strength.get_hltv_rank(team_b)}
-    wins_needed = {"bo1": 1, "bo3": 2, "bo5": 3}.get(str(match_type or "bo3").lower(), 2)
-    return {"match_type": f"bo{2 * wins_needed - 1}", **predict_veto(production, a, b, wins_needed)}

@@ -132,17 +132,6 @@ def set_admin(user_id: int, is_admin: bool) -> bool:
         _cache_clear()
 
 
-def set_admin_by_email(email: str, is_admin: bool) -> bool:
-    conn = connect()
-    try:
-        cur = conn.execute("UPDATE users SET is_admin = ? WHERE lower(email) = lower(?)", (1 if is_admin else 0, str(email)))
-        conn.commit()
-        return cur.rowcount > 0
-    finally:
-        conn.close()
-        _cache_clear()
-
-
 def session_info(token: Optional[str]) -> Optional[tuple]:
     """(user_id, is_admin) for a live session token, else None. Cached."""
     if not token or len(token) < 20 or len(token) > 200:

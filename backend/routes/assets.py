@@ -1,9 +1,7 @@
 """Serve locally cached HLTV images (team logos, player photos) to the UI."""
 
-import hashlib
 import re
 from email.utils import formatdate
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response

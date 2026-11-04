@@ -554,3 +554,67 @@ def plan_block_stats(RW, MP, MR, probs, rows, role_pm, tables, block: int = 512)
     argmax = argmax_b[bsel, np.arange(C)]
     ceil_p = (mass_b * tied).sum(axis=0)
     return avg, ceil, argmax, ceil_p, best_i
+
+
+@njit(cache=True)
+def _plan_score(RW, MP, MR, rows, role_pm, tables, c, o):
+    s = 0.0
+    for p in range(ROSTER_SIZE):
+        j = rows[c, p]
+        s += RW[j, o] + role_pm[c, p] * MR[j, o] + tables[c, p, MP[j, o]]
+    return s
+
+
+@njit(parallel=True, cache=True)
+def _season_tier_mass(RW, MP, MR, probs, f_rows, f_rpm, f_tab, cut_pos, c_rows, c_rpm, c_tab, block, mass_b):
+    N = RW.shape[1]
+    nf = f_rows.shape[0]
+    C = c_rows.shape[0]
+    K = cut_pos.shape[0]
+    nb = mass_b.shape[0]
+    for b in prange(nb):
+        buf = np.empty(nf)
+        cuts = np.empty(K)
+        o1 = min(N, (b + 1) * block)
+        for o in range(b * block, o1):
+            for f in range(nf):
+                buf[f] = -_plan_score(RW, MP, MR, f_rows, f_rpm, f_tab, f, o)
+            srt = np.sort(buf)  # best first (negated)
+            for k in range(K):
+                cuts[k] = -srt[cut_pos[k]]
+            w = probs[o]
+            for c in range(C):
+                s = _plan_score(RW, MP, MR, c_rows, c_rpm, c_tab, c, o) + 1e-9
+                t = 0
+                for k in range(K):
+                    if s < cuts[k]:
+                        t += 1
+                mass_b[b, c, t] += w
+
+
+def season_tier_mass(RW, MP, MR, probs, f_rows, f_rpm, f_tab, cut_pos, c_rows, c_rpm, c_tab, block: int = 256):
+    """(candidates x tiers) probability mass of each tier a candidate roster
+    reaches against the field: per outcome the field's scores (rows / role
+    per-match points / booster prefix tables, as plan_block_stats) are sorted
+    and read at cut_pos (best first) to give the score each tier needs. None
+    without numba (callers keep their numpy path)."""
+    if not HAVE_NUMBA:
+        return None
+    RW = np.ascontiguousarray(RW, dtype=np.float64)
+    MR = np.ascontiguousarray(MR, dtype=np.float64)
+    MP = np.ascontiguousarray(MP)
+    if not np.issubdtype(MP.dtype, np.integer):
+        MP = MP.astype(np.int64)
+    N = RW.shape[1]
+    C = c_rows.shape[0]
+    block = max(1, min(int(block), N))
+    nb = (N + block - 1) // block
+    mass_b = np.zeros((nb, C, len(cut_pos) + 1), dtype=np.float64)
+    _season_tier_mass(
+        RW, MP, MR, np.ascontiguousarray(probs, dtype=np.float64),
+        np.ascontiguousarray(f_rows, dtype=np.int64), np.ascontiguousarray(f_rpm, dtype=np.float64), np.ascontiguousarray(f_tab, dtype=np.float64),
+        np.ascontiguousarray(cut_pos, dtype=np.int64),
+        np.ascontiguousarray(c_rows, dtype=np.int64), np.ascontiguousarray(c_rpm, dtype=np.float64), np.ascontiguousarray(c_tab, dtype=np.float64),
+        int(block), mass_b,
+    )
+    return mass_b.sum(axis=0)

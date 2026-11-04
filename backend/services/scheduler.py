@@ -708,7 +708,6 @@ class DataScheduler:
 
         budget = max(60.0, float(cfg.get("map_model_minutes") or 120) * 60.0)
         deadline = time.time() + budget
-        active = {"queued", "running", "pausing", "canceling"}
         families = [
             ("vetoes", "matches", events.get_veto_backfill_coverage, "missing_veto",
              events._get_latest_veto_job, events.start_veto_backfill_job,

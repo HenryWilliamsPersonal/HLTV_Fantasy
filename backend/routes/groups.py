@@ -12,7 +12,6 @@ import logging
 import json
 import re
 import math
-import os
 import random
 import threading
 import time
@@ -21,7 +20,6 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 
-from backend.data.db import connect as _connect
 from backend.data.player_db import get_player
 from backend.data.singleton_state import SingletonState
 from backend.services import event_rosters, team_strength
@@ -37,21 +35,15 @@ from backend.routes.playoff import (
     _sort_saved_combo_teams,
 )
 from backend.data.team_db import add_or_update_team, get_team_by_id, get_team_by_name
-from backend.services.role_assignment import best_role_assignment_for_team, extract_role_scores_for_player
+from backend.services.role_assignment import extract_role_scores_for_player
 from backend.services.swiss_booster_assignment import (
-    BOOSTER_NAMES,
     BOOSTER_POINT_VALUE,
-    _max_weight_assignment,
     parse_booster_rates,
 )
 from backend.services.team_optimizer import iter_valid_rosters, parse_optimizer_payload, serialize_roster
 from backend.services.roster_plan import (  # moved out of this module; shared with the playoff and swiss optimisers
-    _NUM_ROLES,
-    _ROLE_UNAVAILABLE,
     _booster_bound_lagrangian,
-    _booster_slot_weights,
     _exact_role_assignment,
-    _player_booster_sub,
     _player_booster_ub,
     _score_roster_exact,
     optimize_group_boosters_for_roster,
@@ -71,8 +63,6 @@ LIVE_OPTIMIZER_MAX_K = 2000
 
 router = APIRouter()
 
-GROUPS_JOBS: Dict[str, Dict[str, Any]] = {}
-GROUPS_JOBS_LOCK = threading.Lock()
 GROUPS_BEST_TEAM_JOBS: Dict[str, Dict[str, Any]] = {}
 GROUPS_BEST_TEAM_JOBS_LOCK = threading.Lock()
 
@@ -123,16 +113,6 @@ def warm_caches() -> None:
         logging.getLogger(__name__).info("Top 5 warm-up for event %s: %s", key, timings)
     except Exception:
         logging.getLogger(__name__).warning("Top 5 warm-up failed", exc_info=True)
-
-GROUP_MATCH_KEYS = ["opening_1", "opening_2", "winners", "elimination", "decider"]
-GROUP_MATCH_LABELS = {
-    "opening_1": "Opening 1",
-    "opening_2": "Opening 2",
-    "winners": "Winners' match",
-    "elimination": "Elimination match",
-    "decider": "Decider",
-}
-
 
 def ensure_groups_schema() -> None:
     for state in (_GROUPS_STATE, _GROUPS_BEST_STATE, _GROUPS_BEST_META, _INPUT_SNAPSHOT):
@@ -571,7 +551,6 @@ def _plan_for_player(results: dict, pid: int, body: dict) -> Dict[str, Any]:
     per match slot — each None when the request names none, so the player's
     own best role / own boosters stand."""
     from backend.services.match_engine import BOOSTER_NAMES
-    from backend.services.swiss_booster_assignment import BOOSTER_POINT_VALUE
 
     from backend.services import leader_role
 
@@ -1597,7 +1576,6 @@ def _decider_pairing_weights(
     bracket (a group's winner and runner-up are different teams), so the
     seedings are enumerated — at most 12^4 for four GSL groups — and within
     one seeding the feeders of a match are independent."""
-    import itertools
 
     rounds = template["rounds"]
     decider = template["decider"]
@@ -1807,6 +1785,7 @@ def _exact_combined_playoffs(
                 group_of[int(tid)] = g
                 bye_num[int(tid)] = {r: prior_matches[(g, 0)] + r for r in range(1, rounds_total)}
     match_reach: Dict[int, Dict[int, float]] = {}  # team -> match number -> P(plays that match in the playoffs)
+    match_bo: Dict[int, Dict[int, Dict[int, float]]] = {}  # team -> match number -> series -> P (the same, by best-of)
     pairing_table: Dict[str, Dict[str, List[float]]] = {}  # "a,b,winner,num_a,num_b,rem" -> pid -> [total, rating, win, role]
     bye_sf: Dict[int, List[float]] = {}  # team -> [P(lose the semi), P(win the semi)] on the bye path
     bye_pts: Dict[int, Dict[int, List[List[float]]]] = {}  # team -> pid -> [[semi-loss path], [final path]] component sums
@@ -1816,9 +1795,12 @@ def _exact_combined_playoffs(
         a, b, winner, na, nb, rem = key
         rw = round_wins.setdefault(winner, [0.0] * n_rows)
         rw[r] += w
+        series = int((match_type_for(rem) if rem >= 0 else "bo3")[2:])
         for tid, num in ((a, na), (b, nb)):
             mr = match_reach.setdefault(tid, {})
             mr[num] = mr.get(num, 0.0) + w
+            mb = match_bo.setdefault(tid, {}).setdefault(num, {})
+            mb[series] = mb.get(series, 0.0) + w
         bye_sides = []
         if byes_to_semis and r >= 1:
             bye_sides = [tid for tid, num in ((a, na), (b, nb)) if bye_num.get(tid, {}).get(r) == num]
@@ -1949,6 +1931,7 @@ def _exact_combined_playoffs(
         # P(team plays its Nth match) in the playoffs, by match number (its
         # group matches count first) — the booster slots of the roster solve.
         "match_reach": {str(tid): {str(n): p for n, p in d.items()} for tid, d in match_reach.items()},
+        "match_bo": {str(tid): {str(n): {str(b): q for b, q in mix.items()} for n, mix in d.items()} for tid, d in match_bo.items()},
         # For the joint outcome sampler (ceiling / most-likely-winner over the
         # whole event): every reachable pairing's per-player points and the
         # win-probability matrix between all teams.
@@ -2120,6 +2103,17 @@ def _snapshot_player_row(results: dict, pid: int) -> Optional[dict]:
 
 
 def bake_event_valuations(
+    event_id: int, trigger: str = "import", only_if_missing: bool = False, refresh_inputs: bool = False
+) -> Dict[str, Any]:
+    """_bake_event_valuations, always with the event's own rosters (a
+    caller outside the pipeline would otherwise value the ACTIVE event's)."""
+    from backend.services import event_rosters
+
+    with event_rosters.for_event(int(event_id)):
+        return _bake_event_valuations(event_id, trigger, only_if_missing, refresh_inputs)
+
+
+def _bake_event_valuations(
     event_id: int, trigger: str = "import", only_if_missing: bool = False, refresh_inputs: bool = False
 ) -> Dict[str, Any]:
     """Run and store the groups valuation for one fantasy event off the request
@@ -3115,55 +3109,6 @@ def _compute_groups_result_inner(
     }
 
 
-def _run_groups_job(job_id: str, payload: dict) -> None:
-    def _update(processed: int, total: int) -> None:
-        with GROUPS_JOBS_LOCK:
-            job = GROUPS_JOBS.get(job_id)
-            if not job:
-                return
-            job["processed_units"] = int(processed)
-            job["total_units"] = int(total)
-            job["progress"] = 0.0 if total <= 0 else float(processed) / float(total)
-            job["updated_at"] = time.time()
-
-    with GROUPS_JOBS_LOCK:
-        job = GROUPS_JOBS.get(job_id)
-        if not job:
-            return
-        job["status"] = "running"
-        job["updated_at"] = time.time()
-    try:
-        event_key = int(payload.get("event_id") or _state_key())
-        snapshot, inputs_meta = _event_inputs(event_key, [int(t) for g in payload["groups"] for t in g])
-        payload["inputs"] = inputs_meta
-        result = _compute_groups_result(payload, progress_callback=_update, snapshot=snapshot)
-        model = _finalize_joint_precompute(result, event_key)
-        _GROUPS_STATE.save(payload, result, key=event_key)
-        saved = _GROUPS_STATE.load(key=event_key)
-        if model is not None and saved:
-            _JOINT_MODEL_CACHE.clear()
-            _JOINT_MODEL_CACHE[(event_key, saved["updated_at"])] = model
-        if saved:
-            # seed the default Top 5 queries off the job's critical path
-            threading.Thread(target=_seed_live_queries, args=(event_key, saved), name="top5-warmup", daemon=True).start()
-        with GROUPS_JOBS_LOCK:
-            job = GROUPS_JOBS.get(job_id)
-            if not job:
-                return
-            job["status"] = "completed"
-            job["result_ready"] = True
-            job["progress"] = 1.0
-            job["updated_at"] = time.time()
-    except Exception as exc:
-        with GROUPS_JOBS_LOCK:
-            job = GROUPS_JOBS.get(job_id)
-            if not job:
-                return
-            job["status"] = "failed"
-            job["error"] = str(exc)
-            job["updated_at"] = time.time()
-
-
 def _parse_event_groups(html: str, group_format: str = "gsl4") -> List[Dict[str, Any]]:
     """Parse each group's opening matchups (seed order) from an HLTV event
     page's embedded bracket JSON. GSL groups use DoubleElimination4 (4 seeds);
@@ -3756,63 +3701,6 @@ def get_stored_event_autofill(event_id: Optional[int] = None):
     if not stored:
         return {"status": "empty", "group_format": None, "groups": []}
     return {"status": "ok", "event_id": int(fid), **stored}
-
-
-@router.post("/placeholder-team")
-def create_placeholder_team(payload: dict):
-    """Create a rosterless opponent team (e.g. a non-draftable qualifier team).
-
-    It simulates normally as an opponent while contributing no fantasy
-    players, matching events where HLTV's fantasy pool only covers part of
-    the field. Rank defaults to 250 — a plausible fringe-qualifier strength —
-    rather than 999, which would make every placeholder a hopeless underdog.
-    """
-    name = str((payload or {}).get("name") or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="name is required")
-    existing = get_team_by_name(name)
-    if existing:
-        return {"status": "exists", "team_id": existing.get("team_id"), "name": name}
-    add_or_update_team(
-        name=name,
-        hltv_rank=250,
-        hltv_points=0,
-        vrs_rank=250,
-        vrs_points=0,
-        win_rate=0.5,
-        player_ids=[0, 0, 0, 0, 0],
-        hltv_team_id=None,
-    )
-    created = get_team_by_name(name) or {}
-    return {"status": "created", "team_id": created.get("team_id"), "name": name}
-
-
-@router.post("/start")
-def start_groups_simulation(payload: dict):
-    normalized = _normalize_groups_payload(payload or {})
-    job_id = uuid.uuid4().hex
-    with GROUPS_JOBS_LOCK:
-        GROUPS_JOBS[job_id] = {
-            "status": "queued",
-            "error": "",
-            "progress": 0.0,
-            "processed_units": 0,
-            "total_units": len(normalized["groups"]),
-            "result_ready": False,
-            "created_at": time.time(),
-            "updated_at": time.time(),
-        }
-    threading.Thread(target=_run_groups_job, args=(job_id, normalized), daemon=True).start()
-    return {"job_id": job_id}
-
-
-@router.get("/job/{job_id}")
-def get_groups_job(job_id: str):
-    with GROUPS_JOBS_LOCK:
-        job = GROUPS_JOBS.get(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="job_id not found")
-        return {"job_id": job_id, **{k: v for k, v in job.items() if k != "result"}}
 
 
 def _slim_groups_results(results: Dict[str, Any]) -> Dict[str, Any]:
@@ -4459,16 +4347,29 @@ def _team_match_reach_probs(results: dict) -> Dict[int, Dict[int, float]]:
     the full run; stored results from before `playoff.match_reach` existed fall
     back to the group matches only."""
     if str(results.get("group_format") or "") in _PATH_FORMATS:
-        return {
-            int(t): {int(n): float(p) for n, p in (d or {}).items()}
-            for t, d in ((results.get("paths_summary") or {}).get("match_reach") or {}).items()
-        }
+        from backend.services.roster_plan import SlotReach
+
+        summary = results.get("paths_summary") or {}
+        return SlotReach(
+            {int(t): {int(n): float(p) for n, p in (d or {}).items()} for t, d in (summary.get("match_reach") or {}).items()},
+            bo={
+                int(t): {int(n): {int(b): float(q) for b, q in (mix or {}).items()} for n, mix in (d or {}).items()}
+                for t, d in (summary.get("match_bo") or {}).items()
+            },
+        )
+    from backend.services.roster_plan import SlotReach
+
     reach = _group_team_reach_probs(results)
     for tid_s, per_num in ((results.get("playoff") or {}).get("match_reach") or {}).items():
         d = reach.setdefault(int(tid_s), {})
         for num_s, p in per_num.items():
             d[int(num_s)] = d.get(int(num_s), 0.0) + float(p)
-    return reach
+    # the playoff matches by series (a Bo5 final); group matches are best-of-three
+    bo = {
+        int(t): {int(n): {int(b): float(q) for b, q in (mix or {}).items()} for n, mix in (d or {}).items()}
+        for t, d in (((results.get("playoff") or {}).get("match_bo")) or {}).items()
+    }
+    return SlotReach(reach, bo=bo)
 
 
 def _topk_rosters_bnb(
@@ -4561,7 +4462,6 @@ def _topk_rosters_bnb(
         remaining = need - len(chosen)
         if remaining == 0:
             roster = forced + chosen
-            pids = [int(p["player_id"]) for p in roster]
             true_score = float(true_score_fn(roster)) if true_score_fn else score
             if len(heap) >= k and true_score <= heap[0][0]:
                 return
@@ -5113,54 +5013,6 @@ def _is_live_pool(results: dict) -> bool:
     return _live_pool_size(results) > LIVE_OPTIMIZER_PLAYER_THRESHOLD
 
 
-@router.post("/best-team/start")
-def start_groups_best_team(payload: dict | None = None):
-    body = payload or {}
-    latest = _GROUPS_STATE.load(key=_state_key())
-    if not latest:
-        raise HTTPException(status_code=404, detail="No stored group stage found. Run the groups simulation first.")
-    if _is_live_pool(latest["results"] or {}):
-        raise HTTPException(
-            status_code=400,
-            detail="This event is large enough that rosters are optimized live per query; no precompute is needed.",
-        )
-    with GROUPS_BEST_TEAM_JOBS_LOCK:
-        for existing_id, existing in GROUPS_BEST_TEAM_JOBS.items():
-            if existing.get("status") in {"queued", "running"}:
-                return {"job_id": existing_id, "reused": True}
-        job_id = uuid.uuid4().hex
-        GROUPS_BEST_TEAM_JOBS[job_id] = {
-            "status": "queued",
-            "error": "",
-            "progress": 0.0,
-            "processed_combinations": 0,
-            "total_combinations": 0,
-            "result": None,
-            "created_at": time.time(),
-            "updated_at": time.time(),
-        }
-    threading.Thread(target=_run_groups_best_team_job, args=(job_id, body), daemon=True).start()
-    return {"job_id": job_id}
-
-
-@router.get("/best-team/job/{job_id}")
-def get_groups_best_team_job(job_id: str):
-    with GROUPS_BEST_TEAM_JOBS_LOCK:
-        job = GROUPS_BEST_TEAM_JOBS.get(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="job_id not found")
-        out = dict(job)
-    return {
-        "job_id": job_id,
-        "status": out.get("status", "queued"),
-        "error": out.get("error", ""),
-        "progress": out.get("progress", 0.0),
-        "processed_combinations": out.get("processed_combinations", 0),
-        "total_combinations": out.get("total_combinations", 0),
-        "result": out.get("result"),
-    }
-
-
 @router.get("/best-team/latest")
 def get_latest_groups_best_team(event_id: Optional[int] = None):
     key = _state_key(event_id)
@@ -5298,6 +5150,11 @@ def _live_groups_query(results: dict, body: dict, mode: str, cache_key: Any = No
             win_probs = _compute_group_win_probs(team_pids, model[0], model[2], model[1])
             for r, wp in zip(rosters, win_probs):
                 r["outcome_win_probability"] = float(wp)
+    elif mode == "season_max":
+        rosters, season_meta = _season_max_rosters(results, cache_key, players_info, players_meta, options, bound_scores, bound_offset,
+                                                   exact_score, reach_by_team, rates_by_pid, role_scores_by_pid, k)
+        exact = True
+        exact_candidates = season_meta["candidates"]
     else:
         # Average: the search scores every roster it cannot prune with the
         # exact role + booster assignments (the Lagrangian bound keeps that
@@ -5315,7 +5172,7 @@ def _live_groups_query(results: dict, body: dict, mode: str, cache_key: Any = No
     search = str(body.get("search") or "")
     filtered = _filter_saved_combo_teams(rosters, set(), set(), search)
     sorted_teams = _sort_saved_combo_teams(filtered, mode, str(body.get("sort") or "ev_desc"))
-    return {
+    out = {
         "exists": True,
         "live": True,
         "exact": exact,
@@ -5329,6 +5186,57 @@ def _live_groups_query(results: dict, body: dict, mode: str, cache_key: Any = No
         "page": max(0, page),
         "page_size": max(1, min(500, page_size)),
     }
+    if mode == "season_max":
+        out["season_tiers"] = season_meta["tiers"]
+        out["field_teams"] = season_meta["field_teams"]
+    return out
+
+
+_SEASON_AVG_CANDIDATES = 1000  # strongest-by-average rosters added to Season Maximum's candidates
+
+
+def _season_max_rosters(results, cache_key, players_info, players_meta, options, bound_scores, bound_offset,
+                        exact_score, reach_by_team, rates_by_pid, role_scores_by_pid, k) -> tuple:
+    """Season Maximum (services/season_max): the rosters that top outcomes
+    plus the strongest by average, each scored under its plan against the
+    event's field for the expected season points; best first."""
+    from backend.services import season_max
+
+    event_id = int((cache_key or (0,))[0] or 0)
+    model = _event_outcome_model(results, cache_key)
+    if len(model[0]) != 1:
+        model = _sample_joint_outcomes(results, _JOINT_SAMPLES)
+    players, pids, _prices, _team_of, _M = _dense_players(model, players_info)
+    dec = _dense_decomposition(model, pids)
+    if dec is None:
+        raise HTTPException(status_code=409, detail="The stored run carries no outcome paths; re-bake the event first.")
+    RW, MP, MR, _RT = dec
+    wins = _joint_winners(model, players_info, options)
+    cand_keys = [key_r for key_r, _w in sorted(wins.items(), key=lambda kv: -kv[1])][:_PLAN_WINNER_CANDIDATES]
+    avg_cands, _ = _topk_rosters_bnb(
+        players_info, bound_scores, _SEASON_AVG_CANDIDATES, options["budget"], options["max_per_team"], options["include"],
+        exact_score, bound_offset=bound_offset, role_scores_by_player=role_scores_by_pid,
+    )
+    have = set(cand_keys)
+    for c in avg_cands:
+        key_c = tuple(sorted(int(p["player_id"]) for p in c["players"]))
+        if key_c not in have:
+            have.add(key_c)
+            cand_keys.append(key_c)
+    pid_idx = {pid: i for i, pid in enumerate(pids)}
+    cand_keys = [key_c for key_c in cand_keys if all(int(pid) in pid_idx for pid in key_c)]
+    scored = season_max.season_points(event_id, cand_keys, pid_idx, RW, MP, MR, model[1][0], players_meta, reach_by_team, rates_by_pid, role_scores_by_pid)
+    if scored is None:
+        raise HTTPException(status_code=409, detail="The field of this event has not been read yet.")
+    order = sorted(range(len(cand_keys)), key=lambda i: -scored["expected"][i])[:k]
+    rosters = []
+    for i in order:
+        r = _score_roster_exact(list(cand_keys[i]), players_meta, reach_by_team, rates_by_pid, role_scores_by_pid)
+        r["season_points"] = float(scored["expected"][i])
+        r["season_tier_probs"] = [round(float(x), 5) for x in scored["tier_probs"][i]]
+        rosters.append(r)
+    tiers = [{"top_pct": round(share * 100), "points": pts} for share, pts in scored["tiers"]]
+    return rosters, {"candidates": len(cand_keys), "tiers": tiers, "field_teams": scored["field_teams"]}
 
 
 def _rows_for_mode(rows: List[Dict[str, Any]], mode: str) -> List[Dict[str, Any]]:
@@ -5345,10 +5253,16 @@ def _live_query_cache_key(key: int, updated_at: Any, mode: str, body: dict) -> t
     normalised filters (so the warm-up's default queries hit for the app's
     first open whatever order or defaults the request body carries)."""
     options = parse_optimizer_payload(body)
+    field_at = None
+    if mode == "season_max":
+        from backend.services import fantasy_field
+
+        field_at = fantasy_field.status(int(key)).get("stored_at")
     return (
         int(key),
         updated_at,
         str(mode),
+        field_at,
         str(body.get("search") or ""),
         str(body.get("sort") or "ev_desc"),
         int(body.get("page") or 0),
@@ -5416,13 +5330,13 @@ def query_groups_best_team(payload: dict | None = None, event_id: Optional[int] 
     if event_id:
         body["event_id"] = int(event_id)
     mode = str(body.get("mode") or "average").strip().lower()
-    if mode not in {"average", "single_outcome", "most_outcomes"}:
+    if mode not in {"average", "single_outcome", "most_outcomes", "season_max"}:
         mode = "average"
     # body.event_id queries another event's stored run (tests / tools); the
     # app itself always asks for the active event.
     key = int(body.get("event_id") or 0) or _state_key()
     latest_sim = _GROUPS_STATE.load(key=key)
-    if latest_sim and _is_live_pool(latest_sim["results"] or {}):
+    if latest_sim and (_is_live_pool(latest_sim["results"] or {}) or mode == "season_max"):
         return _cached_live_query(key, latest_sim, mode, body)
     latest = _GROUPS_BEST_STATE.load(key=key)
     if not latest:
@@ -5572,7 +5486,7 @@ def query_groups_best_team_completed(payload: dict | None = None, event_id: Opti
                 role_by_pid[int(pid_raw)] = str(pdata["role_id"])
     player_values = []
     for pid, score in scores_by_pid.items():
-        row = get_player(pid) or {}
+        row = _snapshot_player_row(results, pid) or {}  # this event's price, not the last import's
         comps = components_by_pid.get(pid) or {}
         player_values.append(
             {

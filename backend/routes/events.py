@@ -5,7 +5,7 @@ import threading
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -3970,9 +3970,47 @@ def _detect_event_tournament_kind_cached(event: Dict[str, Any]) -> Dict[str, Any
     # can tell whether the event has started (inputs are frozen from then on).
     if "start_at" not in detected:
         detected["start_at"], detected["end_at"] = _event_page_dates(event)
+        # A stage-scoped playoff game (HLTV runs the group stage and the
+        # playoffs as two fantasy games of one event) starts with ITS first
+        # match, not the event's day one — else it reads as started (and
+        # frozen) while the group stage is still being played.
+        if detected.get("stage_scoped") and str(detected.get("kind") or "") in ("playoff", "double_elim"):
+            first = _playoff_stage_first_match(event)
+            if first:
+                detected["start_at"] = first
     with _KIND_CACHE_LOCK:
         _KIND_CACHE[event_id] = (signature, detected)
     return detected
+
+
+def _playoff_stage_first_match(event: Dict[str, Any]) -> Optional[float]:
+    """Epoch seconds of the earliest scheduled match in the archived event
+    page's playoff brackets (every slotted bracket not named 'Group …', the
+    3rd-place decider included); None when no playoff match has a time yet."""
+    import html as _htmlmod
+    import json as _json
+    import re as _re
+
+    from backend.routes.groups import _find_event_snapshot_html
+
+    try:
+        html = _find_event_snapshot_html(event.get("hltv_event_id")) or ""
+    except Exception:  # noqa: BLE001
+        return None
+    times: List[float] = []
+    for m in _re.finditer(r'data-slotted-bracket-json="([^"]+)"', html):
+        try:
+            bracket = _json.loads(_htmlmod.unescape(m.group(1)))
+        except ValueError:
+            continue
+        if str(bracket.get("name") or "").strip().lower().startswith("group"):
+            continue
+        for rnd in bracket.get("rounds") or []:
+            for key, slot in rnd.items():
+                match = ((slot or {}).get("matchup") or {}).get("match") if key.startswith("slot") and isinstance(slot, dict) else None
+                if match and match.get("startTime"):
+                    times.append(float(match["startTime"]) / 1000.0)
+    return min(times) if times else None
 
 
 def _event_page_dates(event: Dict[str, Any]) -> tuple:

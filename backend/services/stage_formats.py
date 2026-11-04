@@ -4,6 +4,8 @@
           (services/swiss_engine), five rounds plus a padding stage.
   single  a 2/4/8/16-team single-elimination bracket, optional third-place
           decider, a longer final: every outcome enumerated.
+  single6 the 6-team byes bracket (two group winners straight into the semis;
+          slots [bye1, qf1a, qf1b, qf2a, qf2b, bye2]), the bye padded +6.
   double  the 8-team double-elimination bracket (HLTV's routing, the two
           round byes padded with the real games' average): every outcome
           enumerated.
@@ -143,9 +145,49 @@ def single_elim_spec(team_slots: List[int], third_place: bool, final_bo: int) ->
         matches.append(("third_place_1", "third_place", ("lose", semis[0]), ("lose", semis[1])))
         stages.append(Stage(key="third_place", label="3rd", full="Third-place decider", series=3))
         rem_by_stage["third_place"] = 0
+        rem_by_stage["semis"] = 0  # a semi-final loser plays the decider: no match missed
     return {
         "kind": "single", "matches": matches, "stages": stages, "rem_by_stage": rem_by_stage, "pad_after": {},
         "advance_match": advance_match, "missed_after": None, "pad_rule": "average", "rounds": rounds_total,
+    }
+
+
+# A bye: HLTV credits the skipped quarter-final as a padded match; with no
+# earlier game in the stage to average it carries the win points only (the
+# rule the 6-team playoff engine has always used).
+BYE_PAD_POINTS = (0.0, 6.0, 0.0)
+
+
+def single6_spec(team_slots: List[int], third_place: bool, final_bo: int) -> Dict[str, Any]:
+    """The 6-team byes bracket: QF1 = slots 1 v 2, QF2 = 3 v 4, SF1 = bye 1
+    (slot 0) v QF1 winner, SF2 = bye 2 (slot 5) v QF2 winner, the final, the
+    decider between the semi losers; the byes padded at the quarter-finals."""
+    if len(team_slots) != 6:
+        raise ValueError(f"the byes bracket needs 6 teams, got {len(team_slots)}")
+    final_bo = int(final_bo) if int(final_bo or 3) in (1, 3, 5) else 3
+    matches = [
+        ("quarters_1", "quarters", ("seed", 1), ("seed", 2)),
+        ("quarters_2", "quarters", ("seed", 3), ("seed", 4)),
+        ("semis_1", "semis", ("seed", 0), ("win", "quarters_1")),
+        ("semis_2", "semis", ("seed", 5), ("win", "quarters_2")),
+        ("final_1", "final", ("win", "semis_1"), ("win", "semis_2")),
+    ]
+    stages = [
+        Stage(key="quarters", label="QF", full="Quarter-final", series=3),
+        Stage(key="bye", label="Bye", full="Quarter-final bye", pad=True, pad_points=BYE_PAD_POINTS),
+        Stage(key="semis", label="SF", full="Semi-final", series=3),
+        Stage(key="final", label="Final", full="Final", series=final_bo),
+    ]
+    rem_by_stage = {"quarters": 2, "semis": 1, "final": 0}
+    if third_place:
+        matches.append(("third_place_1", "third_place", ("lose", "semis_1"), ("lose", "semis_2")))
+        stages.append(Stage(key="third_place", label="3rd", full="Third-place decider", series=3))
+        rem_by_stage["third_place"] = 0
+        rem_by_stage["semis"] = 0  # a semi-final loser plays the decider: no match missed
+    return {
+        "kind": "single6", "matches": matches, "stages": stages, "rem_by_stage": rem_by_stage, "pad_after": {},
+        "advance_match": "final_1", "missed_after": None, "pad_rule": "average", "rounds": 3,
+        "bye_pads": [(0, "bye"), (5, "bye")],
     }
 
 
@@ -174,6 +216,8 @@ def double_elim_spec(team_slots: List[int], grand_final_bo: int) -> Dict[str, An
 def bracket_spec(kind: str, team_slots: List[int], third_place: bool, final_bo: int) -> Dict[str, Any]:
     if str(kind) == "double":
         return double_elim_spec(team_slots, final_bo)
+    if str(kind) == "single6":
+        return single6_spec(team_slots, third_place, final_bo)
     return single_elim_spec(team_slots, third_place, final_bo)
 
 
@@ -185,6 +229,7 @@ def bracket_paths_for(spec: Dict[str, Any], team_slots: List[int], probs_by_seri
     return bracket_paths(
         [int(t) for t in team_slots], spec["matches"], spec["stages"], spec["rem_by_stage"], spec["pad_after"],
         spec["advance_match"], probs_by_series, pad_rule=spec["pad_rule"], missed_after=spec["missed_after"], kind=spec["kind"],
+        bye_pads=spec.get("bye_pads"),
     )
 
 

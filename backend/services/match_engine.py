@@ -18,6 +18,7 @@ from backend.swiss_stage.fantasy_scoring import (
     compute_rating_points,
     compute_role_points,
     compute_win_points,
+    rating_series_factor,
 )
 from backend.swiss_stage.swiss_models import TeamState
 from backend.services.team_strength import get_hltv_rank, get_team_winrate
@@ -126,7 +127,6 @@ def apply_fantasy_points_for_team(
     The caller can reuse the same base probability for both teams by
     passing p for team A and (1 - p) for team B.
     """
-    is_bo1 = match_type.lower() == "bo1"
     if team_rank_by_id is not None and opponent_team_id in team_rank_by_id:
         opponent_rank = int(team_rank_by_id[opponent_team_id])
     else:
@@ -145,9 +145,8 @@ def apply_fantasy_points_for_team(
         original_rating = player.rating
         player.rating = match_rating
 
-        rating_pts = compute_rating_points(player)
-        if is_bo1:
-            rating_pts *= 0.5  # BO1 halves the rating contribution
+        # the series length scales the rating contribution (Bo1 x0.5, Bo5 x1.25)
+        rating_pts = compute_rating_points(player) * rating_series_factor(_series_of(match_type))
 
         role_pts = compute_role_points(player)
         win_pts = compute_win_points(win_probability, did_win)

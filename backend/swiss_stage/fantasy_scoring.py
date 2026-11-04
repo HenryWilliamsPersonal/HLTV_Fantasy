@@ -15,6 +15,18 @@ def compute_rating_points(player: PlayerState) -> float:
     return ((player.rating - 1.0) / 2.0) * 100.0
 
 
+# HLTV scales a match's rating points by its series length: a Bo1 counts
+# half, a Bo5 a quarter more (user-confirmed rule, 2026-11-04).
+RATING_SERIES_FACTOR = {1: 0.5, 2: 1.0, 3: 1.0, 5: 1.25}
+
+
+def rating_series_factor(bo) -> float:
+    try:
+        return RATING_SERIES_FACTOR.get(int(bo), 1.0)
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def compute_role_points(player: PlayerState) -> float:
     """
     Role component:

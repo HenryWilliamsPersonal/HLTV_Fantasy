@@ -658,7 +658,9 @@ def _predict_match(player_row: Dict[str, Any], own_tid: int, opp_tid: int, bo: i
             rating = float(player_row.get("rating") or 1.0)
         except (TypeError, ValueError):
             rating = 1.0
-    rating_points = (float(rating) - 1.0) / 2.0 * 100.0
+    from backend.swiss_stage.fantasy_scoring import rating_series_factor
+
+    rating_points = (float(rating) - 1.0) / 2.0 * 100.0 * rating_series_factor(bo)
     p = _win_probability(results, own_tid, opp_tid, bo)
     win_points = (6.0 * p - 3.0 * (1.0 - p)) if p is not None else 0.0
     role_points = 0.0

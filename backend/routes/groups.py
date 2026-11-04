@@ -1724,8 +1724,8 @@ def _exact_combined_playoffs(
     weights, advance, bye_weight = bracket_exact.compute_pairing_weights(specs, roots, rounds_total, pwin)
     # Third-place decider (semi-final losers), scored as one more playoff
     # match after the final's round: no further rounds, so no elimination
-    # penalty on its loser; the semi-final loss keeps its -3 for the missed
-    # final, as in the Playoff tab's single-elimination bracket.
+    # penalty on its loser, and none on a semi-final loss either (that team
+    # plays the decider instead of the final).
     decider_weights: Dict[tuple, float] = {}
     if third_place and template.get("decider"):
         decider_weights = _decider_pairing_weights(tuple_probs, template, match_prob, rounds_total)
@@ -1758,8 +1758,12 @@ def _exact_combined_playoffs(
                     if r.get("match_type") == "ELIMINATION"
                 )
                 match_row = next((r for r in (p.point_breakdown or []) if r.get("match_type") != "ELIMINATION"), None)
+                total, win = float(p.total_points), float(p.win_points_total)
+                if rem == 1 and third_place and template.get("decider"):
+                    # a semi-final loser plays the decider instead of the final: no match missed
+                    total, win, penalty = total - penalty, win - penalty, 0.0
                 out[int(pid)] = (
-                    float(p.total_points), float(p.rating_points_total), float(p.win_points_total),
+                    total, float(p.rating_points_total), win,
                     float(p.role_points_total), float(p.booster_points_total), penalty,
                     _booster_meta(match_row, p) if match_row else None,
                 )
@@ -2354,11 +2358,13 @@ def _bake_bracket_event(event_id: int, detected: dict, trigger: str, started: fl
     if not ids:
         return {"status": "skipped", "event_id": event_id, "reason": "bracket unavailable: no slots on the event page"}
     bracket_kind = "double" if (str(auto.get("bracket_kind") or "") == "double" or kind == "double_elim") else "single"
+    if bracket_kind == "single" and int(auto.get("bracket_size") or 0) == 6 and len(ids) == 6:
+        bracket_kind = "single6"  # two group winners straight into the semis
     if bracket_kind == "double" and len(ids) != 8:
         return {"status": "unsupported", "event_id": event_id, "reason": f"double elimination with {len(ids)} teams is not modelled (8 only)"}
     if bracket_kind == "single" and len(ids) not in stage_formats.SINGLE_SIZES:
         return {"status": "unsupported", "event_id": event_id, "reason": f"a {len(ids)}-team bracket is not modelled (2, 4, 8 or 16)"}
-    third_place = bool(detected.get("playoff_third_place")) and bracket_kind == "single"
+    third_place = bool(detected.get("playoff_third_place")) and bracket_kind in ("single", "single6")
     final_bo = int(playoff_routes._detected_final_bo(event_id) or 3)
     if any(t <= 0 for t in ids):
         # HLTV has not placed every team: store the draw as it stands (its
@@ -3469,8 +3475,8 @@ def _find_event_snapshot_html(hltv_event_id) -> Optional[str]:
 
 def _parse_bracket6_from_structure(html: str):
     """The 6-team byes playoff (two hidden first-round slots) from the page's
-    slotted-bracket JSON, as ordered team names in the simulator's slot
-    convention [bye1, qf1a, qf1b, qf2a, qf2b, bye2]. None when the page has no
+    slotted-bracket JSON, as ordered {name, id (HLTV team id)} seeds in the
+    simulator's slot convention [bye1, qf1a, qf1b, qf2a, qf2b, bye2]. None when the page has no
     such bracket. Bye sides are identified structurally: a semi-final side
     whose source quarter-final slot is hidden."""
     import html as _htmllib
@@ -3479,7 +3485,10 @@ def _parse_bracket6_from_structure(html: str):
     def side_name(matchup, i):
         side = (matchup or {}).get(f"team{i}") or {}
         name = side.get("name")
-        return str(name) if name else None
+        if not name:
+            return None
+        hid = (side.get("id") or {}).get("teamId") if isinstance(side.get("id"), dict) else (side.get("team") or {}).get("id")
+        return {"name": str(name), "id": int(hid) if hid else None}
 
     for raw in re.findall(r'data-slotted-bracket-json="([^"]+)"', html or ""):
         try:
@@ -3494,11 +3503,19 @@ def _parse_bracket6_from_structure(html: str):
         rounds = data.get("rounds") or []
         if len(rounds) < 2:
             continue
-        first = rounds[0].get("slots") or []
+
+        def round_slots(rd):
+            # the pre-2026-10 schema lists "slots"; the current one keys them slot1..slotN
+            if rd.get("slots"):
+                return list(rd["slots"])
+            keyed = [(int(k[4:]), v) for k, v in rd.items() if re.fullmatch(r"slot\d+", k) and isinstance(v, dict)]
+            return [v for _i, v in sorted(keyed)]
+
+        first = round_slots(rounds[0])
         if len(first) != 4 or sum(1 for s in first if s.get("hidden")) != 2:
             continue
         qf_by_id = {((s.get("slotId") or {}).get("id")): s for s in first}
-        semis = rounds[1].get("slots") or []
+        semis = round_slots(rounds[1])
         if len(semis) != 2:
             continue
         layout: list = [None] * 6
@@ -3587,6 +3604,8 @@ def autofill_event_playoff(
         snap_parsed = _parse_event_playoff_bracket(snap_html) if snap_html else {}
         if snap_html and int(snap_parsed.get("bracket_size") or 0) in (8, 16) and snap_parsed.get("seeds") and all(snap_parsed["seeds"]):
             html = snap_html  # the full draw is archived; a TBD snapshot would hide a draw HLTV has published since
+        elif snap_html and all(_parse_bracket6_from_structure(snap_html) or [None]):
+            html = snap_html  # the 6-team byes draw, every slot placed
         elif snap_html:
             try:
                 if _parse_event_double8_bracket(snap_html):
@@ -3627,14 +3646,28 @@ def autofill_event_playoff(
     # into the 6-slot convention [bye1, qf1a, qf1b, qf2a, qf2b, bye2].
     byes_layout = _parse_bracket6_from_structure(html)
     if byes_layout is not None:
-        all_teams = get_all_teams()
+        # the fantasy event's own teams win a name / HLTV id shared by
+        # duplicate team rows (BETBOOM 11 / 8202)
+        own: set = set()
+        if fantasy_event_id:
+            try:
+                from backend.services import event_rosters
+
+                own = {int(t) for t in (event_rosters.rosters(int(fantasy_event_id)) or {}).keys()}
+            except Exception:  # noqa: BLE001
+                own = set()
+        all_teams = sorted(get_all_teams(), key=lambda t: int(t.get("team_id") or 0) not in own)
+        by_hltv_id: Dict[int, int] = {}
         by_name: Dict[str, int] = {}
         for t in all_teams:
-            by_name.setdefault(_normalize_team_name(str(t.get("name") or "")), int(t.get("team_id") or 0))
+            tid = int(t.get("team_id") or 0)
+            if t.get("hltv_team_id"):
+                by_hltv_id.setdefault(int(t["hltv_team_id"]), tid)
+            by_name.setdefault(_normalize_team_name(str(t.get("name") or "")), tid)
         return {
             "bracket_size": 6,
-            "team_ids": [by_name.get(_normalize_team_name(n or ""), 0) if n else 0 for n in byes_layout],
-            "team_names": [n or "TBD" for n in byes_layout],
+            "team_ids": [_resolve_playoff_seed_team_id(s, by_hltv_id, by_name) for s in byes_layout],
+            "team_names": [(s["name"] if s else "TBD") for s in byes_layout],
         }
 
     parsed = _parse_event_playoff_bracket(html)

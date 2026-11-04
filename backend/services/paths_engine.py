@@ -47,6 +47,9 @@ class Stage:
     opener: bool = False
     pad: bool = False  # a pad stage: no match, the team is credited padded matches here
     series: int = 3  # best-of of the matches played at this stage (Swiss paths carry their own per match)
+    # a pad stage with fixed (rating, win, role) points per padded match,
+    # overriding the paths' pad rule (a bracket bye: no earlier game to average)
+    pad_points: Optional[tuple] = None
 
     def descriptor(self) -> Dict[str, Any]:
         return {
@@ -258,6 +261,9 @@ def _player_matrix(sc: Scored, pid: int, sel=None, plan: Optional[Dict[str, Any]
         else:
             const = np.array([sc.pad_rating[j], _PAD_WIN, float(role_pm) if role_pm is not None else sc.pad_role[j]])
             pad_comps = pads[:, :, None] * const[None, None, :]
+        for s_i, st in enumerate(p.stages):
+            if st.pad and st.pad_points is not None:
+                pad_comps[:, s_i, :] = pads[:, s_i, None] * np.asarray(st.pad_points, dtype=np.float64)[None, :]
     pen = p.pen[:, t] if sel is None else p.pen[sel, t]
     return {
         "ids": ids, "safe": safe, "mask": mask, "comps": comps, "match_no": match_no, "pads": pads, "pad_comps": pad_comps,
@@ -574,6 +580,7 @@ def bracket_paths(
     team_ids: List[int], matches: List[tuple], stages: List[Stage], rem_by_stage: Dict[str, int],
     pad_after: Dict[str, str], advance_match: str, probs_by_series: Dict[int, Any], pad_rule: str = "average",
     missed_after: Optional[Dict[str, List[str]]] = None, kind: str = "single",
+    bye_pads: Optional[List[tuple]] = None,
 ) -> Paths:
     """Every outcome of a bracket, enumerated exactly: one bit per match in
     play order (0 = the first-listed team wins, as the stored playoff codes),
@@ -581,6 +588,8 @@ def bracket_paths(
     slot) / ("win", key) / ("lose", key). The loser of a match at a stage with
     rem_by_stage > 0 is charged −3 per round it misses; the winner of a match
     at a stage in pad_after is credited one padded match at that pad stage.
+    bye_pads = (seed slot, pad stage key): a team that skips a round, credited
+    one padded match there in every outcome.
     The outcome's probability is the product of its match odds."""
     import numpy as np
 
@@ -647,6 +656,8 @@ def bracket_paths(
         match_w[:, m_i] = wnr
         if key == advance_match:
             advance[rows, wnr] = True
+    for slot, pad_stage in bye_pads or []:
+        pad[:, int(slot), stage_pos[pad_stage]] = 1
     missed: Dict[int, List[int]] = {}
     if missed_after:
         for k, later in missed_after.items():

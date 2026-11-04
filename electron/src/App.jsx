@@ -11092,13 +11092,13 @@ function BracketStageView({ results, teams, teamLookup, draw = null }) {
       </div>
     );
   }
+  // The draw only: each team in its starting slot, later rounds open.
   return (
     <div className="card sub group-card">
       <div className="group-card-head">
-        <h3>Most Likely Bracket</h3>
-        <span className="muted">{(Number(br.best_probability || 0) * 100).toFixed(2)}%</span>
+        <h3>Bracket</h3>
       </div>
-      <OutcomeBracketVisual bracket={br.best} teamLookup={teamLookup} teams={teams} />
+      <BracketPicker bracket={br} teamLookup={teamLookup} teams={teams} picks={{}} onPick={() => {}} readOnly />
     </div>
   );
 }
@@ -12725,11 +12725,6 @@ function GroupsTab({
                               </div>
                             ))}
                           </div>
-                          <div className="filter-team-toggles">
-                            <button className={`filter-toggle out${teamExcluded ? " on" : ""}`} onClick={() => toggleTeamExclude(tid)}>
-                              {teamExcluded ? "Excluded" : "Exclude"}
-                            </button>
-                          </div>
                         </div>
                       </div>
                       <div className="event-team-players">
@@ -12785,26 +12780,6 @@ function GroupsTab({
                                   {Number(valueByPid[Number(pid)].distance || 0).toFixed(1)}
                                 </div>
                               )}
-                              <div className="event-player-filters">
-                                <button
-                                  className={`filter-toggle in${included ? " on" : ""}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    toggleFilter(Number(pid), "include");
-                                  }}
-                                >
-                                  {included ? "Included" : "Include"}
-                                </button>
-                                <button
-                                  className={`filter-toggle out${excluded ? " on" : ""}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    toggleFilter(Number(pid), "exclude");
-                                  }}
-                                >
-                                  {excluded ? "Excluded" : "Exclude"}
-                                </button>
-                              </div>
                             </div>
                           );
                         })}

@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 RATING_SCALE = 50.0  # (rating - 1) x 50
 WIN_POINTS = 6.0
 LOSS_POINTS = -3.0
-BO1_RATING_FACTOR = 0.5
 
 _LOCK = threading.Lock()
 _INFLIGHT: Set[int] = set()  # events whose missing scoreboards are being read
@@ -42,8 +41,10 @@ _FAILED: Dict[int, float] = {}  # match_id -> when its page read last failed (re
 _RETRY_AFTER = 900.0
 
 
-def rating_points(rating: float, bo1: bool) -> int:
-    pts = round((float(rating) - 1.0) * RATING_SCALE * (BO1_RATING_FACTOR if bo1 else 1.0), 6)  # 1.45 - 1 is 0.4499… in floating point
+def rating_points(rating: float, bo: int = 3) -> int:
+    from backend.swiss_stage.fantasy_scoring import rating_series_factor
+
+    pts = round((float(rating) - 1.0) * RATING_SCALE * rating_series_factor(bo), 6)  # 1.45 - 1 is 0.4499… in floating point
     return int(math.floor(pts + 0.5)) if pts >= 0 else -int(math.floor(-pts + 0.5))
 
 
@@ -208,7 +209,9 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
         board = boards.get(int(m["match_id"]))
         if not board:
             continue
-        bo1 = int(m.get("maps") or ((m.get("score_a") or 0) + (m.get("score_b") or 0)) or 0) == 1
+        # the series from the winner's map count (1 / 2 / 3 -> Bo1 / Bo3 / Bo5)
+        won_maps = max(int(m.get("score_a") or 0), int(m.get("score_b") or 0))
+        bo = {1: 1, 2: 3, 3: 5}.get(won_maps, 3) if won_maps else (1 if int(m.get("maps") or 0) == 1 else 3)
         for ps in board["players"]:
             pid = ps.get("player_id")
             rating = ps.get("rating")
@@ -218,7 +221,7 @@ def event_leaderboard(event_id: int, fetch_missing: bool = True) -> Dict[str, An
             if row is None:
                 continue  # a stand-in the fantasy game does not list
             won = _same_team(ps.get("team"), board.get("winner"))
-            rp = rating_points(float(rating), bo1)
+            rp = rating_points(float(rating), bo)
             wp = WIN_POINTS if won else LOSS_POINTS
             row["matches"] += 1
             row["wins"] += 1 if won else 0

@@ -94,6 +94,9 @@ def _ensure() -> None:
             )
             """
         )
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(fantasy_field_runs)").fetchall()}
+        if "state_json" not in cols:
+            conn.execute("ALTER TABLE fantasy_field_runs ADD COLUMN state_json TEXT")  # the walk's position, for a resume
         conn.commit()
     finally:
         conn.close()
@@ -196,14 +199,16 @@ def _save_run(run: Dict[str, Any]) -> None:
     try:
         conn.execute(
             """
-            INSERT INTO fantasy_field_runs (event_id, league_id, started_at, finished_at, status, scanned, found, errors, lowest_id, highest_id, league_size, message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO fantasy_field_runs (event_id, league_id, started_at, finished_at, status, scanned, found, errors, lowest_id, highest_id, league_size, message, state_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(event_id, started_at) DO UPDATE SET
                 finished_at = excluded.finished_at, status = excluded.status, scanned = excluded.scanned, found = excluded.found, errors = excluded.errors,
-                lowest_id = excluded.lowest_id, highest_id = excluded.highest_id, league_size = excluded.league_size, message = excluded.message
+                lowest_id = excluded.lowest_id, highest_id = excluded.highest_id, league_size = excluded.league_size, message = excluded.message,
+                state_json = excluded.state_json
             """,
             (int(run["event_id"]), int(run["league_id"]), float(run["started_at"]), run.get("finished_at"), str(run["status"]), int(run["scanned"]),
-             int(run["found"]), int(run["errors"]), run.get("lowest_id"), run.get("highest_id"), run.get("league_size"), str(run.get("message") or "")),
+             int(run["found"]), int(run["errors"]), run.get("lowest_id"), run.get("highest_id"), run.get("league_size"), str(run.get("message") or ""),
+             json.dumps({**(run.get("walk") or {}), "statuses": run.get("statuses") or {}}) if run.get("walk") is not None else None),
         )
         conn.commit()
     finally:
@@ -297,37 +302,45 @@ def _fetch_feeds(driver, urls: List[str]) -> List[Dict[str, Any]]:
 
 
 # passes over the ids HLTV refused (403 / 429) before giving up on them
-RETRY_PASSES = 8
-RETRY_PAUSE_SECONDS = 30.0
+UNANSWERED_PASSES = 8  # passes over the ids HLTV refused (403 / 429) before giving up on them
+UNANSWERED_PAUSE = 30.0  # seconds, times the pass number
+
+
+def _new_walk(seed_team_id: int) -> Dict[str, Any]:
+    seed = int(seed_team_id)
+    return {"seed": seed, "lo": seed, "hi": seed + 1, "first": True, "down_misses": 0, "up_misses": 0,
+            "down_open": True, "up_open": True, "unresolved": [], "phase": "walk", "passes": 0}
 
 
 def _read(event_id: int, league_id: int, seed_team_id: int, max_ids: int) -> None:
+    """The id walk, its position kept in run["walk"] and saved with the run
+    after every chunk, so a read cut off by a restart resumes where it was
+    (resume_interrupted) instead of starting over."""
     from backend.services.hltv_browser import run_hltv_browser_session
     from backend.services.my_team import ENTRY_URL
 
     eid, lid = int(event_id), int(league_id)
     run = _RUNS[eid]
     base = f"https://www.hltv.org/fantasy/{eid}/league/{lid}/overview/"
-    lo, hi = int(seed_team_id), int(seed_team_id) + 1  # next ids to try downward (lo-1...) and upward (hi...)
-    down_misses = up_misses = 0
-    down_open = up_open = True
-    first = True
-    unresolved: List[int] = []  # ids HLTV never answered about (kept for a last pass)
+    w = run.setdefault("walk", _new_walk(seed_team_id))
+    seed = int(w["seed"])
 
     def chunk_ids() -> tuple:
-        nonlocal lo, hi, first
-        if first:
-            first = False
-            ids = list(range(int(seed_team_id), int(seed_team_id) + CHUNK_IDS))
-            hi = int(seed_team_id) + CHUNK_IDS
+        if w["first"]:
+            w["first"] = False
+            w["hi"] = seed + CHUNK_IDS
+            return "up", list(range(seed, seed + CHUNK_IDS))
+        if w["up_open"] and (not w["down_open"] or (w["hi"] - seed) <= (seed - w["lo"])):
+            ids = list(range(w["hi"], w["hi"] + CHUNK_IDS))
+            w["hi"] += CHUNK_IDS
             return "up", ids
-        if up_open and (not down_open or (hi - int(seed_team_id)) <= (int(seed_team_id) - lo)):
-            ids = list(range(hi, hi + CHUNK_IDS))
-            hi += CHUNK_IDS
-            return "up", ids
-        ids = list(range(lo - CHUNK_IDS, lo))
-        lo -= CHUNK_IDS
+        ids = list(range(w["lo"] - CHUNK_IDS, w["lo"]))
+        w["lo"] -= CHUNK_IDS
         return "down", ids
+
+    def unanswered(tid: int) -> None:
+        if int(tid) not in w["unresolved"]:
+            w["unresolved"].append(int(tid))
 
     def scan(ids: List[int], direction: Optional[str]) -> int:
         """Fetch the ids in one session, store the teams found, return the
@@ -342,9 +355,10 @@ def _read(event_id: int, league_id: int, seed_team_id: int, max_ids: int) -> Non
         except Exception:  # noqa: BLE001
             logger.warning("Field read: browser session failed for event %s", eid, exc_info=True)
             run["errors"] += len(ids)
+            for tid in ids:
+                unanswered(tid)
             time.sleep(5.0)
             return len(ids)
-        nonlocal up_misses, down_misses, up_open, down_open
         found_rows: List[Dict[str, Any]] = []
         left = 0
         miss_run = 0
@@ -364,8 +378,7 @@ def _read(event_id: int, league_id: int, seed_team_id: int, max_ids: int) -> Non
             if status_ in (0, 403, 429) or status_ >= 500:
                 run["errors"] += 1  # no answer about the id: throttled, challenged or down
                 left += 1
-                if tid not in unresolved:
-                    unresolved.append(int(tid))
+                unanswered(tid)
                 continue
             if parsed:
                 parsed["team_id"] = int(tid)
@@ -380,49 +393,54 @@ def _read(event_id: int, league_id: int, seed_team_id: int, max_ids: int) -> Non
             else:
                 miss_run += 1
         if direction == "up":
-            up_misses = (up_misses + miss_run) if not found_rows else miss_run
-            if up_misses >= STOP_AFTER_MISSES:
-                up_open = False
+            w["up_misses"] = (w["up_misses"] + miss_run) if not found_rows else miss_run
+            if w["up_misses"] >= STOP_AFTER_MISSES:
+                w["up_open"] = False
         elif direction == "down":
-            down_misses = (down_misses + miss_run) if not found_rows else miss_run
-            if down_misses >= STOP_AFTER_MISSES:
-                down_open = False
+            w["down_misses"] = (w["down_misses"] + miss_run) if not found_rows else miss_run
+            if w["down_misses"] >= STOP_AFTER_MISSES:
+                w["down_open"] = False
         _save_teams(eid, lid, found_rows)
         return left
 
     try:
-        while (down_open or up_open) and run["scanned"] < max_ids and not _STOP.get(eid):
-            direction, ids = chunk_ids()
-            scan(ids, direction)
-            if run.get("league_size") and run["found"] >= int(run["league_size"]):
-                run["message"] = "every team of the league found"
-                break
-            _save_run(run)
-            time.sleep(PAUSE_BETWEEN_CHUNKS)
+        if w["phase"] == "walk":
+            while (w["down_open"] or w["up_open"]) and run["scanned"] < max_ids and not _STOP.get(eid):
+                direction, ids = chunk_ids()
+                scan(ids, direction)
+                if run.get("league_size") and run["found"] >= int(run["league_size"]):
+                    run["message"] = "every team of the league found"
+                    break
+                _save_run(run)
+                time.sleep(PAUSE_BETWEEN_CHUNKS)
+            if not _STOP.get(eid):
+                w["phase"] = "retry"
+                _save_run(run)
         # retry what HLTV never answered about (403 / 429 bursts): every id,
         # pass after pass with a growing pause, until a pass recovers nothing
-        passes = 0
-        while unresolved and passes < RETRY_PASSES and not _STOP.get(eid):
-            passes += 1
-            time.sleep(RETRY_PAUSE_SECONDS * passes)
-            todo, unresolved = unresolved, []
+        while w["phase"] == "retry" and w["unresolved"] and w["passes"] < UNANSWERED_PASSES and not _STOP.get(eid):
+            w["passes"] += 1
+            time.sleep(UNANSWERED_PAUSE * w["passes"])
+            todo, w["unresolved"] = list(w["unresolved"]), []
             before = len(todo)
             for i in range(0, len(todo), CHUNK_IDS):
                 if _STOP.get(eid):
-                    unresolved.extend(todo[i:])
+                    w["unresolved"].extend(todo[i:])
                     break
                 retry = todo[i:i + CHUNK_IDS]
                 run["scanned"] -= len(retry)  # counted again by scan()
                 scan(retry, None)
-                _save_run(run)
+                # the ids this pass has not reached yet stay listed in the saved state
+                rest = [t for t in todo[i + CHUNK_IDS:] if t not in w["unresolved"]]
+                _save_run({**run, "walk": {**w, "unresolved": w["unresolved"] + rest}})
                 time.sleep(PAUSE_BETWEEN_CHUNKS)
-            if len(unresolved) >= before:
+            if len(w["unresolved"]) >= before:
                 break  # HLTV still refuses every one of them
         run["status"] = "stopped" if _STOP.get(eid) else "done"
         if not run.get("message"):
             run["message"] = f"scan ended: ids {run.get('lowest_id')}–{run.get('highest_id')}, {run['found']} teams"
-        if unresolved:
-            run["message"] += f" | {len(unresolved)} ids unanswered"
+        if w["unresolved"]:
+            run["message"] += f" | {len(w['unresolved'])} ids unanswered"
         run["message"] += f" | statuses {json.dumps(run.get('statuses') or {}, sort_keys=True)}"
     except Exception as exc:  # noqa: BLE001
         logger.exception("Field read failed for event %s", eid)
@@ -448,12 +466,57 @@ def start_read(event_id: int, league_id: int, seed_team_id: int, max_ids: int = 
         run = {
             "event_id": eid, "league_id": int(league_id), "started_at": time.time(), "finished_at": None, "status": "running",
             "scanned": 0, "found": 0, "errors": 0, "lowest_id": None, "highest_id": None, "league_size": None, "message": "", "statuses": {},
+            "walk": _new_walk(seed_team_id),
         }
         _RUNS[eid] = run
         _STOP.pop(eid, None)
     _save_run(run)
     threading.Thread(target=_read, args=(eid, int(league_id), int(seed_team_id), int(max_ids)), name=f"fantasy-field-{eid}", daemon=True).start()
     return {"status": "started", "event_id": eid, "league_id": int(league_id), "seed_team_id": int(seed_team_id), "max_ids": int(max_ids)}
+
+
+def resume_interrupted() -> Optional[str]:
+    """Pick up a full read a restart cut off: the newest run of an event
+    still marked running with no thread behind it, continued from its saved
+    walk under the same run row. A cut-off run saved before walks were kept
+    is closed as interrupted (auto_reads then starts a fresh one when the
+    event still needs it). One read at a time; None when nothing waited."""
+    _ensure()
+    with _LOCK:
+        if any(r.get("status") == "running" for r in _RUNS.values()):
+            return None
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT * FROM fantasy_field_runs WHERE status = 'running' ORDER BY started_at DESC").fetchall()
+    finally:
+        conn.close()
+    seen: set = set()
+    keys = ("event_id", "league_id", "started_at", "finished_at", "status", "scanned", "found", "errors", "lowest_id", "highest_id", "league_size", "message")
+    for r in rows:
+        eid = int(r["event_id"])
+        with _LOCK:
+            if eid in _RUNS:
+                continue
+        run = {k: r[k] for k in keys}
+        run["message"] = run.get("message") or ""
+        if eid in seen:  # an older stuck row of an event already handled
+            _save_run({**run, "status": "interrupted", "finished_at": time.time()})
+            continue
+        seen.add(eid)
+        state = json.loads(r["state_json"]) if r["state_json"] else None
+        if not state or "seed" not in state:
+            _save_run({**run, "status": "interrupted", "finished_at": time.time(), "message": (run["message"] + " | cut off by a restart").strip(" |")})
+            continue
+        run["statuses"] = state.pop("statuses", {}) or {}
+        run["walk"] = state
+        run["message"] = ""  # the finished run writes its own summary
+        with _LOCK:
+            _RUNS[eid] = run
+            _STOP.pop(eid, None)
+        threading.Thread(target=_read, args=(eid, int(run["league_id"]), int(state["seed"]), MAX_IDS), name=f"fantasy-field-{eid}", daemon=True).start()
+        logger.info("Field read for event %s resumed after a restart (%s ids scanned, %s found)", eid, run["scanned"], run["found"])
+        return f"resumed {eid}"
+    return None
 
 
 # ---------------------------------------------------------------- after a match
@@ -694,8 +757,9 @@ def auto_reads(now: Optional[float] = None) -> str:
             continue
         st = status(eid)
         stale = live and st.get("stored_at") and float(st["stored_at"]) < float(e.get("start_at") or 0)
-        cut_off = not st.get("running") and st.get("status") == "running"
-        if not st.get("teams_stored") or cut_off or stale:
+        if not st.get("running") and st.get("status") == "running":
+            continue  # cut off by a restart: resume_interrupted carries it on
+        if not st.get("teams_stored") or stale or st.get("status") == "interrupted":
             start_read(eid, seed[0], seed[1])
             return f"field read started for {eid}"
     return "every field is stored"

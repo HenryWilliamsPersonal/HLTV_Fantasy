@@ -32,6 +32,7 @@ def _loop() -> None:
         try:
             from backend.services import fantasy_field
 
+            fantasy_field.resume_interrupted()  # a full read a restart cut off carries on
             fantasy_field.after_matches(entries)  # re-read the teams a finished match needs
             if time.time() - field_checked >= FIELD_START_EVERY:
                 field_checked = time.time()

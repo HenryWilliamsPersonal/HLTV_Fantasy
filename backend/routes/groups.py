@@ -4033,8 +4033,8 @@ def _sample_joint_outcomes(results: dict, n: int, seed: int = 20240101) -> tuple
     the qualifiers with the stored win probabilities, each pairing scored from
     the stored table (booster slot numbering continues from the group matches,
     elimination penalties included), and the playoff padding of a bye team's
-    players (+6 win plus their average rating and role over the matches played
-    in that outcome). Deterministic (fixed seed)."""
+    players (+6 win plus their average rating and role over their group
+    matches, the matches before the padded round). Deterministic (fixed seed)."""
     import numpy as np
 
     rng = np.random.default_rng(seed)
@@ -4203,12 +4203,13 @@ def _sample_joint_outcomes(results: dict, n: int, seed: int = 20240101) -> tuple
                 fg = by_group[sd[0]][idx_by_group[sd[0]][i]].get("first_games") or {}
                 for pid_s, sums in fg.items():
                     pid = int(pid_s)
-                    acc = played.get(pid) or [0.0, 0.0, 0.0]
-                    games = float(sums[4]) + acc[2]
+                    # HLTV's padding: the mean over the matches before the
+                    # padded quarter-final (the group matches), +6, no booster
+                    games = float(sums[4])
                     pad = _PLAYOFF_BYE_PADDING_POINTS
-                    rating_avg = (float(sums[0]) + acc[0]) / games if games > 0 else 0.0
+                    rating_avg = float(sums[0]) / games if games > 0 else 0.0
                     if games > 0:
-                        pad += rating_avg + (float(sums[2]) + acc[1]) / games
+                        pad += rating_avg + float(sums[2]) / games
                     if pid in vec:
                         vec[pid][i] += pad
                         if decomposed:

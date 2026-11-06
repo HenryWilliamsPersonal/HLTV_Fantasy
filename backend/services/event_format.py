@@ -343,6 +343,9 @@ def _classify_de_group(data: Dict[str, Any], type_name: str, name: str, size: in
         upper-semi winners + lower-bracket survivors qualify (4).
     gsl4_top2 (GSL): grandFinal hidden; winners' match and decider winners
         qualify (2).
+    gsl4_top3 (BLAST Rivals 2026 S2): no decider — consolidation and grand
+        final hidden; the upper final's winner goes to the playoff semis, its
+        loser and the lower match's winner to the quarters (3).
     """
     upper_final = _de_section_state(data, "upperFinal")
     grand_final = _de_section_state(data, "grandFinal")
@@ -377,6 +380,13 @@ def _classify_de_group(data: Dict[str, Any], type_name: str, name: str, size: in
             return "de8_top4", {"count": 4, "winner_to_semis": False}
         raise ValueError(f"Unrecognized DoubleElimination8 shape in {name!r}")
     if size == 4:
+        consolidation = _de_section_state(data, "consolidationFinal")
+        if (
+            consolidation and not consolidation["visible"] and grand_final and not grand_final["visible"]
+            and upper_final and upper_final["visible"]
+            and upper_final["winner_types"] == ["ToPlayoffsSemis"] and upper_final["loser_types"] == ["ToPlayoffsQuarters"]
+        ):
+            return "gsl4_top3", {"count": 3, "winner_to_semis": True}
         if grand_final and not grand_final["visible"]:
             return "gsl4_top2", {"count": 2, "winner_to_semis": False}
         raise ValueError(f"Unrecognized DoubleElimination4 shape in {name!r}")

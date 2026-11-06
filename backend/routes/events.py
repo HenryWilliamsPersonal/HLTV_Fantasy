@@ -3789,6 +3789,8 @@ def _detect_event_tournament_kind(event: Dict[str, Any]) -> Dict[str, Any]:
             fmt = str((chosen or {}).get("group_format") or "")
             if fmt == "de8" and (chosen or {}).get("group_variant") == "de8_top3":
                 fmt = "de8_top3"
+            if fmt == "gsl4" and (chosen or {}).get("group_variant") == "gsl4_top3":
+                fmt = "gsl4_top3"
             combined_shape = combined_shape_label(fmt, len(group_brackets))
             combined_supported = combined_shape_supported(fmt, len(group_brackets))
             if not combined_supported:

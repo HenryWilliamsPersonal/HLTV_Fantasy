@@ -287,6 +287,11 @@ def _swiss_odds(event_id: int, results: Dict[str, Any]) -> Optional[Dict[str, An
 # None = the team's group run ends there (qualified or out)
 BRACKET_NEXT: Dict[str, Dict[str, tuple]] = {
     "gsl4": {"opening": ("winners", "elimination"), "winners": (None, "decider"), "elimination": ("decider", None), "decider": (None, None)},
+    # the group stage then the playoff it feeds: 1st -> semis, 2nd / 3rd -> quarters
+    "gsl4_top3": {
+        "opening": ("winners", "elimination"), "winners": ("semis", "quarters"), "elimination": ("quarters", None),
+        "quarters": ("semis", None), "semis": ("final", None), "final": (None, None),
+    },
     "de8": {"ub_r1": ("ub_sf", "lb_r1"), "ub_sf": (None, "lb_sf"), "lb_r1": ("lb_sf", None), "lb_sf": (None, None)},
     "de8_top3": {
         "ub_r1": ("ub_sf", "lb_r1"), "ub_sf": ("ub_final", "lb_sf"), "ub_final": (None, None),
@@ -298,6 +303,7 @@ BRACKET_NEXT: Dict[str, Dict[str, tuple]] = {
 # The fantasy round (HLTV's round rows, in order) each group stage is played in
 BRACKET_ROUND: Dict[str, Dict[str, int]] = {
     "gsl4": {"opening": 0, "winners": 1, "elimination": 1, "decider": 2},
+    "gsl4_top3": {"opening": 0, "winners": 1, "elimination": 1, "quarters": 2, "semis": 3, "final": 4},
     "de8": {"ub_r1": 0, "ub_sf": 1, "lb_r1": 1, "lb_sf": 2},
     "de8_top3": {"ub_r1": 0, "ub_sf": 1, "lb_r1": 1, "lb_sf": 2, "ub_final": 3, "lb_final": 3},
 }
@@ -323,7 +329,10 @@ def _bracket_paths(event_id: int, fmt: str) -> Optional[Dict[int, Optional[str]]
         return None
     first = next(iter(table))
     at: Dict[int, Optional[str]] = {int(t): first for t in entry["teams"]}
-    done = [m for m in entry.get("matches") or [] if m.get("winner") is not None and str(m.get("stage") or "").lower().startswith("group")]
+    # every finished match, in order: a table that runs on into the playoff
+    # (gsl4_top3) follows it there; one that ends with the groups leaves the
+    # team at None and the playoff matches change nothing
+    done = [m for m in entry.get("matches") or [] if m.get("winner") is not None]
     for m in sorted(done, key=lambda m: (str(m.get("date") or ""), int(m.get("match_id") or 0))):
         for side in ("a", "b"):
             t = m.get(side)

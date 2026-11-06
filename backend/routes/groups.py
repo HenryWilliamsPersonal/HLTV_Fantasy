@@ -147,9 +147,9 @@ def _normalize_groups_payload(payload: dict) -> dict:
     if not groups_raw or not isinstance(groups_raw, list):
         raise HTTPException(status_code=400, detail="groups must be a non-empty list of team lists")
     gf_raw = str(payload.get("group_format") or "").strip().lower()
-    group_format = gf_raw if gf_raw in ("de8", "de8_top3") else "gsl4"
+    group_format = gf_raw if gf_raw in ("de8", "de8_top3", "gsl4_top3") else "gsl4"
     size = 8 if group_format.startswith("de8") else 4
-    quals_per_group = {"gsl4": 2, "de8": 4, "de8_top3": 3}[group_format]
+    quals_per_group = {"gsl4": 2, "gsl4_top3": 3, "de8": 4, "de8_top3": 3}[group_format]
     groups: List[List[int]] = []
     seen: set = set()
     unknown_counter = 0
@@ -186,7 +186,7 @@ def _normalize_groups_payload(payload: dict) -> dict:
             status_code=400,
             detail=reject_unsupported_combined_shape(group_format, len(groups), payload.get("event_id")),
         )
-    if combined and group_format == "de8_top3":
+    if combined and group_format in ("de8_top3", "gsl4_top3"):
         # Porto/Cologne shape: 2 groups of 8, top 3 each -> 6-team bracket with
         # the two group winners seeded straight into the semi-finals.
         if len(groups) != 2:
@@ -271,6 +271,11 @@ _GROUP_STAGE_ROUNDS: Dict[str, List[tuple]] = {
         ("winners", "Winners'", "Winners' match", "upper", ["winners"]),
         ("elimination", "Elimination", "Elimination match", "lower", ["elimination"]),
         ("decider", "Decider", "Decider", "lower", ["decider"]),
+    ],
+    "gsl4_top3": [
+        ("opening", "Opening", "Opening match", "upper", ["opening_1", "opening_2"]),
+        ("winners", "Upper final", "Upper final", "upper", ["winners"]),
+        ("elimination", "Lower", "Lower match", "lower", ["elimination"]),
     ],
     "de8": [
         ("ub_r1", "UB R1", "Opening match", "upper", ["opening_1", "opening_2", "opening_3", "opening_4"]),
@@ -511,6 +516,7 @@ def _group_stage_records(results: dict, cache_key: Any, event_id: Optional[int])
     fmt = str(results.get("group_format") or "gsl4")
     enumerate_group = {
         "gsl4": _enumerate_group_outcomes,
+        "gsl4_top3": _enumerate_gsl4_top3_outcomes,
         "de8": _enumerate_group8_outcomes,
         "de8_top3": _enumerate_group8_top3_outcomes,
     }.get(fmt, _enumerate_group_outcomes)
@@ -683,7 +689,7 @@ def _replay_playoff_paths(
     groups = [[int(t) for t in g] for g in (results.get("groups") or [])]
     x = len(groups)
     fmt = str(results.get("group_format") or "gsl4")
-    quals = {"gsl4": 2, "de8": 4, "de8_top3": 3}.get(fmt, 2)
+    quals = {"gsl4": 2, "gsl4_top3": 3, "de8": 4, "de8_top3": 3}.get(fmt, 2)
     rounds_total = int(po.get("rounds") or 1)
     template = _combined_bracket_template(x, quals, rounds_total, fmt, str(po.get("layout") or DEFAULT_PLAYOFF_LAYOUT))
     rounds, entry_round, prior_matches = template["rounds"], template["entry_round"], template["prior_matches"]
@@ -833,12 +839,12 @@ def _replay_playoff_paths(
             sd = team_seed.get(tid)
             if sd is not None and entry_round.get(sd, 0) > 0:
                 fg = (by_group[sd[0]][int(group_idx[sd[0]][i])].get("first_games") or {}).get(str(pid)) or [0.0] * 5
-                games = float(fg[4]) + float(len(my_rows))
-                rating_avg = ((float(fg[0]) + sum(rr["rating"] for rr in my_rows)) / games) if games > 0 else 0.0
+                games = float(fg[4])  # padding = the mean over the matches before the padded round
+                rating_avg = (float(fg[0]) / games) if games > 0 else 0.0
                 if role_pm is not None:
                     role_avg = float(role_pm)
                 else:
-                    role_avg = ((float(fg[2]) + sum(rr["role"] for rr in my_rows)) / games) if games > 0 else 0.0
+                    role_avg = (float(fg[2]) / games) if games > 0 else 0.0
                 pad_sum[0] += w * rating_avg
                 pad_sum[1] += w * _PLAYOFF_BYE_PADDING_POINTS
                 pad_sum[2] += w * role_avg
@@ -1155,6 +1161,90 @@ def _enumerate_group_outcomes(
     return outcomes
 
 
+def _enumerate_gsl4_top3_outcomes(
+    team_ids: List[int],
+    group_index: int,
+    player_rows_by_id: Dict[int, dict],
+    team_rank_by_id: Dict[int, int],
+    prob_cache: Dict,
+    extra_rounds: int = 0,
+    stage_acc: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """All 16 exact outcomes of a 4-team double-elim group with NO decider,
+    top 3 through (BLAST Rivals 2026 S2): the two openers, then the upper
+    final (winner 1st -> playoff semis, loser 2nd -> quarters) and the lower
+    match (winner 3rd -> quarters, loser out). Every team plays exactly two
+    group matches, so the group stage needs no padding. qualified = [1st,
+    2nd, 3rd]; first_games = the winner's group sums, for the padding of the
+    quarter-final it skips."""
+    base_states = initialize_teams(team_ids, {tid: 999 for tid in team_ids})
+    s1, s2, s3, s4 = team_ids
+    outcomes: List[Dict[str, Any]] = []
+
+    def play(states, a, b, winner, remaining_after):
+        return _play_match_deterministic(
+            states, a, b, winner, remaining_rounds_after=remaining_after, prob_cache=prob_cache,
+            player_rows_by_id=player_rows_by_id, team_rank_by_id=team_rank_by_id,
+        )
+
+    def row(key, result, teams):
+        w, l, p_win_a, _branch = result
+        return {"key": key, "winner": w, "loser": l, "p_win_a": p_win_a, "teams": list(teams)}
+
+    for w1 in (s1, s2):
+        st1 = _clone_team_states(base_states)
+        r1 = play(st1, s1, s2, w1, 0)
+        m1 = row("opening_1", r1, [s1, s2])
+        for w2 in (s3, s4):
+            st2 = _clone_team_states(st1)
+            r2 = play(st2, s3, s4, w2, 0)
+            m2 = row("opening_2", r2, [s3, s4])
+            ua, ub = m1["winner"], m2["winner"]
+            la, lb = m1["loser"], m2["loser"]
+            for w3 in (ua, ub):
+                st3 = _clone_team_states(st2)
+                r3 = play(st3, ua, ub, w3, 0)
+                m3 = row("winners", r3, [ua, ub])
+                for w4 in (la, lb):
+                    st4 = _clone_team_states(st3)
+                    # the lower-match loser is out: it misses every playoff round
+                    r4 = play(st4, la, lb, w4, extra_rounds)
+                    m4 = row("elimination", r4, [la, lb])
+                    prob = r1[3] * r2[3] * r3[3] * r4[3]
+                    player_points: Dict[str, float] = {}
+                    player_components: Dict[str, Dict[str, float]] = {}
+                    player_breakdown: Dict[str, List[dict]] = {}
+                    for ts in st4.values():
+                        for pid, p in ts.players.items():
+                            player_points[str(pid)] = float(p.total_points)
+                            player_components[str(pid)] = {
+                                "total": float(p.total_points),
+                                "total_without_booster": float(p.rating_points_total + p.win_points_total + p.role_points_total),
+                                "rating": float(p.rating_points_total),
+                                "win": float(p.win_points_total),
+                                "role": float(p.role_points_total),
+                                "booster": float(p.booster_points_total),
+                            }
+                            player_breakdown[str(pid)] = [dict(rowb) for rowb in p.point_breakdown]
+                    if stage_acc is not None:
+                        _accumulate_group_stage_stats(stage_acc, float(prob), st4, [m1, m2, m3, m4])
+                    first = m3["winner"]
+                    outcomes.append(
+                        {
+                            "group": group_index,
+                            "probability": float(prob),
+                            "matches": [m1, m2, m3, m4],
+                            "qualified": [first, m3["loser"], m4["winner"]],
+                            "eliminated": [m4["loser"]],
+                            "players": player_points,
+                            "player_components": player_components,
+                            "player_breakdown": player_breakdown,
+                            "first_games": _real_game_sums(st4, first),
+                        }
+                    )
+    return outcomes
+
+
 def _enumerate_group8_outcomes(
     team_ids: List[int],
     group_index: int,
@@ -1423,6 +1513,8 @@ _PLAYOFF_BYE_PADDING_POINTS = 6.0
 _SUPPORTED_COMBINED_SHAPES: Dict[tuple, str] = {
     ("de8_top3", 2): "2 groups of 8, top 3 → 6-team bracket, group winners bye to the semis "
                      "(verified on FISSURE Playground 3 and BLAST Open Porto 2026)",
+    ("gsl4_top3", 2): "2 GSL groups without a decider, top 3 → 6-team bracket, group winners straight to the "
+                      "semis, quarter-finals crossed (A2 v B3, B2 v A3) (BLAST Rivals 2026 Season 2)",
     ("gsl4", 4): "4 GSL groups, top 2 → 8-team bracket: QF1 A1 v D2, QF2 C1 v B2, QF3 B1 v C2, QF4 D1 v A2, "
                  "semis QF1 v QF2 and QF3 v QF4, optional third-place decider "
                  "(verified on Stake Pulse Beat II, 2026-09-25/26)",
@@ -1458,7 +1550,7 @@ def combined_shape_key(group_format: str, group_count: int) -> tuple:
 
 def combined_shape_label(group_format: str, group_count: int) -> str:
     fmt, count = combined_shape_key(group_format, group_count)
-    quals = {"gsl4": 2, "de8": 4, "de8_top3": 3}.get(fmt, 0)
+    quals = {"gsl4": 2, "gsl4_top3": 3, "de8": 4, "de8_top3": 3}.get(fmt, 0)
     return f"{count} × {fmt} groups (top {quals} each, {quals * count} qualifiers) → combined playoff"
 
 
@@ -1489,6 +1581,7 @@ _GROUP_MATCHES_BY_RANK: Dict[str, List[int]] = {
     "gsl4": [2, 3],           # winners' match winner; decider winner
     "de8": [2, 2, 3, 3],      # upper-semi winners; lower-semi winners
     "de8_top3": [3, 3, 4],    # upper-final winner; upper-final loser; lower-final winner
+    "gsl4_top3": [2, 2, 2],   # every team plays both rounds: upper-final winner / loser, lower-match winner
 }
 
 
@@ -1663,9 +1756,9 @@ def _exact_combined_playoffs(
 
     Bracket shapes mirror the previous simulator exactly: quals_per_group == 3
     is the 6-team byes bracket (QF1 = A2 v B3, QF2 = B2 v A3, SF1 = A1 v QF2
-    winner, SF2 = B1 v QF1 winner, bye teams get full padding for the
-    quarter-final they skip: +6 win plus their average rating and role over the
-    matches they actually play, no booster); otherwise qualifiers are flattened seed-major
+    winner, SF2 = B1 v QF1 winner, bye teams get HLTV's normal padding for the
+    quarter-final they skip: +6 win plus their average rating and role over
+    their group matches (the matches before it), no booster); otherwise qualifiers are flattened seed-major
     and paired i vs N-1-i, with stop_teams ending the bracket early (which
     splits it into independent sub-brackets).
     """
@@ -1887,11 +1980,9 @@ def _exact_combined_playoffs(
             nofinal, final = bye_pts.get(tid, {}).get(pid) or ([0.0] * 4, [0.0] * 4)
             pad = [0.0, _PLAYOFF_BYE_PADDING_POINTS * w_bye, 0.0, 0.0]
             for i in (0, 2):  # rating, role; booster is never padded
-                pad[i] = (
-                    g_cond[i] * (p_lose / (n_group + 1.0) + p_win / (n_group + 2.0))
-                    + nofinal[i] / (n_group + 1.0)
-                    + final[i] / (n_group + 2.0)
-                )
+                # HLTV's padding: the mean over the matches played BEFORE the
+                # padded round (here the group matches), +6 team, no booster
+                pad[i] = (g_cond[i] / n_group) * w_bye if n_group > 0 else 0.0
             bucket = accum.setdefault(pid, [0.0, 0.0, 0.0, 0.0, 0.0])
             bucket[0] += sum(pad)
             for i in range(4):
@@ -2170,6 +2261,8 @@ def _bake_event_valuations(
     fmt = str(detected.get("group_format") or (stored or {}).get("group_format") or "gsl4")
     if fmt == "de8" and detected.get("group_variant") == "de8_top3":
         fmt = "de8_top3"
+    if fmt == "gsl4" and detected.get("group_variant") == "gsl4_top3":
+        fmt = "gsl4_top3"
     combined = bool(detected.get("combined_playoffs"))
     if combined and not combined_shape_supported(fmt, len(groups_ids)):
         # One fantasy game scores the playoffs too, but the simulator has no
@@ -2944,10 +3037,11 @@ def _assemble_stage_stats(
 def _compute_groups_result(payload: dict, progress_callback=None, snapshot: Optional[Dict[str, Any]] = None) -> dict:
     groups = payload["groups"]
     gf_raw = str(payload.get("group_format") or "").strip().lower()
-    group_format = gf_raw if gf_raw in ("de8", "de8_top3") else "gsl4"
-    quals_per_group = {"gsl4": 2, "de8": 4, "de8_top3": 3}[group_format]
+    group_format = gf_raw if gf_raw in ("de8", "de8_top3", "gsl4_top3") else "gsl4"
+    quals_per_group = {"gsl4": 2, "gsl4_top3": 3, "de8": 4, "de8_top3": 3}[group_format]
     enumerate_group = {
         "gsl4": _enumerate_group_outcomes,
+        "gsl4_top3": _enumerate_gsl4_top3_outcomes,
         "de8": _enumerate_group8_outcomes,
         "de8_top3": _enumerate_group8_top3_outcomes,
     }[group_format]
@@ -2995,7 +3089,7 @@ def _compute_groups_result_inner(
     playoff_rounds = 0
     if combined:
         stop_teams = max(1, int(payload.get("playoff_stop_teams") or 1))
-        if group_format == "de8_top3":
+        if group_format in ("de8_top3", "gsl4_top3"):
             playoff_rounds = 3  # 6-team bracket: quarters, semis, final
         else:
             playoff_rounds = max(1, int(math.log2(quals_per_group * len(groups))) - int(math.log2(stop_teams)))
@@ -3949,7 +4043,7 @@ def _sample_joint_outcomes(results: dict, n: int, seed: int = 20240101) -> tuple
     x = len(groups)
     po = results.get("playoff") or {}
     fmt = str(results.get("group_format") or "gsl4")
-    quals = {"gsl4": 2, "de8": 4, "de8_top3": 3}.get(fmt, 2)
+    quals = {"gsl4": 2, "gsl4_top3": 3, "de8": 4, "de8_top3": 3}.get(fmt, 2)
     has_playoff = bool(po.get("pairing_table") and po.get("win_probs"))
     if has_playoff:
         rounds_total = int(po.get("rounds") or 1)

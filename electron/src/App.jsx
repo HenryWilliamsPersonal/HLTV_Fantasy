@@ -19,6 +19,80 @@ import {
 import roleBadgesUrl from "./assets/role_sprites.png";
 import boosterBadgesUrl from "./assets/booster_sprites.png";
 
+// ---- display preferences (Settings): theme and time zone, kept per device
+const PREFS_KEY = "cs-fantasy-display";
+const DEFAULT_PREFS = { theme: "dark", tz: "" }; // tz "" = this computer's zone
+function readPrefs() {
+  try {
+    return { ...DEFAULT_PREFS, ...(JSON.parse(window.localStorage.getItem(PREFS_KEY) || "{}") || {}) };
+  } catch {
+    return { ...DEFAULT_PREFS };
+  }
+}
+function savePrefs(prefs) {
+  try {
+    window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    /* the choice lasts for this session */
+  }
+}
+let DISPLAY_TZ = readPrefs().tz || undefined; // read by every date / time formatter below
+function applyTheme(theme) {
+  const dark = theme === "system" ? !window.matchMedia?.("(prefers-color-scheme: light)").matches : theme !== "light";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  window.api?.setTheme?.(dark ? "dark" : "light"); // the window-control strip follows
+}
+applyTheme(readPrefs().theme);
+const TIME_ZONES = [
+  ["", "This computer"],
+  ["UTC", "UTC"],
+  ["Europe/London", "London"],
+  ["Europe/Berlin", "Central Europe"],
+  ["Europe/Helsinki", "Eastern Europe"],
+  ["Europe/Moscow", "Moscow"],
+  ["America/New_York", "US East"],
+  ["America/Chicago", "US Central"],
+  ["America/Los_Angeles", "US West"],
+  ["America/Sao_Paulo", "Brazil"],
+  ["Asia/Shanghai", "China"],
+  ["Asia/Tokyo", "Japan"],
+  ["Australia/Sydney", "Sydney"],
+];
+// epoch seconds -> the parts of that moment in the chosen zone
+function tzParts(ts) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: DISPLAY_TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date(Number(ts) * 1000));
+  const get = (t) => (parts.find((x) => x.type === t) || {}).value || "";
+  return { day: get("day"), month: get("month"), year: get("year"), hour: get("hour"), minute: get("minute") };
+}
+const fmtDayMonth = (ts) => {
+  const p = tzParts(ts);
+  return `${p.day}/${p.month}`;
+};
+const fmtDayMonthTime = (ts) => {
+  const p = tzParts(ts);
+  return `${p.day}/${p.month} ${p.hour}:${p.minute}`;
+};
+const fmtClock = (ts) => {
+  const p = tzParts(ts);
+  return `${p.hour}:${p.minute}`;
+};
+const fmtDayMonthYear = (ts) => {
+  const p = tzParts(ts);
+  return `${p.day}/${p.month}/${p.year}`;
+};
+const dayKey = (ts) => {
+  const p = tzParts(ts);
+  return `${p.year}-${p.month}-${p.day}`;
+};
+// Date.toLocale*String with the chosen zone (ms epoch or Date)
+const fmtLocal = (when, kind = "datetime", opts = {}) => {
+  const d = when instanceof Date ? when : new Date(when);
+  const o = { ...opts, timeZone: DISPLAY_TZ };
+  return kind === "date" ? d.toLocaleDateString(undefined, o) : kind === "time" ? d.toLocaleTimeString([], o) : d.toLocaleString(undefined, o);
+};
+
 // Glyph sprite sheets: transparent-background glyphs, one per grid cell,
 // centered and sized uniformly (see scratchpad process_sprites.py, which
 // un-blended the original navy background and recentered each cell).
@@ -422,18 +496,18 @@ const ACTIVE_MAP_POOL = ["Mirage", "Inferno", "Nuke", "Ancient", "Anubis", "Dust
 // Inferno is dark blue, per HLTV's scheme). Identity never relies on color
 // alone — every bar/card is labeled with its map.
 const MAP_BAR_COLORS = {
-  Dust2: "#eab308", // vivid gold
-  Inferno: "#3e63dd", // dark royal blue
-  Nuke: "#f4694b", // hot terracotta
-  Ancient: "#2fbf71", // emerald
-  Anubis: "#ec4899", // hot magenta
-  Mirage: "#a855f7", // electric purple
-  Cache: "#38bdf8", // bright sky blue
-  Overpass: "#14b8a6", // vivid teal
-  Vertigo: "#818cf8", // indigo
-  Train: "#94a3b8", // railyard steel
+  Dust2: "var(--c-eab308)", // vivid gold
+  Inferno: "var(--c-3e63dd)", // dark royal blue
+  Nuke: "var(--c-f4694b)", // hot terracotta
+  Ancient: "var(--c-2fbf71)", // emerald
+  Anubis: "var(--c-ec4899)", // hot magenta
+  Mirage: "var(--c-a855f7)", // electric purple
+  Cache: "var(--c-38bdf8)", // bright sky blue
+  Overpass: "var(--c-14b8a6)", // vivid teal
+  Vertigo: "var(--c-818cf8)", // indigo
+  Train: "var(--c-94a3b8)", // railyard steel
 };
-const MAP_BAR_FALLBACK_COLOR = "#64748b";
+const MAP_BAR_FALLBACK_COLOR = "var(--c-64748b)";
 
 const parseJsonSafe = async (res) => {
   const text = await res.text();
@@ -819,7 +893,7 @@ const fmtWhen = (ts) => {
   if (mins < 1) return "just now";
   if (mins < 60) return `${Math.round(mins)} min ago`;
   if (mins < 48 * 60) return `${Math.round(mins / 60)} h ago`;
-  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return fmtLocal(d, "date", { day: "numeric", month: "short", year: "numeric" });
 };
 
 function UsersTab({ me }) {
@@ -892,8 +966,8 @@ function UsersTab({ me }) {
                       </span>
                     </td>
                     <td>{u.email || "-"}</td>
-                    <td title={u.last_seen_at ? new Date(u.last_seen_at * 1000).toLocaleString() : ""}>{fmtWhen(u.last_seen_at || u.last_login_at)}</td>
-                    <td>{u.created_at ? new Date(u.created_at * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "-"}</td>
+                    <td title={u.last_seen_at ? fmtLocal(u.last_seen_at * 1000) : ""}>{fmtWhen(u.last_seen_at || u.last_login_at)}</td>
+                    <td>{u.created_at ? fmtLocal(u.created_at * 1000, "date", { day: "numeric", month: "short", year: "numeric" }) : "-"}</td>
                     <td>
                       {u.active_sessions} active / {u.total_sessions}
                     </td>
@@ -972,7 +1046,7 @@ function ServerGate({ status, config, error, checkedAt, retry }) {
           </button>
         </div>
         <p className="muted server-gate-meta">
-          Last checked {checkedAt ? new Date(checkedAt).toLocaleTimeString() : "just now"}
+          Last checked {checkedAt ? fmtLocal(checkedAt, "time") : "just now"}
           {error ? ` \u00b7 ${error}` : ""}
         </p>
       </div>
@@ -1614,43 +1688,43 @@ function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, o
                 margin={{ top: 12, right: 18, left: 14, bottom: 26 }}
                 accessibilityLayer={false}
               >
-                <CartesianGrid stroke="#232a34" strokeDasharray="3 3" />
+                <CartesianGrid stroke="var(--c-232a34)" strokeDasharray="3 3" />
                 <XAxis
                   type="number"
                   dataKey="price"
                   domain={[minPrice, maxPrice]}
-                  tick={{ fill: "#9fb2c9", fontSize: 12 }}
+                  tick={{ fill: "var(--c-9fb2c9)", fontSize: 12 }}
                   tickMargin={8}
                   tickFormatter={(v) => String(Math.round(Number(v) / 1000))}
-                  axisLine={{ stroke: "#3a4452" }}
-                  tickLine={{ stroke: "#3a4452" }}
+                  axisLine={{ stroke: "var(--c-3a4452)" }}
+                  tickLine={{ stroke: "var(--c-3a4452)" }}
                   name="Price"
-                  label={{ value: "Price ($k)", position: "insideBottom", offset: -18, fill: "#9fb2c9", fontSize: 12.5 }}
+                  label={{ value: "Price ($k)", position: "insideBottom", offset: -18, fill: "var(--c-9fb2c9)", fontSize: 12.5 }}
                 />
                 <YAxis
                   type="number"
                   dataKey="points"
-                  tick={{ fill: "#9fb2c9", fontSize: 12 }}
+                  tick={{ fill: "var(--c-9fb2c9)", fontSize: 12 }}
                   tickMargin={7}
-                  axisLine={{ stroke: "#3a4452" }}
-                  tickLine={{ stroke: "#3a4452" }}
+                  axisLine={{ stroke: "var(--c-3a4452)" }}
+                  tickLine={{ stroke: "var(--c-3a4452)" }}
                   name="Points"
                   label={{
                     value: "Expected points",
                     angle: -90,
                     position: "insideLeft",
                     offset: 2,
-                    fill: "#9fb2c9",
+                    fill: "var(--c-9fb2c9)",
                     fontSize: 12.5,
                     style: { textAnchor: "middle" },
                   }}
                 />
-                <Legend verticalAlign="top" height={30} wrapperStyle={{ color: "#9fb2c9" }} />
+                <Legend verticalAlign="top" height={30} wrapperStyle={{ color: "var(--c-9fb2c9)" }} />
                 <Line
                   type="linear"
                   dataKey="trend"
                   name="Average line"
-                  stroke="#35a2ff"
+                  stroke="var(--c-35a2ff)"
                   strokeWidth={2}
                   dot={false}
                   activeDot={false}
@@ -1659,7 +1733,7 @@ function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, o
                 <Scatter
                   name="Players"
                   dataKey="points"
-                  fill="#4fc3ff"
+                  fill="var(--c-4fc3ff)"
                   isAnimationActive={false}
                   shape={(props) => {
                     const { cx, cy, payload: pt } = props;
@@ -1671,10 +1745,10 @@ function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, o
                     const lit = active || matched;
                     return (
                       <g opacity={searchActive && !lit ? 0.28 : 1}>
-                        {lit && <circle cx={cx} cy={cy} r={9.5} fill="none" stroke="#ff8a47" strokeWidth={2} />}
-                        <circle cx={cx} cy={cy} r={lit ? 6 : 4.5} fill={lit ? "#ff8a47" : "#4fc3ff"} />
+                        {lit && <circle cx={cx} cy={cy} r={9.5} fill="none" stroke="var(--c-ff8a47)" strokeWidth={2} />}
+                        <circle cx={cx} cy={cy} r={lit ? 6 : 4.5} fill={lit ? "var(--c-ff8a47)" : "var(--c-4fc3ff)"} />
                         {matched && !active && (
-                          <text x={cx} y={cy - 13} textAnchor="middle" fill="#ffb07a" fontSize={11} fontWeight={700}>
+                          <text x={cx} y={cy - 13} textAnchor="middle" fill="var(--c-ffb07a)" fontSize={11} fontWeight={700}>
                             {pt?.name}
                           </text>
                         )}
@@ -2570,7 +2644,7 @@ const MapBarWithWinRate = (props) => {
     <g>
       <Rectangle x={x} y={y} width={width} height={height} fill={fill} radius={[4, 4, 0, 0]} />
       {showTick && (
-        <line x1={x - 3} x2={x + width + 3} y1={tickY} y2={tickY} stroke="#f8fafc" strokeWidth={2.5} strokeLinecap="round" />
+        <line x1={x - 3} x2={x + width + 3} y1={tickY} y2={tickY} stroke="var(--c-f8fafc)" strokeWidth={2.5} strokeLinecap="round" />
       )}
     </g>
   );
@@ -2884,19 +2958,19 @@ function MapsTab({ teams }) {
         data={rows.map((r) => ({ ...r, label: r.inPool ? r.map : `${r.map} (out)` }))}
         margin={{ top: 12, right: 18, left: 6, bottom: 12 }}
       >
-        <CartesianGrid stroke="#232a34" strokeDasharray="3 3" vertical={false} />
+        <CartesianGrid stroke="var(--c-232a34)" strokeDasharray="3 3" vertical={false} />
         <XAxis
           dataKey="label"
           interval={0}
-          tick={{ fill: "#9fb2c9", fontSize: 12 }}
-          axisLine={{ stroke: "#3a4452" }}
-          tickLine={{ stroke: "#3a4452" }}
+          tick={{ fill: "var(--c-9fb2c9)", fontSize: 12 }}
+          axisLine={{ stroke: "var(--c-3a4452)" }}
+          tickLine={{ stroke: "var(--c-3a4452)" }}
         />
         <YAxis
           allowDecimals={false}
-          tick={{ fill: "#9fb2c9", fontSize: 12 }}
-          axisLine={{ stroke: "#3a4452" }}
-          tickLine={{ stroke: "#3a4452" }}
+          tick={{ fill: "var(--c-9fb2c9)", fontSize: 12 }}
+          axisLine={{ stroke: "var(--c-3a4452)" }}
+          tickLine={{ stroke: "var(--c-3a4452)" }}
         />
         <Tooltip cursor={{ fill: "rgba(59, 130, 246, 0.08)" }} content={<MapsBarTooltip />} />
         <Bar
@@ -2965,7 +3039,7 @@ function MapsTab({ teams }) {
                         cy="50%"
                         outerRadius={168}
                         innerRadius={92}
-                        stroke="#0a0c10"
+                        stroke="var(--c-0a0c10)"
                         strokeWidth={2}
                         isAnimationActive={false}
                         onMouseEnter={() => setPieHovered(true)}
@@ -2987,7 +3061,7 @@ function MapsTab({ teams }) {
                               y={vertical ? y + (sin > 0 ? 11 : -11) : y}
                               textAnchor={vertical ? "middle" : cos > 0 ? "start" : "end"}
                               dominantBaseline="central"
-                              fill="#f2f5f9"
+                              fill="var(--c-f2f5f9)"
                               fontSize={15}
                               fontWeight={600}
                             >
@@ -3004,19 +3078,19 @@ function MapsTab({ teams }) {
                           const sy = cy + (or2 + 3) * Math.sin(rad);
                           const ex = cx + (or2 + 20) * Math.cos(rad);
                           const ey = cy + (or2 + 20) * Math.sin(rad);
-                          return <path d={`M${sx},${sy}L${ex},${ey}`} stroke="#3a4452" fill="none" />;
+                          return <path d={`M${sx},${sy}L${ex},${ey}`} stroke="var(--c-3a4452)" fill="none" />;
                         }}
                       >
                         {pieRows.map((r) => (
                           <Cell
                             key={`pie-${r.map}`}
-                            fill={r.map === "Other" ? "#64748b" : MAP_BAR_COLORS[r.map] || MAP_BAR_FALLBACK_COLOR}
+                            fill={r.map === "Other" ? "var(--c-64748b)" : MAP_BAR_COLORS[r.map] || MAP_BAR_FALLBACK_COLOR}
                           />
                         ))}
                       </Pie>
                       <Tooltip
-                        contentStyle={{ background: "#14181f", border: "1px solid #3a4452", borderRadius: 10 }}
-                        itemStyle={{ color: "#e9edf3" }}
+                        contentStyle={{ background: "var(--c-14181f)", border: "1px solid #3a4452", borderRadius: 10 }}
+                        itemStyle={{ color: "var(--c-e9edf3)" }}
                         formatter={(value, name) => [
                           `${Number(value).toLocaleString()} maps (${totalPlayed > 0 ? ((Number(value) / totalPlayed) * 100).toFixed(1) : 0}%)`,
                           name,
@@ -5150,7 +5224,7 @@ function PlayoffTab({
               {!PUBLIC_BUILD && (<button className="danger" onClick={resetStoredPlayoff} disabled={busy || !results}>
                 Reset Stored Valuations
               </button>)}
-              {updatedAt && <p className="muted">Stored: {new Date(updatedAt).toLocaleString()}</p>}
+              {updatedAt && <p className="muted">Stored: {fmtLocal(updatedAt)}</p>}
             </div>
           </>
         )}
@@ -6045,10 +6119,7 @@ function LiveTab({ onOpenSettings }) {
     load();
     if (openIdRef.current && Number(change.event_id) === Number(openIdRef.current)) loadDetail(openIdRef.current);
   });
-  const dm = (ts) => {
-    const d = new Date(Number(ts) * 1000);
-    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
-  };
+  const dm = fmtDayMonth;
   const formatOf = (ev) => (ev.group_format === "swiss" ? "Swiss" : ev.group_format === "bracket" ? (ev.kind === "double_elim" ? "Double elimination" : "Single elimination") : "Groups");
   if (events === null) return <div className="stack" />;
   const open = events.find((e) => e.event_id === openId) || null;
@@ -6194,7 +6265,7 @@ function SeasonTab({ onOpenSettings }) {
   }, []);
   const n = (v) => (v == null ? "-" : Number(v).toLocaleString());
   const signed = (v) => (v == null ? "-" : `${Number(v) > 0 ? "+" : ""}${Number(v).toLocaleString()}`);
-  const fmtDate = (s) => (s ? new Date(Number(s) * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "-");
+  const fmtDate = (s) => (s ? fmtLocal(Number(s) * 1000, "date", { day: "numeric", month: "short", year: "numeric" }) : "-");
   const me = data?.me || null;
   const games = useMemo(() => (data?.games || []).map((g, i) => {
     const parts = g.parts || {};
@@ -6465,11 +6536,45 @@ function SeasonTab({ onOpenSettings }) {
   );
 }
 
-function SettingsTab() {
+function SettingsTab({ prefs, onPrefs, auth }) {
   return (
     <div className="stack">
       <HltvAccountSettings />
+      <DisplaySettings prefs={prefs} onPrefs={onPrefs} />
+      {PUBLIC_BUILD_STATIC && auth?.status === "signed_in" && (
+        <Section title="Account">
+          <div className="myteam-connect">
+            <span className="pill ok">{auth.user?.name || auth.user?.email || "Signed in"}</span>
+            <button className="secondary" onClick={auth.signOut}>
+              Log out
+            </button>
+          </div>
+        </Section>
+      )}
     </div>
+  );
+}
+
+// Theme and time zone for this device (saved in the browser storage).
+function DisplaySettings({ prefs, onPrefs }) {
+  const set = (patch) => onPrefs({ ...prefs, ...patch });
+  return (
+    <Section title="Display">
+      <div className="stack">
+        <div className="tab-bar small">
+          {[
+            ["dark", "Dark"],
+            ["light", "Light"],
+            ["system", "System"],
+          ].map(([k, label]) => (
+            <button key={k} className={prefs.theme === k ? "tab active" : "tab"} onClick={() => set({ theme: k })}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <Select label="Time zone" value={prefs.tz} onChange={(v) => set({ tz: v })} options={TIME_ZONES.map(([value, label]) => ({ value, label }))} />
+      </div>
+    </Section>
   );
 }
 
@@ -6665,11 +6770,7 @@ function MyTeamPanel({ ev, onOpenSettings }) {
   });
   const fmt1 = (v) => (v == null || Number.isNaN(Number(v)) ? "-" : Number(v).toFixed(1));
   const signed = (v) => (v == null ? "-" : `${Number(v) > 0 ? "+" : ""}${Number(v)}`);
-  const when = (ts) => {
-    if (!(Number(ts) > 0)) return "";
-    const d = new Date(Number(ts) * 1000);
-    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  };
+  const when = (ts) => (Number(ts) > 0 ? fmtDayMonthTime(ts) : "");
   const teamRows = useMemo(() => (report?.players || []).map((p) => ({ team_id: p.team_id, name: p.team })), [report]);
   // A scored match opens its scoreboard: the stored row when the nightly
   // import has it, else the page's scoreboards read on demand.
@@ -7073,11 +7174,7 @@ function BoosterPanel({ ev, onOpenSettings }) {
       setBusy("");
     }
   };
-  const when = (ts) => {
-    if (!(Number(ts) > 0)) return "";
-    const d = new Date(Number(ts) * 1000);
-    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  };
+  const when = (ts) => (Number(ts) > 0 ? fmtDayMonthTime(ts) : "");
   const pct = (v) => (v == null ? "-" : `${Math.round(Number(v) * 100)}%`);
   const fmt1 = (v) => (v == null || Number.isNaN(Number(v)) ? "-" : Number(v).toFixed(1));
   const stageName = (s) => (typeof s === "string" && /^r\d+$/.test(s) ? `Round ${s.slice(1)}` : s || "");
@@ -7920,10 +8017,7 @@ function LiveEventBody({ ev }) {
   }, [ev]);
   const teamRows = useMemo(() => Object.entries(ev.teams || {}).map(([tid, t]) => ({ team_id: Number(tid), hltv_team_id: t?.hltv_team_id, name: t?.name })), [ev]);
   const hltvId = (tid) => ev.teams?.[String(tid)]?.hltv_team_id;
-  const hhmm = (ts) => {
-    const d = new Date(Number(ts) * 1000);
-    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  };
+  const hhmm = fmtClock;
   const results = [...(ev.matches || [])].reverse();
   // A result opens the match's scoreboard: the stored row when the nightly
   // import has it, else the page's scoreboards read on demand.
@@ -7986,8 +8080,8 @@ function LiveEventBody({ ev }) {
   }, [ev]);
   const boardShown = Boolean((ev.group_format === "swiss" && ev.swiss) || (ev.group_format === "bracket" && ev.bracket) || groupBoards);
   const swissShown = Boolean(ev.group_format === "swiss" && ev.swiss);
-  const today = new Date().toDateString();
-  const upcomingToday = (ev.upcoming_matches || []).filter((m) => m.start_at && new Date(Number(m.start_at) * 1000).toDateString() === today);
+  const today = dayKey(Date.now() / 1000);
+  const upcomingToday = (ev.upcoming_matches || []).filter((m) => m.start_at && dayKey(m.start_at) === today);
   return (
     <div className="stack">
       {ev.group_format === "swiss" && ev.swiss && (
@@ -8829,7 +8923,7 @@ function MatchDetailModal({ row: listRow, onClose, teams = [], players = [], onO
                   <div
                     className="match-map-row"
                     key={`map-${i}-${m?.map || ""}`}
-                    style={{ "--map-color": MAP_BAR_COLORS[m?.map] || "#3a4452" }}
+                    style={{ "--map-color": MAP_BAR_COLORS[m?.map] || "var(--c-3a4452)" }}
                   >
                     <span className="match-map-name">{m?.map || "-"}</span>
                     <span className="match-map-score">
@@ -8871,7 +8965,7 @@ function MatchDetailModal({ row: listRow, onClose, teams = [], players = [], onO
                 <button
                   key={`sbt-${m}`}
                   className={`sb-map-tab ${sbMap === m ? "active" : ""}`}
-                  style={{ "--map-color": MAP_BAR_COLORS[m] || "#ff6b1a" }}
+                  style={{ "--map-color": MAP_BAR_COLORS[m] || "var(--c-ff6b1a)" }}
                   onClick={() => setSbMap(m)}
                 >
                   {m}
@@ -10170,11 +10264,8 @@ function SchedulingTab({ players, refresh }) {
 
   // ---- formatting -----------------------------------------------------
   const pad2 = (n) => String(n).padStart(2, "0");
-  const clock = (ts) => (Number(ts) > 0 ? new Date(Number(ts) * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-");
-  const dayOf = (ts) => {
-    const d = new Date(Number(ts) * 1000);
-    return `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()}`;
-  };
+  const clock = (ts) => (Number(ts) > 0 ? fmtClock(ts) : "-");
+  const dayOf = fmtDayMonthYear;
   const fmtDur = (secs) => {
     const s = Math.max(0, Math.round(Number(secs) || 0));
     if (s < 60) return `${s}s`;
@@ -10273,7 +10364,7 @@ function SchedulingTab({ players, refresh }) {
         <td>
           <div className="sch-row-top">
             {pill}
-            <span className="sch-row-when" title={Number(last) > 0 ? new Date(Number(last) * 1000).toLocaleString() : ""}>
+            <span className="sch-row-when" title={Number(last) > 0 ? fmtLocal(Number(last) * 1000) : ""}>
               {relTime(last)}
             </span>
           </div>
@@ -10491,7 +10582,7 @@ const ModelCurveChart = ({ curve, height = 300 }) => {
   return (
     <ResponsiveContainer width="100%" height={height}>
       <ComposedChart data={line} margin={{ top: 12, right: 18, left: 6, bottom: 12 }}>
-        <CartesianGrid stroke="#232a34" strokeDasharray="3 3" />
+        <CartesianGrid stroke="var(--c-232a34)" strokeDasharray="3 3" />
         <XAxis
           type="number"
           dataKey="rank"
@@ -10500,16 +10591,16 @@ const ModelCurveChart = ({ curve, height = 300 }) => {
           ticks={MODEL_CURVE_TICKS}
           interval={0}
           minTickGap={0}
-          tick={{ fill: "#9fb2c9", fontSize: 12 }}
-          axisLine={{ stroke: "#3a4452" }}
-          tickLine={{ stroke: "#3a4452" }}
+          tick={{ fill: "var(--c-9fb2c9)", fontSize: 12 }}
+          axisLine={{ stroke: "var(--c-3a4452)" }}
+          tickLine={{ stroke: "var(--c-3a4452)" }}
           tickFormatter={(v) => String(v)}
-          label={{ value: "Opponent HLTV rank", position: "insideBottom", offset: -8, fill: "#7f97bd", fontSize: 11 }}
+          label={{ value: "Opponent HLTV rank", position: "insideBottom", offset: -8, fill: "var(--c-7f97bd)", fontSize: 11 }}
         />
         <YAxis
-          tick={{ fill: "#9fb2c9", fontSize: 12 }}
-          axisLine={{ stroke: "#3a4452" }}
-          tickLine={{ stroke: "#3a4452" }}
+          tick={{ fill: "var(--c-9fb2c9)", fontSize: 12 }}
+          axisLine={{ stroke: "var(--c-3a4452)" }}
+          tickLine={{ stroke: "var(--c-3a4452)" }}
           domain={axis.domain}
           ticks={axis.ticks}
           interval={0}
@@ -10544,8 +10635,8 @@ const ModelCurveChart = ({ curve, height = 300 }) => {
             );
           }}
         />
-        <Line type="monotone" dataKey="rating" name="Model" stroke="#ff6b1a" strokeWidth={2.6} dot={false} isAnimationActive={false} />
-        <Scatter data={dots} dataKey="rating" name="Last 10 maps" fill="#8fa3bf" shape={(p) => <circle cx={p.cx} cy={p.cy} r={5} fill="#8fa3bf" stroke="#0a0c10" strokeWidth={1.5} />} isAnimationActive={false} />
+        <Line type="monotone" dataKey="rating" name="Model" stroke="var(--c-ff6b1a)" strokeWidth={2.6} dot={false} isAnimationActive={false} />
+        <Scatter data={dots} dataKey="rating" name="Last 10 maps" fill="var(--c-8fa3bf)" shape={(p) => <circle cx={p.cx} cy={p.cy} r={5} fill="var(--c-8fa3bf)" stroke="var(--c-0a0c10)" strokeWidth={1.5} />} isAnimationActive={false} />
       </ComposedChart>
     </ResponsiveContainer>
   );
@@ -11313,7 +11404,7 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false, 
                     ) : m.score ? (
                       <span className="sw-vs sw-score">{String(m.score).replace("-", "–")}</span>
                     ) : m.status === "upcoming" && m.start_at ? (
-                      <span className="sw-vs sw-time">{new Date(Number(m.start_at) * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                      <span className="sw-vs sw-time">{fmtClock(m.start_at)}</span>
                     ) : (
                       <span className="sw-vs">vs</span>
                     )}
@@ -13083,6 +13174,22 @@ function TournamentTab({ teams, teamLookup, players, sortTeams, applyFilters, on
 
 export default function App() {
   const [active, setActive] = useState("view");
+  // Display preferences: a change re-renders the whole app (every
+  // formatter reads DISPLAY_TZ; the theme is the <html> data-theme)
+  const [prefs, setPrefsState] = useState(readPrefs);
+  const setPrefs = (next) => {
+    savePrefs(next);
+    DISPLAY_TZ = next.tz || undefined;
+    applyTheme(next.theme);
+    setPrefsState(next);
+  };
+  useEffect(() => {
+    if (prefs.theme !== "system" || !window.matchMedia) return undefined;
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const follow = () => applyTheme("system");
+    mq.addEventListener?.("change", follow);
+    return () => mq.removeEventListener?.("change", follow);
+  }, [prefs.theme]);
   const [openPlayerId, setOpenPlayerId] = useState(null);
   const [players, setPlayers] = useState([]);
   const [teams, setTeams] = useState([]);
@@ -13223,7 +13330,7 @@ export default function App() {
     ),
     live: <LiveTab onOpenSettings={() => setActive("settings")} />,
     season: <SeasonTab onOpenSettings={() => setActive("settings")} />,
-    settings: <SettingsTab />,
+    settings: <SettingsTab prefs={prefs} onPrefs={setPrefs} auth={auth} />,
     tournament: (
       <TournamentTab
         key={`tournament-${viewEventId || "current"}`}

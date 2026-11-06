@@ -79,6 +79,7 @@ const requestJson = async (path, init = {}, timeoutMs = 60000, attempt = 0) => {
 contextBridge.exposeInMainWorld("api", {
   baseUrl: API_BASE,
   appInfo: APP_INFO,
+  setTheme: (theme) => ipcRenderer.send("theme-set", theme === "light" ? "light" : "dark"),
   get: (path, timeoutMs) => requestJson(path, {}, timeoutMs),
   post: (path, body, timeoutMs) =>
     requestJson(

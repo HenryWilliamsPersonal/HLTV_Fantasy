@@ -340,6 +340,18 @@ app.whenReady().then(async () => {
     return { status: "ok" };
   });
   ipcMain.on("renderer-log", (_event, info) => ulog("info", "renderer", info));
+  // the renderer's theme (Settings): the window-control strip follows it
+  ipcMain.on("theme-set", (event, theme) => {
+    const w = BrowserWindow.fromWebContents(event.sender);
+    if (!w || w.isDestroyed() || typeof w.setTitleBarOverlay !== "function") return;
+    const light = theme === "light";
+    try {
+      w.setTitleBarOverlay({ color: light ? "#f4f7fd" : "#0a0c10", symbolColor: light ? "#202325" : "#c6d0dc", height: 36 });
+      w.setBackgroundColor(light ? "#f4f7fd" : "#0a0c10");
+    } catch {
+      /* a window without an overlay */
+    }
+  });
   ipcMain.on("app-info", (event) => {
     event.returnValue = {
       publicBuild,

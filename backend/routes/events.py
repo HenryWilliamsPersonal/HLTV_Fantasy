@@ -3974,19 +3974,23 @@ def _detect_event_tournament_kind_cached(event: Dict[str, Any]) -> Dict[str, Any
         # playoffs as two fantasy games of one event) starts with ITS first
         # match, not the event's day one — else it reads as started (and
         # frozen) while the group stage is still being played.
-        if detected.get("stage_scoped") and str(detected.get("kind") or "") in ("playoff", "double_elim"):
-            first = _playoff_stage_first_match(event)
-            if first:
+        if detected.get("stage_scoped"):
+            first, ids = _playoff_stage_matches(event)
+            # the playoff brackets' match ids tell one stage's games from the
+            # other's: the playoff game keeps them, the group stage drops them
+            detected["playoff_match_ids"] = sorted(ids)
+            if first and str(detected.get("kind") or "") in ("playoff", "double_elim"):
                 detected["start_at"] = first
     with _KIND_CACHE_LOCK:
         _KIND_CACHE[event_id] = (signature, detected)
     return detected
 
 
-def _playoff_stage_first_match(event: Dict[str, Any]) -> Optional[float]:
-    """Epoch seconds of the earliest scheduled match in the archived event
-    page's playoff brackets (every slotted bracket not named 'Group …', the
-    3rd-place decider included); None when no playoff match has a time yet."""
+def _playoff_stage_matches(event: Dict[str, Any]) -> tuple:
+    """(epoch seconds of the earliest scheduled match, every match id) of the
+    archived event page's playoff brackets (every slotted bracket not named
+    'Group …', the 3rd-place decider included); (None, set()) when the page
+    has no playoff match yet."""
     import html as _htmlmod
     import json as _json
     import re as _re
@@ -3996,8 +4000,9 @@ def _playoff_stage_first_match(event: Dict[str, Any]) -> Optional[float]:
     try:
         html = _find_event_snapshot_html(event.get("hltv_event_id")) or ""
     except Exception:  # noqa: BLE001
-        return None
+        return None, set()
     times: List[float] = []
+    ids: set = set()
     for m in _re.finditer(r'data-slotted-bracket-json="([^"]+)"', html):
         try:
             bracket = _json.loads(_htmlmod.unescape(m.group(1)))
@@ -4008,9 +4013,13 @@ def _playoff_stage_first_match(event: Dict[str, Any]) -> Optional[float]:
         for rnd in bracket.get("rounds") or []:
             for key, slot in rnd.items():
                 match = ((slot or {}).get("matchup") or {}).get("match") if key.startswith("slot") and isinstance(slot, dict) else None
-                if match and match.get("startTime"):
+                if not match:
+                    continue
+                if match.get("startTime"):
                     times.append(float(match["startTime"]) / 1000.0)
-    return min(times) if times else None
+                if match.get("matchId"):
+                    ids.add(int(match["matchId"]))
+    return (min(times) if times else None), ids
 
 
 def _event_page_dates(event: Dict[str, Any]) -> tuple:

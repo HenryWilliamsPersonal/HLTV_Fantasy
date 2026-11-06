@@ -11867,18 +11867,28 @@ function GroupsTab({
     setCompletedResult(null);
   };
 
-  // Bracket formats: one pick per match (match key -> winner), downstream
-  // picks cleared when an earlier match changes.
+  // Bracket formats: one pick per match (match key -> winner). A change
+  // drops only the later picks it makes impossible: walking the matches in
+  // play order, a pick survives while its team can still be in that match.
   const [bracketPicks, setBracketPicks] = useState({});
   const pickBracketMatch = (key, tid) => {
     setBracketPicks((prev) => {
-      const order = (results?.bracket?.matches || []).map((m) => m[0]);
-      const at = order.indexOf(key);
+      const slots = (results?.bracket?.team_slots || []).map(Number);
+      const want = { ...prev, [key]: tid };
       const next = {};
-      order.forEach((k, i) => {
-        if (i < at && prev[k]) next[k] = prev[k];
+      const winners = {};
+      const losers = {};
+      (results?.bracket?.matches || []).forEach(([k, _stage, fa, fb]) => {
+        const side = (f) => (f[0] === "seed" ? slots[Number(f[1])] : f[0] === "win" ? winners[String(f[1])] : losers[String(f[1])]) || null;
+        const a = side(fa);
+        const b = side(fb);
+        const w = Number(want[k] || 0);
+        if (w && (w === a || w === b)) {
+          next[k] = w;
+          winners[k] = w;
+          losers[k] = w === a ? b : a;
+        }
       });
-      next[key] = tid;
       return next;
     });
     setCompletedResult(null);
@@ -12712,12 +12722,8 @@ function GroupsTab({
                         <TeamLogo hltvTeamId={info?.hltv_team_id} name={teamName(tid)} size={42} />
                         <div className="event-team-headtext">
                           <span className="event-team-name">{teamName(tid)}</span>
-                          {PATH_FORMATS.includes(results.group_format) ? (
-                            <span className="event-team-rank">
-                              Seed {results.swiss?.seeds?.[String(tid)] ?? (results.groups?.[0] || []).map(Number).indexOf(Number(tid)) + 1}
-                            </span>
-                          ) : (
-                            groupIdx >= 0 && <span className="event-team-rank">Group {groupIdx + 1}</span>
+                          {!PATH_FORMATS.includes(results.group_format) && groupIdx >= 0 && (
+                            <span className="event-team-rank">Group {groupIdx + 1}</span>
                           )}
                           <div className="event-team-odds">
                             {odds.map(([label, p, accent]) => (

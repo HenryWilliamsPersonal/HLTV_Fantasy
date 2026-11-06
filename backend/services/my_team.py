@@ -681,7 +681,42 @@ def _predict_match(player_row: Dict[str, Any], own_tid: int, opp_tid: int, bo: i
     }
 
 
-def _bracket_round_cards(fmt: str, by_player: Dict[int, List[Dict[str, Any]]], n_rounds: int) -> Optional[Dict[int, Dict[int, Dict[str, Any]]]]:
+def _playoff_tables(bracket: Dict[str, Any]) -> Optional[tuple]:
+    """A single-elimination playoff bracket (the stored run's match list) as
+    the round walker's tables: (next stage on a win / loss, fantasy round of
+    each stage, each slot's first stage). The final and the third-place
+    decider share the last round; a bye slot (the 6-team bracket's group
+    winners) starts in the semis."""
+    if str(bracket.get("kind") or "") not in ("single", "single6"):
+        return None
+    matches = bracket.get("matches") or []
+    stages: List[str] = []
+    for _k, st, _fa, _fb in matches:
+        if st not in stages and st != "third_place":
+            stages.append(st)
+    if not stages:
+        return None
+    has_third = any(st == "third_place" for _k, st, _fa, _fb in matches)
+    table: Dict[str, tuple] = {}
+    for i, st in enumerate(stages):
+        last = i == len(stages) - 1
+        table[st] = (None if last else stages[i + 1], "third_place" if (has_third and stages[i + 1:] == ["final"]) else None)
+    if has_third:
+        table["third_place"] = (None, None)
+    round_of = {st: i for i, st in enumerate(stages)}
+    if has_third:
+        round_of["third_place"] = round_of["final"]
+    slots = [int(t) for t in (bracket.get("team_slots") or [])]
+    first: Dict[int, str] = {}
+    for _k, st, fa, fb in matches:
+        for f in (fa, fb):
+            if f[0] == "seed" and 0 <= int(f[1]) < len(slots):
+                first.setdefault(slots[int(f[1])], st)
+    return table, round_of, first
+
+
+def _bracket_round_cards(fmt: str, by_player: Dict[int, List[Dict[str, Any]]], n_rounds: int,
+                         playoff: Optional[tuple] = None, team_of: Optional[Dict[int, int]] = None) -> Optional[Dict[int, Dict[int, Dict[str, Any]]]]:
     """Group brackets: each player's card per fantasy round (index), from his
     played matches walked through the bracket (a round is the stage's round,
     not his match count). A round his team skips while still in, or after
@@ -692,13 +727,22 @@ def _bracket_round_cards(fmt: str, by_player: Dict[int, List[Dict[str, Any]]], n
     a different number of rounds."""
     from backend.services.booster_advisor import BRACKET_NEXT, BRACKET_ROUND, QUALIFY_ON_LOSS
 
-    table, round_of = BRACKET_NEXT.get(fmt), BRACKET_ROUND.get(fmt)
+    first_stage: Dict[int, str] = {}
+    if playoff is not None:
+        table, round_of, first_stage = playoff
+    else:
+        table, round_of = BRACKET_NEXT.get(fmt), BRACKET_ROUND.get(fmt)
     if not table or not round_of or n_rounds != max(round_of.values()) + 1:
         return None
     out: Dict[int, Dict[int, Dict[str, Any]]] = {}
     for pid, entries in by_player.items():
         cards: Dict[int, Dict[str, Any]] = {}
-        at: Optional[str] = next(iter(table))
+        at: Optional[str] = first_stage.get((team_of or {}).get(pid), next(iter(table)))
+        name0 = (entries[0].get("name") if entries else "") or ""
+        for st, rd in round_of.items():
+            if rd < round_of[at] and st in table:
+                # a bye: HLTV pads the round the team skips (+6 team, nothing to average yet)
+                cards[rd] = {"player_id": pid, "name": name0, "result": "PADDING", "opponent": "", "points": 6, "rating_points": 0, "team_points": 6, "role_points": 0, "booster_points": 0}
         out_after: Optional[int] = None  # the round he was knocked out in
         done_after: Optional[int] = None  # the round his run ended in
         for t in [t for t in entries if t.get("result") in ("WON", "LOST")]:
@@ -788,7 +832,8 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
     for t in page["tracker"]:
         if t.get("player_id") is not None:
             by_player.setdefault(int(t["player_id"]), []).append(t)
-    bracket_cards = _bracket_round_cards(str(results.get("group_format") or ""), by_player, len(rounds))
+    playoff_tables = _playoff_tables(results.get("bracket") or {}) if str(results.get("group_format") or "") == "bracket" else None
+    bracket_cards = _bracket_round_cards(str(results.get("group_format") or ""), by_player, len(rounds), playoff=playoff_tables, team_of=team_of_player)
     for i, r in enumerate(rounds):
         if r.get("players"):
             continue
@@ -817,7 +862,8 @@ def team_report(event_id: int, user_key: str) -> Optional[Dict[str, Any]]:
             live_state.live_event(eid, fetch_if_missing=False)  # the live watch reads the pages; the report never waits for them
         except Exception:  # noqa: BLE001 - the report still has HLTV's own numbers
             logger.warning("Could not read the live pages for event %s", eid, exc_info=True)
-    pending = [m for m in live_pages.cached(eid) if m.get("status") in ("live", "upcoming")]
+    keep = live_state.stage_keep(eid)  # a stage-scoped game: its own stage's matches only
+    pending = [m for m in live_pages.cached(eid) if m.get("status") in ("live", "upcoming") and (keep is None or keep(m.get("match_id")))]
     pending.sort(key=lambda m: (m.get("start_at") or 0.0))
 
     # The run's per-round expectations (stage_stats.players[pid].stages[r]):

@@ -38,6 +38,12 @@ def _loop() -> None:
                 fantasy_field.auto_reads()  # an event gone live since the nightly batch
         except Exception:  # noqa: BLE001
             logger.exception("Field match refresh tick failed")
+        try:
+            from backend.services import event_finish
+
+            event_finish.tick(entries)  # a finished event brought up to date once
+        except Exception:  # noqa: BLE001
+            logger.exception("Event finish tick failed")
 
 
 def start() -> None:

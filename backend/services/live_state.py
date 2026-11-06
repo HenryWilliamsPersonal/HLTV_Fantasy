@@ -76,6 +76,38 @@ def _event_matches(conn: sqlite3.Connection, key_to_tid: Dict[str, int], start: 
     return out
 
 
+def _stage_keep(detected: Dict[str, Any]):
+    """For a stage-scoped fantasy game: a test of whether a match id belongs
+    to its stage (the playoff game keeps the playoff brackets' matches, a
+    group-stage game the rest); None when the game is not stage-scoped or
+    the event page lists no playoff match yet."""
+    ids = {int(x) for x in (detected.get("playoff_match_ids") or [])}
+    if not detected.get("stage_scoped") or not ids:
+        return None
+    playoff = str(detected.get("kind") or "") in ("playoff", "double_elim")
+
+    def keep(match_id: Any) -> bool:
+        try:
+            return (int(match_id) in ids) == playoff
+        except (TypeError, ValueError):
+            return not playoff  # no id: not a bracket match
+    return keep
+
+
+def stage_keep(event_id: int):
+    """_stage_keep for an event id (None when it does not apply)."""
+    from backend.data.event_db import get_event_detail
+    from backend.routes import events as events_routes
+
+    detail = get_event_detail(int(event_id))
+    if not detail:
+        return None
+    try:
+        return _stage_keep(events_routes._detect_event_tournament_kind_cached(detail) or {})
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _match_key(m: Dict[str, Any]) -> str:
     return str(m.get("match_id") or m.get("url") or "")
 
@@ -264,7 +296,7 @@ def _groups_state(matches: List[Dict[str, Any]], groups: List[List[int]]) -> Lis
     return out
 
 
-def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float, fetch_if_missing: bool = False) -> Optional[Dict[str, Any]]:
+def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float, fetch_if_missing: bool = False, force_pages: bool = False) -> Optional[Dict[str, Any]]:
     from backend.data.event_db import get_event_detail
     from backend.routes import events as events_routes
     from backend.routes.groups import _GROUPS_STATE
@@ -310,13 +342,26 @@ def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float, fetch_if_mi
 
     page: List[Dict[str, Any]] = []
     hltv_event_id = int(detail.get("hltv_event_id") or 0)
-    if hltv_event_id and status in ("live", "upcoming"):
+    if hltv_event_id and force_pages:
+        # the finish step's last read: whatever the status, read the pages now
+        page = live_pages.refresh(event_id, hltv_event_id, str(detail.get("hltv_event_url") or ""), to_tid)
+    elif hltv_event_id and status in ("live", "upcoming"):
         if live_pages.refresh_due(event_id, status, float(start), now):
             if fetch_if_missing and live_pages.cache_age(event_id) is None:
                 page = live_pages.refresh(event_id, hltv_event_id, str(detail.get("hltv_event_url") or ""), to_tid)
             else:
                 live_pages.refresh_in_background(event_id, hltv_event_id, str(detail.get("hltv_event_url") or ""), to_tid)
         page = page or live_pages.cached(event_id)
+    elif hltv_event_id:
+        # a finished event keeps the results its last page read saw (the
+        # final may not be in the nightly results import yet)
+        page = [pm for pm in live_pages.cached(event_id) if pm.get("status") == "finished"]
+    # One HLTV event, two fantasy games (group stage / playoffs): each keeps
+    # only its own stage's matches, told apart by the playoff brackets' ids.
+    keep = _stage_keep(detected)
+    if keep is not None:
+        matches = [m for m in matches if keep(m.get("match_id"))]
+        page = [pm for pm in page if keep(pm.get("match_id"))]
     known_ids = {int(m["match_id"]) for m in matches if m.get("match_id")}
     for pm in page:
         if pm["status"] == "finished" and int(pm["match_id"]) not in known_ids:
@@ -339,7 +384,9 @@ def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float, fetch_if_mi
             swiss_keys, rec = _swiss_walk(matches, team_ids)
             matches = [m for m in matches if _match_key(m) in swiss_keys]
             pending = [pm for pm in pending if _swiss_alive(rec, pm.get("a")) and _swiss_alive(rec, pm.get("b"))]
-        elif kind in ("playoff", "double_elim"):
+        elif kind in ("playoff", "double_elim") and keep is None:
+            # no playoff match ids on the page yet: the group-stage sibling's
+            # Swiss walk tells its matches from this game's
             walk = _sibling_swiss_walk(conn, event_id, int(detail.get("hltv_event_id") or 0), _iso(start), _iso(end + GRACE_DAYS * DAY))
             if walk is not None:
                 swiss_keys, rec = walk
@@ -422,7 +469,7 @@ def live_events(now: Optional[float] = None) -> List[Dict[str, Any]]:
     return live_and_next + previous
 
 
-def live_event(event_id: int, now: Optional[float] = None, fetch_if_missing: bool = True) -> Optional[Dict[str, Any]]:
+def live_event(event_id: int, now: Optional[float] = None, fetch_if_missing: bool = True, force_pages: bool = False) -> Optional[Dict[str, Any]]:
     """One event's full state, or None when it has no valuation. With
     fetch_if_missing an event whose HLTV pages were never read gets them
     read now (seconds in the browser); without, the state comes from the
@@ -430,6 +477,6 @@ def live_event(event_id: int, now: Optional[float] = None, fetch_if_missing: boo
     now = float(now or time.time())
     conn = connect()
     try:
-        return _entry(conn, {"event_id": int(event_id)}, now, fetch_if_missing=fetch_if_missing)
+        return _entry(conn, {"event_id": int(event_id)}, now, fetch_if_missing=fetch_if_missing, force_pages=force_pages)
     finally:
         conn.close()

@@ -2497,8 +2497,10 @@ button:disabled {
 .reach-v.final { font-size: 17px; border-left: 1px solid #2c3441; padding-left: 8px; justify-self: stretch; }
 .reach-v.title { border-left: 0; padding-left: 0; }
 /* Team odds list under the team name: label left, value right, title in orange */
-.event-team-odds { display: flex; flex-direction: column; gap: 2px; margin-top: 7px; max-width: 150px; }
-.event-team-odd { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+/* fixed label column: every card puts its numbers in the same place,
+   whatever the length of the team name above them */
+.event-team-odds { display: flex; flex-direction: column; gap: 2px; margin-top: 7px; }
+.event-team-odd { display: grid; grid-template-columns: 84px auto; align-items: baseline; gap: 6px; }
 .event-team-odd-label {
   color: #8fa3bf;
   font-size: 10.5px;

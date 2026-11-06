@@ -7274,9 +7274,11 @@ function LeaderboardPanel({ ev }) {
 const TEAM_LB_PAGE = 50;
 function TeamLeaderboard({ ev }) {
   const eventId = ev?.event_id;
+  // a finished event has nothing still to come: no expectation columns
+  const done = ev?.status === "finished";
   const [q, setQ] = useState("");
   const [query, setQuery] = useState("");
-  const [sortBy, setSortBy] = useState("expected_final_desc");
+  const [sortBy, setSortBy] = useState(done ? "points_desc" : "expected_final_desc");
   const [page, setPage] = useState(0);
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -7359,16 +7361,20 @@ function TeamLeaderboard({ ev }) {
           <td className="num">
             <strong>{n(r.points)}</strong>
           </td>
-          <td className="num">{f1(r.expected_left)}</td>
-          <td className="num">
-            <strong className="team-lb-final">{f1(r.expected_final)}</strong>
-          </td>
-          <td className="num">{n(r.place_expected)}</td>
+          {!done && (
+            <>
+              <td className="num">{f1(r.expected_left)}</td>
+              <td className="num">
+                <strong className="team-lb-final">{f1(r.expected_final)}</strong>
+              </td>
+              <td className="num">{n(r.place_expected)}</td>
+            </>
+          )}
         </tr>
         {isOpen ? (
           <tr className="team-lb-detail">
             <td />
-            <td colSpan={6}>
+            <td colSpan={done ? 3 : 6}>
               <table className="mt-mini team-lb-mini">
                 <thead>
                   <tr>
@@ -7376,7 +7382,7 @@ function TeamLeaderboard({ ev }) {
                     <th>Team</th>
                     <th>Role</th>
                     <th className="num">Points</th>
-                    <th className="num">Expected to come</th>
+                    {!done && <th className="num">Expected to come</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -7391,7 +7397,7 @@ function TeamLeaderboard({ ev }) {
                       <td>{p.team}</td>
                       <td>{p.role_name || <span className="muted">-</span>}</td>
                       <td className="num">{n(p.points)}</td>
-                      <td className="num">{f1(p.expected_left)}</td>
+                      {!done && <td className="num">{f1(p.expected_left)}</td>}
                     </tr>
                   ))}
                 </tbody>
@@ -7418,9 +7424,9 @@ function TeamLeaderboard({ ev }) {
                 {head("Team", "team_name", { asc: true })}
                 <th>Lineup</th>
                 {head("Points", "points", { num: true })}
-                {head("Expected to come", "expected_left", { num: true })}
-                {head("Expected final", "expected_final", { num: true })}
-                {head("Projected place", "place_expected", { num: true, asc: true })}
+                {!done && head("Expected to come", "expected_left", { num: true })}
+                {!done && head("Expected final", "expected_final", { num: true })}
+                {!done && head("Projected place", "place_expected", { num: true, asc: true })}
               </tr>
             </thead>
             <tbody>

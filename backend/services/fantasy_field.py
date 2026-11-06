@@ -296,6 +296,11 @@ def _fetch_feeds(driver, urls: List[str]) -> List[Dict[str, Any]]:
     return [results.get(u) or {"status": 0, "text": ""} for u in urls]
 
 
+# passes over the ids HLTV refused (403 / 429) before giving up on them
+RETRY_PASSES = 8
+RETRY_PAUSE_SECONDS = 30.0
+
+
 def _read(event_id: int, league_id: int, seed_team_id: int, max_ids: int) -> None:
     from backend.services.hltv_browser import run_hltv_browser_session
     from backend.services.my_team import ENTRY_URL
@@ -394,14 +399,25 @@ def _read(event_id: int, league_id: int, seed_team_id: int, max_ids: int) -> Non
                 break
             _save_run(run)
             time.sleep(PAUSE_BETWEEN_CHUNKS)
-        # a last pass over what HLTV never answered about
+        # retry what HLTV never answered about (403 / 429 bursts): every id,
+        # pass after pass with a growing pause, until a pass recovers nothing
         passes = 0
-        while unresolved and passes < 3 and not _STOP.get(eid):
+        while unresolved and passes < RETRY_PASSES and not _STOP.get(eid):
             passes += 1
-            retry, unresolved = unresolved[:CHUNK_IDS], unresolved[CHUNK_IDS:]
-            run["scanned"] -= len(retry)  # counted again by scan()
-            time.sleep(10.0)
-            scan(retry, None)
+            time.sleep(RETRY_PAUSE_SECONDS * passes)
+            todo, unresolved = unresolved, []
+            before = len(todo)
+            for i in range(0, len(todo), CHUNK_IDS):
+                if _STOP.get(eid):
+                    unresolved.extend(todo[i:])
+                    break
+                retry = todo[i:i + CHUNK_IDS]
+                run["scanned"] -= len(retry)  # counted again by scan()
+                scan(retry, None)
+                _save_run(run)
+                time.sleep(PAUSE_BETWEEN_CHUNKS)
+            if len(unresolved) >= before:
+                break  # HLTV still refuses every one of them
         run["status"] = "stopped" if _STOP.get(eid) else "done"
         if not run.get("message"):
             run["message"] = f"scan ended: ids {run.get('lowest_id')}–{run.get('highest_id')}, {run['found']} teams"

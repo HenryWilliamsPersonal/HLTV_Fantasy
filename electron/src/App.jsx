@@ -7251,7 +7251,7 @@ function LeaderboardPanel({ ev }) {
   const [view, setView] = useState("players");
   return (
     <div className="stack">
-      <FieldImportStrip eventId={ev?.event_id} />
+      {ev?.status !== "finished" && <FieldImportStrip eventId={ev?.event_id} />}
       <div className="tab-bar small">
         {[
           ["players", "Players"],

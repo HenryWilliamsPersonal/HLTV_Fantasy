@@ -10668,7 +10668,9 @@ function BracketLayout({ byStage, card, meta }) {
       <div>
         <div className="pb-bracket">
           {rounds.map((stage, ri) => (
-            <div className="pb-round" key={stage}>
+            // a round with as many matches as the one before (byes into the
+            // semis) is fed 1:1: no two-feeder bar, just the arms
+            <div className={`pb-round${ri > 0 && (byStage[stage] || []).length === (byStage[rounds[ri - 1]] || []).length ? " straight" : ""}`} key={stage}>
               <div className="pb-round-title">{STAGE_FULL[stage] || stage}</div>
               <div className="pb-matches">
                 {(byStage[stage] || []).map((m, i) => (

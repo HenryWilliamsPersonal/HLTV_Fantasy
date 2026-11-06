@@ -2960,6 +2960,7 @@ button:disabled {
 }
 .playoff-team-row.bracket-pick:not(:disabled):hover { background: #1b2028; }
 .playoff-team-row.bracket-pick:disabled { cursor: default; }
+.playoff-team-row.bracket-pick:disabled:not(.loser) { opacity: 1; }  /* read-only boards draw teams at full strength */
 .playoff-team-row.bracket-pick:focus-visible { outline: 2px solid #ff8a47; outline-offset: -2px; }
 .outcome-row-mark {
   margin-left: auto;

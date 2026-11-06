@@ -92,7 +92,11 @@ FINISH_GRACE_SECONDS = 24 * 3600
 ASSUMED_LENGTH_SECONDS = 14 * 24 * 3600
 
 
-def _finished(detected: Dict[str, Any], now: Optional[float] = None) -> Optional[bool]:
+def _finished(detected: Dict[str, Any], now: Optional[float] = None, event_id: Optional[int] = None) -> Optional[bool]:
+    from backend.services import fantasy_games
+
+    if event_id is not None and fantasy_games.is_finished(event_id):
+        return True  # HLTV's fantasy page says the game is over
     now = now or time.time()
     end = detected.get("end_at")
     if end:
@@ -114,7 +118,7 @@ def live_events() -> list:
         if not eid:
             continue
         _, detected = detect_kind(eid)
-        if _finished(detected) is True:
+        if _finished(detected, event_id=eid) is True:
             continue
         live.append((float(detected.get("start_at") or 0), eid))
     return [eid for _, eid in sorted(live)]
@@ -170,7 +174,7 @@ def event_status(event_id: int) -> Dict[str, Any]:
     start_at = detected.get("start_at")
     end_at = detected.get("end_at")
     started: Optional[bool] = (time.time() >= float(start_at)) if start_at else None
-    finished = _finished(detected)
+    finished = _finished(detected, event_id=event_id)
     automated = bool(hooks and hooks["bake"])
     if not hooks:
         status, label = "unsupported", "Format not supported"

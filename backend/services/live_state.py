@@ -288,6 +288,10 @@ def _entry(conn: sqlite3.Connection, ev: Dict[str, Any], now: float, fetch_if_mi
     if not results.get("teams"):
         return None
     status = "upcoming" if now < float(start) else "live" if now <= end + GRACE_DAYS * DAY else "finished"
+    from backend.services import fantasy_games
+
+    if status != "finished" and fantasy_games.is_finished(event_id):
+        status = "finished"  # HLTV's fantasy page: the game is over (its HLTV event may still be on)
     team_ids = [int(t) for t in results["teams"]]
     rows = _team_rows(conn, team_ids)
     key_to_tid = {team_aliases.key(str(r["name"] or "")): tid for tid, r in rows.items() if r.get("name")}

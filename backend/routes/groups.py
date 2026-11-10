@@ -5598,10 +5598,13 @@ def groups_outcome_player_detail(payload: dict | None = None, event_id: Optional
 
 def _find_completed_group_outcomes(results: dict, picks_by_group: List[List[int]]) -> List[Dict[str, Any]]:
     outcomes = results.get("outcomes") or []
-    match_count = 10 if str(results.get("group_format") or "") == "de8" else 5
     selected: List[Dict[str, Any]] = []
     for g_idx, winners in enumerate(picks_by_group):
         want = [int(w) for w in winners]
+        # the group's matches per outcome (gsl4 5, gsl4_top3 4, de8 10, de8_top3 12)
+        match_count = next(
+            (len(o.get("matches") or []) for o in outcomes if o.get("group") is not None and int(o["group"]) == g_idx), 0
+        )
         if len(want) != match_count or any(w <= 0 for w in want):
             raise HTTPException(status_code=400, detail=f"Group {g_idx + 1}: pick all {match_count} match winners first")
         match = None

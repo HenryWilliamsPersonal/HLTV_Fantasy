@@ -8067,10 +8067,10 @@ function LiveEventBody({ ev }) {
   // Group formats the Tournament page draws as brackets (GSL, double-elim
   // groups): the same group bracket here, from each group's seeded slots.
   const groupBoards =
-    ["gsl4", "de8", "de8_top3"].includes(String(ev.group_format || "")) &&
+    Boolean(GROUP_MATCH_KEYS[String(ev.group_format || "")]) &&
     Array.isArray(ev.groups) &&
     ev.groups.length > 0 &&
-    ev.groups.every((g) => Array.isArray(g.slots) && g.slots.length === (String(ev.group_format) === "gsl4" ? 4 : 8));
+    ev.groups.every((g) => Array.isArray(g.slots) && g.slots.length === (String(ev.group_format).startsWith("gsl4") ? 4 : 8));
   const hltvIdByTeamId = useMemo(() => {
     const m = {};
     Object.entries(ev.teams || {}).forEach(([tid, t]) => {
@@ -10789,48 +10789,86 @@ function BracketLayout({ byStage, card, meta }) {
   );
 }
 
-function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined, bo = 3, results = null }) {
+// The matches of each group format in the order the stored outcomes list
+// them (the completed-stage query sends its winners in this order).
+const GROUP_MATCH_KEYS = {
+  gsl4: ["ub0", "ub1", "wm", "em", "dc"],
+  gsl4_top3: ["ub0", "ub1", "wm", "em"],
+  de8: ["ub0", "ub1", "ub2", "ub3", "us0", "us1", "lb0", "lb1", "ls0", "ls1"],
+  de8_top3: ["ub0", "ub1", "ub2", "ub3", "us0", "us1", "uf", "lb0", "lb1", "ls0", "ls1", "lf"],
+};
+
+// {match key: {a, b, w, l}} for one group: sides from the seeds and earlier
+// results, the winner from winnerOf(key, a, b) when it is one of the two sides.
+function resolveGroupBracket(format, slotIds, winnerOf) {
+  const sid = (i) => {
+    const v = slotIds[i];
+    return v && v !== "unknown" ? Number(v) : 0;
+  };
+  const R = {};
+  const play = (key, a, b) => {
+    let w = 0;
+    if (a && b) {
+      const x = Number(winnerOf(key, a, b) || 0);
+      if (x === a || x === b) w = x;
+    }
+    R[key] = { a, b, w, l: w ? (w === a ? b : a) : 0 };
+  };
+  const W = (k) => R[k]?.w || 0;
+  const L = (k) => R[k]?.l || 0;
+  if (format === "de8_top3" || format === "de8") {
+    [0, 1, 2, 3].forEach((m) => play(`ub${m}`, sid(2 * m), sid(2 * m + 1)));
+    [0, 1].forEach((m) => play(`us${m}`, W(`ub${2 * m}`), W(`ub${2 * m + 1}`)));
+    if (format === "de8_top3") play("uf", W("us0"), W("us1"));
+    [0, 1].forEach((m) => play(`lb${m}`, L(`ub${2 * m}`), L(`ub${2 * m + 1}`)));
+    [0, 1].forEach((m) => play(`ls${m}`, L(`us${1 - m}`), W(`lb${m}`)));
+    if (format === "de8_top3") play("lf", W("ls0"), W("ls1"));
+  } else {
+    [0, 1].forEach((m) => play(`ub${m}`, sid(2 * m), sid(2 * m + 1)));
+    play("wm", W("ub0"), W("ub1"));
+    play("em", L("ub0"), L("ub1"));
+    if (format !== "gsl4_top3") play("dc", L("wm"), W("em"));
+  }
+  return R;
+}
+
+function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined, bo = 3, results = null, picks = null, onPick = null }) {
   const meta = `BO${bo}`;
   // With results (finished matches {a, b, winner}): each match's two sides
   // from the seeds and the earlier matches' winners / losers, and its winner
   // when the pair has played — the Live page's view of the same bracket.
-  const resolved = (() => {
-    if (!Array.isArray(results)) return null;
-    const sid = (i) => {
-      const v = slotIds[i];
-      return v && v !== "unknown" ? Number(v) : 0;
-    };
-    const R = {};
-    const play = (key, a, b) => {
-      let w = 0;
-      if (a && b) {
+  // Each match's two sides from the seeds and the earlier matches' winners /
+  // losers, and its winner: from finished matches {a, b, winner} (the Live
+  // page) or from picks {match key: team id} (the completed-stage picker).
+  const resolved = Array.isArray(results)
+    ? resolveGroupBracket(format, slotIds, (_key, a, b) => {
         const m = results.find((x) => x.winner != null && ((Number(x.a) === a && Number(x.b) === b) || (Number(x.a) === b && Number(x.b) === a)));
-        if (m) w = Number(m.winner);
-      }
-      R[key] = { a, b, w, l: w ? (w === a ? b : a) : 0 };
-    };
-    const W = (k) => R[k]?.w || 0;
-    const L = (k) => R[k]?.l || 0;
-    if (format === "de8_top3" || format === "de8") {
-      [0, 1, 2, 3].forEach((m) => play(`ub${m}`, sid(2 * m), sid(2 * m + 1)));
-      [0, 1].forEach((m) => play(`us${m}`, W(`ub${2 * m}`), W(`ub${2 * m + 1}`)));
-      if (format === "de8_top3") play("uf", W("us0"), W("us1"));
-      [0, 1].forEach((m) => play(`lb${m}`, L(`ub${2 * m}`), L(`ub${2 * m + 1}`)));
-      [0, 1].forEach((m) => play(`ls${m}`, L(`us${1 - m}`), W(`lb${m}`)));
-      if (format === "de8_top3") play("lf", W("ls0"), W("ls1"));
-    } else {
-      [0, 1].forEach((m) => play(`ub${m}`, sid(2 * m), sid(2 * m + 1)));
-      play("wm", W("ub0"), W("ub1"));
-      play("em", L("ub0"), L("ub1"));
-      play("dc", L("wm"), W("em"));
-    }
-    return R;
-  })();
+        return m ? Number(m.winner) : 0;
+      })
+    : picks
+      ? resolveGroupBracket(format, slotIds, (key) => picks[key])
+      : null;
   const cell = (mk, side, fallback) => {
     const m = resolved?.[mk];
     const id = m ? m[side] : 0;
     if (!id) return fallback;
     const cls = m.w ? (m.w === id ? " winner" : " loser") : "";
+    if (onPick) {
+      // the completed-stage picker: the same rows as the bracket picker
+      return (
+        <button
+          type="button"
+          key={side}
+          className={`playoff-team-row outcome-row bracket-pick${cls}`}
+          disabled={!(m.a && m.b)}
+          onClick={() => onPick(mk, id)}
+        >
+          <TeamLogo hltvTeamId={hltvIdByTeamId[id]} name={nameOf(String(id))} size={24} />
+          <span>{nameOf(String(id))}</span>
+          {m.w === id && <span className="outcome-row-mark">W</span>}
+        </button>
+      );
+    }
     return (
       <div className={`playoff-team-row outcome-row${cls}`} key={side}>
         <TeamLogo hltvTeamId={hltvIdByTeamId[id]} name={nameOf(String(id))} size={24} />
@@ -10938,6 +10976,47 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
         ],
       });
     }
+  } else if (format === "gsl4_top3") {
+    // no decider: the upper final sends 1st to the semis and 2nd to the
+    // quarter-finals, the lower match's winner is 3rd
+    upper = [
+      {
+        title: "Opening",
+        matches: [0, 1].map((m) => ({
+          key: `ub${m}`,
+          title: `Opening ${m + 1}`,
+          rows: [seed(2 * m, "a"), seed(2 * m + 1, "b")],
+          places: [drop("loser → lower match")],
+        })),
+      },
+      {
+        title: "Upper final",
+        matches: [
+          {
+            key: "wm",
+            title: "Upper final",
+            rows: [ph("Winner Opening 1", "a"), ph("Winner Opening 2", "b")],
+            places: [
+              win(combined ? "1st · bye to the playoff semis" : "1st · qualifies"),
+              win(combined ? "2nd · playoff quarter-finals" : "2nd · qualifies"),
+            ],
+          },
+        ],
+      },
+    ];
+    lower = [
+      {
+        title: "Lower match",
+        matches: [
+          {
+            key: "em",
+            title: "Lower",
+            rows: [ph("Loser Opening 1", "a"), ph("Loser Opening 2", "b")],
+            places: [win(combined ? "3rd · playoff quarter-finals" : "3rd · qualifies"), lose("loser out (4th)")],
+          },
+        ],
+      },
+    ];
   } else {
     upper = [
       {
@@ -11042,7 +11121,7 @@ function PlayoffSkeleton({ format, groupCount, qualsPerGroup, stopTeams = 1, bo 
   const ordinal = (r) => ({ 1: "1st", 2: "2nd", 3: "3rd" }[r] || `${r}th`);
   const seedLabel = (g, rank) => `Group ${g + 1} ${ordinal(rank + 1)}`;
   let rounds;
-  if (format === "de8_top3") {
+  if (format === "de8_top3" || format === "gsl4_top3") {
     // Presented as HLTV lays it out: QF1's winner meets Group 2's winner,
     // QF2's winner meets Group 1's winner, so the connectors read straight.
     rounds = [
@@ -11607,7 +11686,9 @@ function GroupsTab({
   const [groupCount, setGroupCount] = useState(2);
   const [groupFormat, setGroupFormat] = useState("gsl4");
   const seedsPerGroup = groupFormat.startsWith("de8") ? 8 : 4;
-  const qualsPerGroup = { gsl4: 2, de8: 4, de8_top3: 3 }[groupFormat] || 2;
+  const qualsPerGroup = { gsl4: 2, gsl4_top3: 3, de8: 4, de8_top3: 3 }[groupFormat] || 2;
+  // top 3 per group into the 6-team bracket with byes (de8_top3, gsl4_top3)
+  const top3Format = groupFormat === "de8_top3" || groupFormat === "gsl4_top3";
   const [combinedPlayoffs, setCombinedPlayoffs] = useState(false);
   const [playoffStopTeams, setPlayoffStopTeams] = useState("1");
   const [playoffLayout, setPlayoffLayout] = useState(playoffLayoutDetected || "cross");
@@ -11634,14 +11715,14 @@ function GroupsTab({
   // verified against a real HLTV bracket (backend allowlist): today that is
   // 2 groups of 8 with top 3 -> 6-team bracket. Anything else is refused and
   // flagged for development rather than simulated under a guessed seeding.
-  const combinedAllowed = (groupFormat === "de8_top3" && groupCount === 2) || (groupFormat === "gsl4" && (groupCount === 2 || groupCount === 4));
+  const combinedAllowed = (top3Format && groupCount === 2) || (groupFormat === "gsl4" && (groupCount === 2 || groupCount === 4));
   // Detection says this one fantasy game scores the playoffs too: default the
   // toggle on, unless a stored simulation already made a choice (loadLatest
   // overwrites it from the saved payload right after).
   useEffect(() => {
     if (combinedDetected && combinedSupported && !results) {
       setCombinedPlayoffs(true);
-      if (groupFormat === "de8_top3") setPlayoffStopTeams("1");
+      if (top3Format) setPlayoffStopTeams("1");
     }
   }, [combinedDetected, combinedSupported, results, groupFormat]);
   const [autofillMessage, setAutofillMessage] = useState("");
@@ -11719,7 +11800,7 @@ function GroupsTab({
     try {
       const data = await api.post(
         "/groups/autofill-from-hltv-event",
-        { group_format: groupFormat === "de8_top3" ? "de8" : groupFormat },
+        { group_format: groupFormat === "de8_top3" ? "de8" : groupFormat === "gsl4_top3" ? "gsl4" : groupFormat },
         90000
       );
       if (data?.detail) {
@@ -11772,7 +11853,7 @@ function GroupsTab({
     if (!data?.exists) return false;
     const payload = data.payload || {};
     if (payload.group_format) {
-      setGroupFormat(["de8", "de8_top3", "swiss", "bracket"].includes(payload.group_format) ? payload.group_format : "gsl4");
+      setGroupFormat(["de8", "de8_top3", "gsl4_top3", "swiss", "bracket"].includes(payload.group_format) ? payload.group_format : "gsl4");
     }
     const savedGroups = payload.groups || [];
     if (savedGroups.length > 0) {
@@ -11801,7 +11882,7 @@ function GroupsTab({
         return;
       }
       const fmt =
-        data.group_format === "de8" ? (groupVariant === "de8_top3" ? "de8_top3" : "de8") : "gsl4";
+        data.group_format === "de8" ? (groupVariant === "de8_top3" ? "de8_top3" : "de8") : groupVariant === "gsl4_top3" ? "gsl4_top3" : "gsl4";
       const nextSlots = groups.flatMap((grp) =>
         (grp.team_ids || []).map((id) => (id > 0 ? String(id) : "unknown"))
       );
@@ -11882,85 +11963,20 @@ function GroupsTab({
     queryCombos(0);
   }, [combosReady, comboMode, comboSearch, sortKey, groupsTab, groupsTopSubtab, includeSet, excludeSet]);
 
-  const completedMatchCount = groupFormat === "de8" ? 10 : 5;
-  const other = (pair, winner) => (pair.length === 2 ? pair.find((t) => String(t) !== String(winner)) : undefined);
+  // Completed groups: picks per group {match key: winner}; a pick that no
+  // longer fits its match (an earlier pick changed) simply stops counting.
   const completedDerived = useMemo(() => {
-    const empty = Array(5).fill("");
+    const keys = GROUP_MATCH_KEYS[groupFormat] || [];
     return groupSlots.map((group, g) => {
-      const picks = completedPicks[g] || empty;
-      const [s1, s2, s3, s4] = group;
-      const o1 = [s1, s2];
-      const o2 = [s3, s4];
-      const o1w = picks[0];
-      const o2w = picks[1];
-      const winnersPair = o1w && o2w ? [o1w, o2w] : [];
-      const losersPair = o1w && o2w ? [other(o1, o1w), other(o2, o2w)] : [];
-      const wWinner = picks[2];
-      const eWinner = picks[3];
-      const deciderPair =
-        wWinner && eWinner && winnersPair.length ? [other(winnersPair, wWinner), eWinner] : [];
-      const pairs = [o1, o2, winnersPair, losersPair, deciderPair];
-      const complete = picks.every((p, i) => Boolean(p) && pairs[i].some((t) => String(t) === String(p)));
-      return { pairs, picks, complete };
+      const picks = completedPicks[g] || {};
+      const R = resolveGroupBracket(groupFormat, group.map((v) => (v ? String(v) : "")), (key) => picks[key]);
+      const winners = keys.map((k) => R[k]?.w || 0);
+      return { winners, complete: keys.length > 0 && winners.every(Boolean) };
     });
-  }, [groupSlots, completedPicks, groupFormat, completedMatchCount]);
-
-  // de8 completed derivation (10 matches): opening 1-4, upper sf 1-2, lower r1 1-2, lower sf 1-2.
-  const completedDerived8 = useMemo(() => {
-    const empty = Array(10).fill("");
-    return groupSlots.map((group, g) => {
-      const picks = completedPicks[g] || empty;
-      const o1 = [group[0], group[1]];
-      const o2 = [group[2], group[3]];
-      const o3 = [group[4], group[5]];
-      const o4 = [group[6], group[7]];
-      const [w1, w2, w3, w4] = [picks[0], picks[1], picks[2], picks[3]];
-      const L1 = w1 ? other(o1, w1) : undefined;
-      const L2 = w2 ? other(o2, w2) : undefined;
-      const L3 = w3 ? other(o3, w3) : undefined;
-      const L4 = w4 ? other(o4, w4) : undefined;
-      const usf1 = w1 && w2 ? [w1, w2] : []; // upper sf 1
-      const usf2 = w3 && w4 ? [w3, w4] : []; // upper sf 2
-      const lr1 = w1 && w2 ? [L1, L2] : []; // lower r1 1
-      const lr2 = w3 && w4 ? [L3, L4] : []; // lower r1 2
-      const uw1 = picks[4]; // upper sf 1 winner
-      const uw2 = picks[5]; // upper sf 2 winner
-      const UL1 = uw1 && usf1.length ? other(usf1, uw1) : undefined;
-      const UL2 = uw2 && usf2.length ? other(usf2, uw2) : undefined;
-      const lw1 = picks[6]; // lower r1 1 winner
-      const lw2 = picks[7]; // lower r1 2 winner
-      const lsf1 = lw1 && UL2 !== undefined ? [lw1, UL2] : []; // crossed: lr1 winner vs other upper loser
-      const lsf2 = lw2 && UL1 !== undefined ? [lw2, UL1] : [];
-      const pairs = [o1, o2, o3, o4, usf1, usf2, lr1, lr2, lsf1, lsf2];
-      const complete = picks.every((p, i) => Boolean(p) && pairs[i].length === 2 && pairs[i].some((t) => String(t) === String(p)));
-      return { pairs, picks, complete };
-    });
-  }, [groupSlots, completedPicks]);
-
-  const activeCompletedDerived = groupFormat === "de8" ? completedDerived8 : completedDerived;
-  const allGroupsComplete =
-    activeCompletedDerived.length > 0 && activeCompletedDerived.every((g) => g && g.complete);
-
-  const setCompletedPick = (g, matchIdx, value) => {
-    setCompletedPicks((prev) => {
-      const picks = [...(prev[g] || Array(completedMatchCount).fill(""))];
-      picks[matchIdx] = value;
-      if (groupFormat === "de8") {
-        // opening picks (0-3) reset upper sf, lower r1, lower sf; upper/lower r1 reset lower sf.
-        if (matchIdx <= 3) {
-          picks[4] = ""; picks[5] = ""; picks[6] = ""; picks[7] = ""; picks[8] = ""; picks[9] = "";
-        } else if (matchIdx <= 7) {
-          picks[8] = ""; picks[9] = "";
-        }
-      } else {
-        if (matchIdx <= 1) {
-          picks[2] = ""; picks[3] = ""; picks[4] = "";
-        } else if (matchIdx <= 3) {
-          picks[4] = "";
-        }
-      }
-      return { ...prev, [g]: picks };
-    });
+  }, [groupSlots, completedPicks, groupFormat]);
+  const allGroupsComplete = completedDerived.length > 0 && completedDerived.every((g) => g.complete);
+  const setCompletedPick = (g, key, tid) => {
+    setCompletedPicks((prev) => ({ ...prev, [g]: { ...(prev[g] || {}), [key]: Number(tid) } }));
     setCompletedResult(null);
   };
 
@@ -12100,7 +12116,7 @@ function GroupsTab({
             ? { bracket_picks: bracketPicks }
             : groupFormat === "swiss"
               ? { swiss_picks: swissPicks }
-              : { group_winners: activeCompletedDerived.map((g) => g.picks.map(Number)) }),
+              : { group_winners: completedDerived.map((g) => g.winners) }),
           search: comboSearch,
           include_player_ids: Array.from(includeSet),
           exclude_player_ids: Array.from(excludeSet),
@@ -12137,42 +12153,6 @@ function GroupsTab({
     });
     return m;
   }, [valueData]);
-  const matchLabels =
-    groupFormat === "de8"
-      ? [
-          "Opening 1",
-          "Opening 2",
-          "Opening 3",
-          "Opening 4",
-          "Upper semi 1",
-          "Upper semi 2",
-          "Lower round 1",
-          "Lower round 2",
-          "Lower semi 1",
-          "Lower semi 2",
-        ]
-      : ["Opening 1", "Opening 2", "Winners' match", "Elimination", "Decider"];
-  const matchPlaceholders =
-    groupFormat === "de8"
-      ? [
-          ["Seed 1", "Seed 2"],
-          ["Seed 3", "Seed 4"],
-          ["Seed 5", "Seed 6"],
-          ["Seed 7", "Seed 8"],
-          ["Opening 1 winner", "Opening 2 winner"],
-          ["Opening 3 winner", "Opening 4 winner"],
-          ["Opening 1 loser", "Opening 2 loser"],
-          ["Opening 3 loser", "Opening 4 loser"],
-          ["Lower R1 winner", "Upper semi 2 loser"],
-          ["Lower R2 winner", "Upper semi 1 loser"],
-        ]
-      : [
-          ["Seed 1", "Seed 2"],
-          ["Seed 3", "Seed 4"],
-          ["Opening 1 winner", "Opening 2 winner"],
-          ["Opening 1 loser", "Opening 2 loser"],
-          ["Winners' loser", "Elimination winner"],
-        ];
   const metricLabel = (team, mode = comboMode) =>
     mode === "completed"
       ? `Score ${Number(team?.bracket_score ?? team?.total_ev ?? 0).toFixed(2)}`
@@ -12728,7 +12708,7 @@ function GroupsTab({
                   <h3>Playoff bracket</h3>
                   {collapsedCards.playoff && (
                     <span className="group-card-summary">
-                      {groupFormat === "de8_top3"
+                      {top3Format
                         ? "6 teams · group winners bye to the semi-finals"
                         : `${qualsPerGroup * groupCount} teams · single elimination`}
                     </span>
@@ -12750,7 +12730,7 @@ function GroupsTab({
                     format={groupFormat}
                     groupCount={groupCount}
                     qualsPerGroup={qualsPerGroup}
-                    stopTeams={groupFormat === "de8_top3" ? 1 : Number(playoffStopTeams) || 1}
+                    stopTeams={top3Format ? 1 : Number(playoffStopTeams) || 1}
                     bo={playoffBo}
                     thirdPlace={playoffThirdPlace}
                     layout={playoffLayout}
@@ -12939,12 +12919,6 @@ function GroupsTab({
           </>
         )}
 
-        {groupsTab === "top5" && results && groupsTopSubtab === "completed" && groupFormat === "de8_top3" && (
-          <p className="muted">
-            Completed-bracket scoring for the top-3 double-elim variant isn't supported yet — use the Group
-            Stage simulation.
-          </p>
-        )}
         {groupsTab === "top5" && results && groupsTopSubtab === "completed" && groupFormat === "swiss" && (
           <>
             <div className="card sub">
@@ -12984,54 +12958,32 @@ function GroupsTab({
             {renderCompletedResults()}
           </>
         )}
-        {groupsTab === "top5" && results && groupsTopSubtab === "completed" && groupFormat !== "de8_top3" && !PATH_FORMATS.includes(groupFormat) && (
+        {groupsTab === "top5" && results && groupsTopSubtab === "completed" && Boolean(GROUP_MATCH_KEYS[groupFormat]) && (
           <>
-            {results &&
-              activeCompletedDerived.map((group, g) => {
-                const pickRow = (matchIdx) => {
-                  const placeholders = matchPlaceholders[matchIdx] || ["", ""];
-                  const ready = group.pairs[matchIdx].length === 2 && group.pairs[matchIdx].every(Boolean);
-                  return (
-                    <div className="gsl-match" key={`c-${g}-${matchIdx}`}>
-                      <span className="gsl-label">{matchLabels[matchIdx]}</span>
-                      <span className="gsl-pick">
-                        {[0, 1].map((rowIdx) => {
-                          const tid = ready ? group.pairs[matchIdx][rowIdx] : "";
-                          const selected = ready && String(group.picks[matchIdx]) === String(tid);
-                          return (
-                            <button
-                              key={rowIdx}
-                              disabled={!tid}
-                              className={selected ? "active" : ""}
-                              onClick={() => tid && setCompletedPick(g, matchIdx, String(tid))}
-                            >
-                              {tid ? teamName(tid) : placeholders[rowIdx]}
-                            </button>
-                          );
-                        })}
-                      </span>
-                    </div>
-                  );
-                };
-                return (
-                  <div className="card sub" key={`completed-${g}`}>
-                    <h3>Group {g + 1} Results</h3>
-                    <p className="muted">Click each match winner; later matchups fill in from earlier picks.</p>
-                    <div className="gsl-flow">
-                      {matchLabels.map((_, matchIdx) => pickRow(matchIdx))}
-                    </div>
-                  </div>
-                );
-              })}
-            {results && renderTop5Filters()}
-            {results && (
-              <div className="actions">
-                <button className="primary" onClick={() => scoreCompleted(0)} disabled={!allGroupsComplete || !combosReady}>
-                  Score Completed Groups
-                </button>
-                {combosReady && !allGroupsComplete && <span className="muted">Pick every match winner first.</span>}
-              </div>
-            )}
+            <div className="card sub group-card">
+              <h3>{groupSlots.length > 1 ? "Group Results" : "Group Result"}</h3>
+              {groupSlots.map((group, g) => (
+                <div className="group-block" key={`completed-${g}`}>
+                  {groupSlots.length > 1 && <div className="group-block-title">Group {g + 1}</div>}
+                  <GroupBracketVisual
+                    format={groupFormat}
+                    slotIds={group}
+                    nameOf={(v) => (v ? teamName(v) : "")}
+                    hltvIdByTeamId={hltvIdByTeamId}
+                    combined={combinedPlayoffs}
+                    bo={groupBo}
+                    picks={completedPicks[g] || {}}
+                    onPick={(key, tid) => setCompletedPick(g, key, tid)}
+                  />
+                </div>
+              ))}
+            </div>
+            {renderTop5Filters()}
+            <div className="actions">
+              <button className="primary" onClick={() => scoreCompleted(0)} disabled={!allGroupsComplete || !combosReady}>
+                Score Completed Groups
+              </button>
+            </div>
             {renderCompletedResults()}
           </>
         )}

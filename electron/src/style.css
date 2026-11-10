@@ -3863,8 +3863,7 @@ button:disabled {
 :root[data-theme="light"] :where(.role-badge:not(.booster-badge)) { filter: invert(0.85); }
 
 /* Group brackets, compact: the groups side by side, fixed-width cards, the
-   upper bracket in blue and the lower in amber, places as header badges
-   (green = through, red = out). */
+   upper bracket in blue and the lower in amber. */
 .group-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(540px, 1fr)); gap: 12px 28px; margin-top: 4px; }
 .group-grid > .group-block + .group-block { margin-top: 0; padding-top: 0; border-top: 0; }
 .group-grid > .group-block { min-width: 0; }
@@ -3886,3 +3885,7 @@ button:disabled {
 /* three-round groups (8-team double elimination) are too wide to sit side by side */
 .group-grid:has(.pb-round:nth-child(3)) { grid-template-columns: minmax(0, 1fr); }
 .group-grid:has(.pb-round:nth-child(3)) > .group-block + .group-block { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--c-242b35); }
+/* an undecided slot with two known teams: both logos, a slash, the label */
+.playoff-team-row.pair-row { grid-template-columns: auto minmax(0, 1fr); }
+.pair-logos { display: inline-flex; align-items: center; gap: 4px; }
+.pair-slash { color: var(--c-5d6a7c); font-size: 15px; }

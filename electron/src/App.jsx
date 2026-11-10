@@ -10660,6 +10660,22 @@ function GroupTeamRow({ teamId, name, placeholder, muted = false, hltvIdByTeamId
   );
 }
 
+// A slot fed by a match whose two teams are known but not yet decided:
+// both teams' logos with a slash, then the slot's own label.
+function PairPlaceholderRow({ pair, label, nameOf, hltvIdByTeamId }) {
+  const [a, b] = pair;
+  return (
+    <div className="playoff-team-row muted pair-row">
+      <span className="pair-logos">
+        <TeamLogo hltvTeamId={hltvIdByTeamId[Number(a)]} name={nameOf(String(a))} size={22} />
+        <span className="pair-slash">/</span>
+        <TeamLogo hltvTeamId={hltvIdByTeamId[Number(b)]} name={nameOf(String(b))} size={22} />
+      </span>
+      <span className="playoff-team-tbd">{label}</span>
+    </div>
+  );
+}
+
 function GroupMatchCard({ title, meta, rows, places }) {
   return (
     <div className="playoff-match-card">
@@ -10809,16 +10825,22 @@ function resolveGroupBracket(format, slotIds, winnerOf) {
     return v && v !== "unknown" ? Number(v) : 0;
   };
   const R = {};
-  const play = (key, a, b) => {
+  // a side: {id, cand}: cand = the feeder match's two teams while it is
+  // undecided (both known), for the slot's two-logo placeholder
+  const pairOf = (k) => (R[k] && !R[k].w && R[k].a && R[k].b ? [R[k].a, R[k].b] : []);
+  const side = (v) => (typeof v === "object" ? v : { id: v, cand: [] });
+  const play = (key, sa, sb) => {
+    const { id: a, cand: ca } = side(sa);
+    const { id: b, cand: cb } = side(sb);
     let w = 0;
     if (a && b) {
       const x = Number(winnerOf(key, a, b) || 0);
       if (x === a || x === b) w = x;
     }
-    R[key] = { a, b, w, l: w ? (w === a ? b : a) : 0 };
+    R[key] = { a, b, w, l: w ? (w === a ? b : a) : 0, ca, cb };
   };
-  const W = (k) => R[k]?.w || 0;
-  const L = (k) => R[k]?.l || 0;
+  const W = (k) => ({ id: R[k]?.w || 0, cand: pairOf(k) });
+  const L = (k) => ({ id: R[k]?.l || 0, cand: pairOf(k) });
   if (format === "de8_top3" || format === "de8") {
     [0, 1, 2, 3].forEach((m) => play(`ub${m}`, sid(2 * m), sid(2 * m + 1)));
     [0, 1].forEach((m) => play(`us${m}`, W(`ub${2 * m}`), W(`ub${2 * m + 1}`)));
@@ -10837,9 +10859,6 @@ function resolveGroupBracket(format, slotIds, winnerOf) {
 
 function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined, bo = 3, results = null, picks = null, onPick = null }) {
   const meta = `BO${bo}`;
-  // With results (finished matches {a, b, winner}): each match's two sides
-  // from the seeds and the earlier matches' winners / losers, and its winner
-  // when the pair has played — the Live page's view of the same bracket.
   // Each match's two sides from the seeds and the earlier matches' winners /
   // losers, and its winner: from finished matches {a, b, winner} (the Live
   // page) or from picks {match key: team id} (the completed-stage picker).
@@ -10851,10 +10870,17 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
     : picks
       ? resolveGroupBracket(format, slotIds, (key) => picks[key])
       : null;
+  // the draw alone (no results): which undecided slots have two known teams
+  const drawn = resolved || resolveGroupBracket(format, slotIds, () => 0);
+  const pairRow = (mk, side, fallback) => {
+    const pair = drawn[mk]?.[side === "a" ? "ca" : "cb"] || [];
+    if (pair.length !== 2) return fallback;
+    return <PairPlaceholderRow key={side} pair={pair} label={fallback?.props?.placeholder || ""} nameOf={nameOf} hltvIdByTeamId={hltvIdByTeamId} />;
+  };
   const cell = (mk, side, fallback) => {
     const m = resolved?.[mk];
     const id = m ? m[side] : 0;
-    if (!id) return fallback;
+    if (!id) return pairRow(mk, side, fallback);
     const cls = m.w ? (m.w === id ? " winner" : " loser") : "";
     if (onPick) {
       // the completed-stage picker: the same rows as the bracket picker
@@ -11070,13 +11096,13 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
     ];
   }
 
-  if (resolved) {
-    [...upper, ...lower].forEach((round) =>
-      round.matches.forEach((m) => {
-        m.rows = [cell(m.key, "a", m.rows[0]), cell(m.key, "b", m.rows[1])];
-      })
-    );
-  }
+  [...upper, ...lower].forEach((round) =>
+    round.matches.forEach((m) => {
+      m.rows = resolved
+        ? [cell(m.key, "a", m.rows[0]), cell(m.key, "b", m.rows[1])]
+        : [pairRow(m.key, "a", m.rows[0]), pairRow(m.key, "b", m.rows[1])];
+    })
+  );
   const bracket = (rounds) => (
     <div className="pb-bracket">
       {rounds.map((round, r) => (
@@ -11300,6 +11326,7 @@ function BracketPicker({ bracket, teamLookup, teams, picks, onPick, readOnly = f
   });
   const winners = {};
   const losers = {};
+  const sides = {}; // match key -> {a, b, w}
   const byStage = {};
   stages.filter((st) => !st.pad).forEach((st) => {
     byStage[st.key] = [];
@@ -11315,12 +11342,22 @@ function BracketPicker({ bracket, teamLookup, teams, picks, onPick, readOnly = f
       losers[key] = w === a ? b : a;
     }
     const label = (f) => (f[0] === "seed" ? "TBD" : `${f[0] === "win" ? "Winner" : "Loser"} of ${DOUBLE8_MATCH_TITLE[f[1]] || matchTitle(f[1])}`);
-    (byStage[stage] = byStage[stage] || []).push({ key, a, b, w, pa: label(fa), pb: label(fb) });
+    // an undecided feeder with both teams known: its two teams
+    const cand = (f) => {
+      const src = f[0] === "seed" ? null : sides[String(f[1])];
+      return src && !src.w && src.a && src.b ? [src.a, src.b] : [];
+    };
+    sides[key] = { a, b, w };
+    (byStage[stage] = byStage[stage] || []).push({ key, a, b, w, pa: label(fa), pb: label(fb), ca: cand(fa), cb: cand(fb) });
   });
   Object.keys(byStage).forEach((k) => {
     if (!byStage[k].length) delete byStage[k];
   });
   const row = (m, tid, placeholder, idx) => {
+    const pair = idx === "a" ? m.ca : m.cb;
+    if (!tid && pair && pair.length === 2) {
+      return <PairPlaceholderRow key={idx} pair={pair} label={placeholder} nameOf={(v) => teamLookup[v] || String(v)} hltvIdByTeamId={hltvIdByTeamId} />;
+    }
     if (!tid) {
       return (
         <div className="playoff-team-row muted" key={idx}>

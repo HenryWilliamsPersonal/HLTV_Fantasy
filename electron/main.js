@@ -195,7 +195,15 @@ const readBlocked = () => {
   }
 };
 let installBlocked = false;
+let installMissing = false;
 let pendingVersion = null;
+// The downloaded installer was gone when it was due to run (it is not a
+// Windows block): stay open and download it again.
+const noteMissing = () => {
+  installMissing = true;
+  sendUpdateStatus({ status: "error", message: "The downloaded update was missing; downloading it again." });
+  setTimeout(() => autoUpdater?.checkForUpdates().catch(() => {}), 3000);
+};
 const noteBlocked = () => {
   installBlocked = true;
   const data = readBlocked();
@@ -212,7 +220,11 @@ const updaterLogger = {
     ulog("info", ...a);
     // electron-updater reports a refused installer here, then quits the app;
     // before-quit below cancels that quit.
-    if (a.some((x) => typeof x === "string" && x.startsWith("Cannot run installer"))) noteBlocked();
+    const refused = a.find((x) => typeof x === "string" && x.startsWith("Cannot run installer"));
+    if (refused) {
+      if (/error code: ENOENT/.test(refused)) noteMissing();
+      else noteBlocked();
+    }
   },
   warn: (...a) => ulog("warn", ...a),
   error: (...a) => ulog("error", ...a),
@@ -295,6 +307,19 @@ const createWindow = () => {
   mainWindow = win;
   return win;
 };
+
+// One copy of the app at a time: a second launch focuses the open window
+// (several copies raced each other's update downloads in one folder).
+if (!app.requestSingleInstanceLock()) {
+  app.exit(0);
+}
+app.on("second-instance", () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
+});
 
 app.whenReady().then(async () => {
   ipcMain.handle("open-external", async (_event, url) => {
@@ -494,9 +519,10 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", (event) => {
-  if (installBlocked) {
+  if (installBlocked || installMissing) {
     // The installer never started; stay open rather than vanish.
     installBlocked = false;
+    installMissing = false;
     event.preventDefault();
     ulog("warn", "quit cancelled: the update installer was blocked by Windows");
     return;

@@ -3996,3 +3996,9 @@ button:disabled {
 .combo-team .event-player-card:has(> .ev-mini) > .event-player-rating { font-size: 20px; }
 .event-player-card:has(> .ev-mini) > .event-player-role { min-width: 0; overflow: hidden; }
 .event-player-card:has(> .ev-mini) > .event-player-role > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+/* the tournament boxes: a darker ground and a clear edge, so the match
+   cards inside stand off it instead of grey on grey */
+.card-section > .group-card {
+  background: var(--c-0a0c10);
+  border: 1px solid var(--c-39424f);
+}

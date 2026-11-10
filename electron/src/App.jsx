@@ -12294,29 +12294,6 @@ function GroupsTab({
 
   const [breakdownPlayer, setBreakdownPlayer] = useState(null);
   const [bracketDraw, setBracketDraw] = useState(null); // the stored draw (provisional or baked payload)
-  // Collapsible group / playoff cards, remembered per browser so a long
-  // page can be skipped past on every visit. { "group-0": true, playoff: true }
-  const collapseStorageKey = "groups.collapsedCards";
-  const [collapsedCards, setCollapsedCards] = useState(() => {
-    try {
-      const raw = window.localStorage.getItem(collapseStorageKey);
-      const parsed = raw ? JSON.parse(raw) : null;
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch {
-      return {};
-    }
-  });
-  const toggleCard = (key) => {
-    setCollapsedCards((prev) => {
-      const next = { ...prev, [key]: !prev[key] };
-      try {
-        window.localStorage.setItem(collapseStorageKey, JSON.stringify(next));
-      } catch {
-        /* storage may be unavailable; the toggle still works for this session */
-      }
-      return next;
-    });
-  };
   const playerNameById = useMemo(() => {
     const m = {};
     (players || []).forEach((p) => {
@@ -12786,19 +12763,11 @@ function GroupsTab({
             {autofillMessage && <p className="muted">{autofillMessage}</p>}
             {!PATH_FORMATS.includes(groupFormat) && groupSlots.length > 0 && (() => {
               // every group in one card, each bracket under its own heading
-              const isCollapsed = Boolean(collapsedCards.groups);
-              const summary = groupSlots.map((group, g) => `Group ${g + 1}: ${group.map((v) => (v ? teamName(v) : "TBD")).join(" · ")}`).join("   ");
               return (
                 <div className="card-section">
-                  <button type="button" className="group-card-head collapsible" onClick={() => toggleCard("groups")}>
-                    <h3>{groupSlots.length > 1 ? "Groups" : "Group"}</h3>
-                    {isCollapsed && <span className="group-card-summary">{summary}</span>}
-                    <span className="group-card-chevron" aria-hidden="true">
-                      {isCollapsed ? "▸" : "▾"}
-                    </span>
-                  </button>
+                  <h3 className="card-section-title">{groupSlots.length > 1 ? "Groups" : "Group"}</h3>
                 <div className="card sub group-card">
-                  {!isCollapsed && (
+                  {(
                     <div className="group-grid">
                     {groupSlots.map((group, g) => (
                       <div className="group-block" key={`group-${g}`}>
@@ -12821,21 +12790,9 @@ function GroupsTab({
             })()}
             {combinedPlayoffs && combinedAllowed && (
               <div className="card-section">
-                <button type="button" className="group-card-head collapsible" onClick={() => toggleCard("playoff")}>
-                  <h3>Playoff bracket</h3>
-                  {collapsedCards.playoff && (
-                    <span className="group-card-summary">
-                      {top3Format
-                        ? "6 teams · group winners bye to the semi-finals"
-                        : `${qualsPerGroup * groupCount} teams · single elimination`}
-                    </span>
-                  )}
-                  <span className="group-card-chevron" aria-hidden="true">
-                    {collapsedCards.playoff ? "▸" : "▾"}
-                  </span>
-                </button>
+                <h3 className="card-section-title">Playoff bracket</h3>
               <div className="card sub group-card">
-                {!collapsedCards.playoff && groupFormat === "gsl4" && groupCount === 2 && !PUBLIC_BUILD && (
+                {groupFormat === "gsl4" && groupCount === 2 && !PUBLIC_BUILD && (
                   <div className="playoff-layout-row">
                     <select value={playoffLayout} disabled={layoutBusy} onChange={(e) => changePlayoffLayout(e.target.value)}>
                       <option value="cross">Semis: 1st v 2nd of the other group</option>
@@ -12843,7 +12800,7 @@ function GroupsTab({
                     </select>
                   </div>
                 )}
-                {!collapsedCards.playoff && (
+                {(
                   <PlayoffSkeleton
                     format={groupFormat}
                     groupCount={groupCount}

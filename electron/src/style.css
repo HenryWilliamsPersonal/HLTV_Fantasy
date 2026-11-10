@@ -3905,3 +3905,27 @@ button:disabled {
 .group-brackets .pb-round:not(:first-child) .pb-match-wrap > .playoff-match-card::before,
 .group-brackets .pb-round:not(:last-child) .pb-match-wrap > .playoff-match-card::after { width: 40px; }
 .group-grid:has(.pb-round:nth-child(3)) > .group-block + .group-block { margin-top: 18px; padding-top: 22px; }
+/* Playoff rounds in colour: an edge per stage, the round title to match. */
+.pb-round[data-stage^="round_of"] .playoff-match-card { border-left: 3px solid var(--c-38bdf8); }
+.pb-round[data-stage^="round_of"] .pb-round-title { color: var(--c-38bdf8); }
+.pb-round[data-stage="quarters"] .playoff-match-card { border-left: 3px solid var(--c-14b8a6); }
+.pb-round[data-stage="quarters"] .pb-round-title { color: var(--c-14b8a6); }
+.pb-round[data-stage="semis"] .playoff-match-card { border-left: 3px solid var(--c-a78bfa); }
+.pb-round[data-stage="semis"] .pb-round-title { color: var(--c-a78bfa); }
+.pb-round[data-stage="final"] .playoff-match-card,
+.pb-round[data-stage="grand_final"] .playoff-match-card { border-left: 3px solid var(--c-f7c948); }
+.pb-round[data-stage="final"] .pb-round-title,
+.pb-round[data-stage="grand_final"] .pb-round-title { color: var(--c-f7c948); }
+.pb-round[data-stage^="ub_"] .playoff-match-card { border-left: 3px solid var(--c-35a2ff); }
+.pb-round[data-stage^="ub_"] .pb-round-title { color: var(--c-35a2ff); }
+.pb-round[data-stage^="lb_"] .playoff-match-card { border-left: 3px solid var(--c-fbbf24); }
+.pb-round[data-stage^="lb_"] .pb-round-title { color: var(--c-fbbf24); }
+.pb-round .pb-match-wrap.pb-aux > .playoff-match-card { border-left: 3px solid var(--c-c98a5f); }
+/* 1:1 feeds: the feeder card sits level with the row it fills (head 30 px +
+   rows 41 px: a row centre is 36 px off the card centre) */
+.pb-match-wrap.feeds-b > .playoff-match-card { transform: translateY(36px); }
+.pb-match-wrap.feeds-a > .playoff-match-card { transform: translateY(-36px); }
+.pb-round:not(:first-child) .pb-match-wrap.entry-b > .playoff-match-card::before { top: calc(50% + 36px); }
+.pb-round:not(:first-child) .pb-match-wrap.entry-a > .playoff-match-card::before { top: calc(50% - 36px); }
+.pb-bracket:has(.feeds-b), .group-brackets .pb-bracket:has(.feeds-b) { padding-bottom: 42px; }
+.pb-bracket:has(.feeds-a), .group-brackets .pb-bracket:has(.feeds-a) { padding-top: 42px; }

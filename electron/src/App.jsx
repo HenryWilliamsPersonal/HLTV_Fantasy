@@ -10748,7 +10748,7 @@ function BracketLayout({ byStage, card, meta }) {
         {rounds.map(([stage, keys, straight]) => {
           const matches = byStage[stage] || [];
           return (
-            <div className={`pb-round${straight ? " straight" : ""}`} key={stage}>
+            <div className={`pb-round${straight ? " straight" : ""}`} data-stage={stage} key={stage}>
               <div className="pb-round-title">{STAGE_FULL[stage] || stage}</div>
               <div className="pb-matches">
                 {keys.map((key, i) => {
@@ -10785,17 +10785,25 @@ function BracketLayout({ byStage, card, meta }) {
     <div className="group-brackets">
       <div>
         <div className="pb-bracket">
-          {rounds.map((stage, ri) => (
+          {rounds.map((stage, ri) => {
             // a round with as many matches as the one before (byes into the
             // semis) is fed 1:1: no two-feeder bar, just the arms
-            <div className={`pb-round${ri > 0 && (byStage[stage] || []).length === (byStage[rounds[ri - 1]] || []).length ? " straight" : ""}`} key={stage}>
+            const straightAt = (k) => k > 0 && k < rounds.length && (byStage[rounds[k]] || []).length === (byStage[rounds[k - 1]] || []).length;
+            const straight = straightAt(ri);
+            return (
+            <div className={`pb-round${straight ? " straight" : ""}`} data-stage={stage} key={stage}>
               <div className="pb-round-title">{STAGE_FULL[stage] || stage}</div>
               <div className="pb-matches">
-                {(byStage[stage] || []).map((m, i) => (
-                  <div className="pb-match-wrap" key={m.key || `${stage}-${i}`}>
+                {(byStage[stage] || []).map((m, i) => {
+                  const next = straightAt(ri + 1) ? (byStage[rounds[ri + 1]] || [])[i] : null;
+                  const feeds = next ? ` feeds-${fedRow(next.pa)}` : "";
+                  const entry = straight ? ` entry-${fedRow(m.pa)}` : "";
+                  return (
+                  <div className={`pb-match-wrap${feeds}${entry}`} key={m.key || `${stage}-${i}`}>
                     {card(m, titleOf(stage, m, i, (byStage[stage] || []).length), meta(stage))}
                   </div>
-                ))}
+                  );
+                })}
                 {third && (
                   <div className={`pb-match-wrap pb-aux${ri === rounds.length - 1 ? "" : " pb-spacer"}`} aria-hidden={ri !== rounds.length - 1}>
                     {card(third, "3rd place", meta("third_place"))}
@@ -10803,7 +10811,8 @@ function BracketLayout({ byStage, card, meta }) {
                 )}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
@@ -11111,11 +11120,16 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
         <div className={`pb-round${round.straight ? " straight" : ""}`} key={`${round.title}-${r}`}>
           <div className="pb-round-title">{round.title}</div>
           <div className="pb-matches">
-            {round.matches.map((m) => (
-              <div className="pb-match-wrap" key={m.key}>
-                <GroupMatchCard title={m.title} meta={meta} rows={m.rows} />
-              </div>
-            ))}
+            {round.matches.map((m, i) => {
+              // the straight rounds' fed slot is always the second row
+              const feeds = rounds[r + 1]?.straight && rounds[r + 1].matches[i] ? " feeds-b" : "";
+              const entry = round.straight ? " entry-b" : "";
+              return (
+                <div className={`pb-match-wrap${feeds}${entry}`} key={m.key}>
+                  <GroupMatchCard title={m.title} meta={meta} rows={m.rows} />
+                </div>
+              );
+            })}
           </div>
         </div>
       ))}
@@ -11246,14 +11260,19 @@ function PlayoffSkeleton({ format, groupCount, qualsPerGroup, stopTeams = 1, bo 
       <div>
         <div className="pb-bracket">
           {rounds.map((round, r) => (
-            <div className={`pb-round${round.straight ? " straight" : ""}`} key={`${round.title}-${r}`}>
+            <div className={`pb-round${round.straight ? " straight" : ""}`} data-stage={stageOfTitle(round.title)} key={`${round.title}-${r}`}>
               <div className="pb-round-title">{round.title}</div>
               <div className="pb-matches">
-                {round.matches.map((m) => (
-                  <div className="pb-match-wrap" key={m.key}>
-                    <GroupMatchCard title={m.title} meta={m.meta} rows={m.rows} />
-                  </div>
-                ))}
+                {round.matches.map((m, i) => {
+                  const next = rounds[r + 1]?.straight ? rounds[r + 1].matches[i] : null;
+                  const feeds = next ? ` feeds-${fedRow(next.rows[0]?.props?.placeholder)}` : "";
+                  const entry = round.straight ? ` entry-${fedRow(m.rows[0]?.props?.placeholder)}` : "";
+                  return (
+                    <div className={`pb-match-wrap${feeds}${entry}`} key={m.key}>
+                      <GroupMatchCard title={m.title} meta={m.meta} rows={m.rows} />
+                    </div>
+                  );
+                })}
                 {thirdPlace && (
                   <div className={`pb-match-wrap pb-aux${r === rounds.length - 1 ? "" : " pb-spacer"}`} aria-hidden={r !== rounds.length - 1}>
                     <GroupMatchCard title="3rd place" meta={`BO${boThird}`} rows={[ph("Loser SF 1", "a"), ph("Loser SF 2", "b")]} />
@@ -11391,6 +11410,21 @@ function BracketPicker({ bracket, teamLookup, teams, picks, onPick, readOnly = f
   const card = (m, title, meta) => <GroupMatchCard title={title} meta={meta} rows={[row(m, m.a, m.pa, "a"), row(m, m.b, m.pb, "b")]} />;
   return <BracketLayout byStage={byStage} card={card} meta={(stage) => `BO${series[stage] || 3}`} />;
 }
+
+// A round's stage key from its title (the playoff colour per round).
+function stageOfTitle(title) {
+  const t = String(title || "").toLowerCase();
+  if (t.includes("quarter")) return "quarters";
+  if (t.includes("semi")) return "semis";
+  if (t.includes("final")) return "final";
+  const m = /round of (\d+)/.exec(t);
+  return m ? `round_of_${m[1]}` : "";
+}
+
+// Rounds fed 1:1 (byes into the semis, a GSL decider): the fed card's arm
+// meets the row its feeder's winner fills, and the feeder card sits level
+// with that row. "a" / "b" = the fed row, from the slot's label.
+const fedRow = (label) => (/^(winner|loser)/i.test(String(label || "")) ? "a" : "b");
 
 // "semis_1" -> "SF 1", "final_1" -> "Final": a feeder's name in a placeholder.
 function matchTitle(key) {

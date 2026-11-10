@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import sqlite3
 import time
 from typing import Any, Dict, Optional
 
@@ -202,8 +203,14 @@ def user_id_for_token(token: Optional[str]) -> Optional[int]:
         if not row or int(row["revoked"]) or float(row["expires_at"]) < now:
             return None
         if now - float(row["last_seen_at"]) > _TOUCH_INTERVAL:
-            conn.execute("UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?", (now, h))
-            conn.commit()
+            # best effort: skip it while a background job holds the write
+            # lock rather than wait (the next request retries)
+            try:
+                conn.execute("PRAGMA busy_timeout=0")
+                conn.execute("UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?", (now, h))
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
         return int(row["user_id"])
     finally:
         conn.close()

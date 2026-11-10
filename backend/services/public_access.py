@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -207,27 +208,47 @@ _AUTH_EXEMPT = re.compile(r"^/(health|public/config|auth(/.*)?|assets/.*)$")
 
 
 def session_user_id(request) -> Optional[int]:
-    """The signed-in user behind a public request's bearer token, else None."""
+    """The signed-in user behind a public request's bearer token, else None
+    (auth_db.session_info: cached for a minute per token)."""
     from backend.data import auth_db
 
     header = request.headers.get("authorization") or ""
     token = header[7:].strip() if header.lower().startswith("bearer ") else None
-    return auth_db.user_id_for_token(token)
+    info = auth_db.session_info(token)
+    return info[0] if info else None
+
+
+def _access(request) -> Tuple[str, Optional[int]]:
+    """('operator' | 'denied' | 'signin' | 'public', user_id) for a request.
+    Blocking (SQLite session lookups, the sign-in config file): the
+    middleware runs it in the threadpool so a busy database never stalls
+    the event loop, which would freeze every other request with it."""
+    if is_operator(request):
+        return "operator", None
+    path = request.scope["path"]  # routed path, never rebuilt from the Host header
+    if not is_public_route(request.method, path):
+        return "denied", None
+    from backend.routes.auth import sign_in_required
+
+    if sign_in_required() and not _AUTH_EXEMPT.match(path):
+        user_id = session_user_id(request)
+        return ("public", user_id) if user_id else ("signin", None)
+    return "public", None
 
 
 class PublicAccessMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        if request.method == "OPTIONS" or is_operator(request):
+        if request.method == "OPTIONS":
             return await call_next(request)
-        path = request.scope["path"]  # routed path, never rebuilt from the Host header
-        if not is_public_route(request.method, path):
+        verdict, user_id = await run_in_threadpool(_access, request)
+        if verdict == "operator":
+            return await call_next(request)
+        path = request.scope["path"]
+        if verdict == "denied":
             return JSONResponse({"detail": "This action is only available to the server operator."}, status_code=403)
-        from backend.routes.auth import sign_in_required
-
-        if sign_in_required() and not _AUTH_EXEMPT.match(path):
-            user_id = session_user_id(request)
-            if not user_id:
-                return JSONResponse({"detail": "Sign in to use CS Fantasy Toolkit."}, status_code=401)
+        if verdict == "signin":
+            return JSONResponse({"detail": "Sign in to use CS Fantasy Toolkit."}, status_code=401)
+        if user_id:
             request.state.user_id = user_id
         if _HEAVY.match(path):
             if _rate_limited("heavy:" + client_key(request)):

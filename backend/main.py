@@ -3,6 +3,8 @@ FastAPI entrypoint that exposes the existing Python logic to the Electron UI.
 Run with: `python backend/main.py`
 """
 
+import asyncio
+import time
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -61,6 +63,35 @@ def configure_logging() -> None:
     )
 
 
+def _start_loop_watchdog(loop, every: float = 0.5, stall: float = 1.0) -> None:
+    """Log when the event loop stops answering for more than `stall` seconds
+    (a blocking call on the loop freezes EVERY request), with the loop
+    thread's stack at that moment so the culprit is named."""
+    import sys
+    import threading
+    import traceback
+
+    loop_thread = threading.get_ident()
+    log = logging.getLogger("backend.loop_watchdog")
+
+    def run() -> None:
+        while not loop.is_closed():
+            done = threading.Event()
+            try:
+                loop.call_soon_threadsafe(done.set)
+            except RuntimeError:
+                return
+            started = time.monotonic()
+            if not done.wait(stall):
+                frame = sys._current_frames().get(loop_thread)
+                stack = "".join(traceback.format_stack(frame)[-12:]) if frame else "(no frame)"
+                done.wait(120)
+                log.warning("event loop blocked %.1f s; loop thread was in:\n%s", time.monotonic() - started, stack)
+            time.sleep(every)
+
+    threading.Thread(target=run, name="loop-watchdog", daemon=True).start()
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     for ensure in SCHEMA_INITIALIZERS:
@@ -112,6 +143,7 @@ async def _lifespan(app: FastAPI):
             pass
 
     threading.Thread(target=_warm, name="cache-warmup", daemon=True).start()
+    _start_loop_watchdog(asyncio.get_running_loop())
     yield
     booster_advisor.stop()
     live_watch.stop()

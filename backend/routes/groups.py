@@ -3547,7 +3547,7 @@ def _find_event_snapshot_html(hltv_event_id) -> Optional[str]:
     if not hltv_event_id:
         return None
     try:
-        from backend.data.page_snapshots import list_snapshot_urls, get_page_snapshot
+        from backend.data.page_snapshots import get_page_snapshot, list_snapshot_urls_with_prefix
 
         needle = f"/events/{int(hltv_event_id)}/"
         # Only the event's overview page carries the typed stage JSON; its
@@ -3555,7 +3555,8 @@ def _find_event_snapshot_html(hltv_event_id) -> Optional[str]:
         # reads them) and must never stand in for it.
         sub_pages = {"matches", "results", "stats", "standings", "streams", "prizes", "news", "fantasy", "-"}
         matches = []
-        for u in list_snapshot_urls():
+        # every snapshot URL is stored canonical (https://www.hltv.org/...)
+        for u in list_snapshot_urls_with_prefix("https://www.hltv.org" + needle):
             if needle not in u:
                 continue
             tail = u.split(needle, 1)[1].split("#", 1)[0].split("?", 1)[0].strip("/")

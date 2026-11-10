@@ -109,7 +109,10 @@ def get_live_leaderboard(event_id: int) -> dict:
 
 @router.get("/events/{event_id}")
 def get_live_event(event_id: int) -> dict:
-    entry = live_state.live_event(int(event_id))
+    # never wait on a browser read of the HLTV pages (seconds; after a restart
+    # the page cache is empty): answer from the stored state, the read runs in
+    # the background and /live/stream tells the open app to re-read
+    entry = live_state.live_event(int(event_id), fetch_if_missing=False)
     if not entry:
         raise HTTPException(status_code=404, detail="No valuation stored for this event")
     return {"event": entry}

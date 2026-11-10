@@ -138,6 +138,21 @@ def get_page_snapshot(url: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def list_snapshot_urls_with_prefix(prefix: str) -> List[str]:
+    """The stored URLs starting with `prefix`: a range seek on the url index
+    (milliseconds), where listing every URL reads ~80k rows (~0.4 s)."""
+    ensure_snapshot_schema()
+    p = str(prefix or "")
+    if not p:
+        return []
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT url FROM page_snapshots WHERE url >= ? AND url < ?", (p, p + "￿")).fetchall()
+        return [str(r["url"]) for r in rows]
+    finally:
+        conn.close()
+
+
 def list_snapshot_urls(kind: str | None = None) -> List[str]:
     ensure_snapshot_schema()
     conn = _connect()

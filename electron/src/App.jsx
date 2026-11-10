@@ -8097,10 +8097,11 @@ function LiveEventBody({ ev }) {
         </div>
       )}
       {Array.isArray(ev.groups) && ev.groups.length > 0 && groupBoards && (
-        <div className="stack">
+        <div className="card sub group-card">
+          <h3>{ev.groups.length > 1 ? "Groups" : "Group"}</h3>
           {ev.groups.map((g, i) => (
-            <div className="card sub" key={i}>
-              <h3>Group {String.fromCharCode(65 + i)}</h3>
+            <div className="group-block" key={i}>
+              {ev.groups.length > 1 && <div className="group-block-title">Group {i + 1}</div>}
               <GroupBracketVisual
                 format={ev.group_format}
                 slotIds={(g.slots || []).map(String)}

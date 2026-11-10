@@ -3950,3 +3950,49 @@ button:disabled {
 .group-brackets .pb-round:not(:last-child) .pb-match-wrap.shift-up > .playoff-match-card::after,
 .group-brackets .pb-round:not(:last-child) .pb-match-wrap.shift-down > .playoff-match-card::after,
 .group-brackets .pb-round:not(:last-child) .pb-match-wrap.feeds-b > .playoff-match-card::after { width: 80px; }
+/* Valuation / roster player cards: horizontal. A big photo on the left, the
+   name / team / role beside it, the points, price and value on the right,
+   the four point components in a band across the bottom. */
+.event-player-card:has(> .ev-mini) {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "photo name  total"
+    "photo role  price"
+    "photo team  value"
+    "stats stats stats";
+  column-gap: 12px;
+  row-gap: 3px;
+  align-items: center;
+  padding: 14px 16px 12px;
+  min-width: 250px;
+}
+.event-player-card:has(> .ev-mini) > .player-photo-img,
+.event-player-card:has(> .ev-mini) > .img-fallback {
+  grid-area: photo;
+  width: 72px !important;
+  height: 72px !important;
+  font-size: 24px !important;
+  align-self: center;
+}
+.event-player-card:has(> .ev-mini) > .event-player-name { grid-area: name; text-align: left; font-size: 15.5px; }
+.event-player-card:has(> .ev-mini) > .event-player-team { grid-area: team; text-align: left; }
+.event-player-card:has(> .ev-mini) > .event-player-role { grid-area: role; justify-content: flex-start; width: auto; }
+.event-player-card:has(> .ev-mini) > .event-player-rating { grid-area: total; width: auto; text-align: right; font-size: 23px; line-height: 1; }
+.event-player-card:has(> .ev-mini) > .event-player-price { grid-area: price; justify-self: end; margin: 0; }
+.event-player-card:has(> .ev-mini) > .event-player-value { grid-area: value; justify-self: end; }
+.event-player-card:has(> .ev-mini) > .ev-mini {
+  grid-area: stats;
+  margin-top: 10px;
+  padding: 7px 0 5px;
+  background: var(--c-14181f);
+}
+.event-player-card:has(> .ev-mini) > .ev-mini .event-player-mini { font-size: 15.5px; }
+/* a roster's five cards stay on one line beside its header */
+.combo-team .event-team-players { flex-wrap: nowrap; }
+.combo-team .event-player-card:has(> .ev-mini) { min-width: 0; grid-template-columns: 56px minmax(0, 1fr) auto; padding: 12px 12px 10px; }
+.combo-team .event-player-card:has(> .ev-mini) > .player-photo-img,
+.combo-team .event-player-card:has(> .ev-mini) > .img-fallback { width: 56px !important; height: 56px !important; font-size: 19px !important; }
+.combo-team .event-player-card:has(> .ev-mini) > .event-player-rating { font-size: 20px; }
+.event-player-card:has(> .ev-mini) > .event-player-role { min-width: 0; overflow: hidden; }
+.event-player-card:has(> .ev-mini) > .event-player-role > span:last-child { overflow: hidden; text-overflow: ellipsis; }

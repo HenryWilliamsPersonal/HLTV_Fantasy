@@ -8099,6 +8099,7 @@ function LiveEventBody({ ev }) {
       {Array.isArray(ev.groups) && ev.groups.length > 0 && groupBoards && (
         <div className="card sub group-card">
           <h3>{ev.groups.length > 1 ? "Groups" : "Group"}</h3>
+          <div className="group-grid">
           {ev.groups.map((g, i) => (
             <div className="group-block" key={i}>
               {ev.groups.length > 1 && <div className="group-block-title">Group {i + 1}</div>}
@@ -8112,6 +8113,7 @@ function LiveEventBody({ ev }) {
               />
             </div>
           ))}
+          </div>
         </div>
       )}
       {Array.isArray(ev.groups) && ev.groups.length > 0 && !groupBoards && (
@@ -10658,7 +10660,7 @@ function GroupTeamRow({ teamId, name, placeholder, muted = false, hltvIdByTeamId
   );
 }
 
-function GroupMatchCard({ title, meta, rows, places }) {
+function GroupMatchCard({ title, meta, rows, places, foot = null }) {
   return (
     <div className="playoff-match-card">
       <div className="playoff-match-head">
@@ -10666,6 +10668,7 @@ function GroupMatchCard({ title, meta, rows, places }) {
         <span>{meta}</span>
       </div>
       <div className="playoff-match-teams">{rows}</div>
+      {foot && <div className="gm-foot">{foot}</div>}
       {places && places.length > 0 && (
         <div className="playoff-match-foot">
           {places.map((p) => (
@@ -10918,7 +10921,7 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
           rows: [ph(`Winner UB ${2 * m + 1}`, "a"), ph(`Winner UB ${2 * m + 2}`, "b")],
           places: top3
             ? [drop("loser → lower semis")]
-            : [win(combined ? "winner → playoffs (1st / 2nd)" : "winner qualifies (1st / 2nd)"), drop("loser → lower round 2")],
+            : [win(combined ? "1st / 2nd · Playoffs" : "1st / 2nd"), drop("loser → lower round 2")],
         })),
       },
     ];
@@ -10931,8 +10934,8 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
             title: "UB Final",
             rows: [ph("Winner UB SF 1", "a"), ph("Winner UB SF 2", "b")],
             places: [
-              win(combined ? "1st · bye to the playoff semis" : "1st · qualifies"),
-              win(combined ? "2nd · playoff quarter-finals" : "2nd · qualifies"),
+              win(combined ? "1st · Semis" : "1st"),
+              win(combined ? "2nd · Quarters" : "2nd"),
             ],
           },
         ],
@@ -10945,7 +10948,7 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
           key: `lb${m}`,
           title: `LB ${m + 1}`,
           rows: [ph(`Loser UB ${2 * m + 1}`, "a"), ph(`Loser UB ${2 * m + 2}`, "b")],
-          places: [lose("loser out")],
+          places: [lose("Out")],
         })),
       },
       {
@@ -10959,8 +10962,8 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
           title: top3 ? `LB SF ${m + 1}` : `LB ${m + 3}`,
           rows: [ph(`Loser UB SF ${2 - m}`, "a"), ph(`Winner LB ${m + 1}`, "b")],
           places: top3
-            ? [lose("loser out")]
-            : [win(combined ? "winner → playoffs (3rd / 4th)" : "winner qualifies (3rd / 4th)"), lose("loser out")],
+            ? [lose("Out")]
+            : [win(combined ? "3rd / 4th · Playoffs" : "3rd / 4th"), lose("Out")],
         })),
       },
     ];
@@ -10972,7 +10975,7 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
             key: "lf",
             title: "LB Final",
             rows: [ph("Winner LB SF 1", "a"), ph("Winner LB SF 2", "b")],
-            places: [win(combined ? "3rd · playoff quarter-finals" : "3rd · qualifies"), lose("loser out (4th)")],
+            places: [win(combined ? "3rd · Quarters" : "3rd"), lose("4th · Out")],
           },
         ],
       });
@@ -10998,8 +11001,8 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
             title: "Upper final",
             rows: [ph("Winner Opening 1", "a"), ph("Winner Opening 2", "b")],
             places: [
-              win(combined ? "1st · bye to the playoff semis" : "1st · qualifies"),
-              win(combined ? "2nd · playoff quarter-finals" : "2nd · qualifies"),
+              win(combined ? "1st · Semis" : "1st"),
+              win(combined ? "2nd · Quarters" : "2nd"),
             ],
           },
         ],
@@ -11013,7 +11016,7 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
             key: "em",
             title: "Lower",
             rows: [ph("Loser Opening 1", "a"), ph("Loser Opening 2", "b")],
-            places: [win(combined ? "3rd · playoff quarter-finals" : "3rd · qualifies"), lose("loser out (4th)")],
+            places: [win(combined ? "3rd · Quarters" : "3rd"), lose("4th · Out")],
           },
         ],
       },
@@ -11036,7 +11039,7 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
             key: "wm",
             title: "Winners",
             rows: [ph("Winner Opening 1", "a"), ph("Winner Opening 2", "b")],
-            places: [win(combined ? "1st · to the playoffs" : "1st · qualifies"), drop("loser → decider")],
+            places: [win(combined ? "1st · Playoffs" : "1st"), drop("loser → decider")],
           },
         ],
       },
@@ -11049,7 +11052,7 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
             key: "em",
             title: "Elimination",
             rows: [ph("Loser Opening 1", "a"), ph("Loser Opening 2", "b")],
-            places: [lose("loser out (4th)")],
+            places: [lose("4th · Out")],
           },
         ],
       },
@@ -11061,7 +11064,7 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
             key: "dc",
             title: "Decider",
             rows: [ph("Loser Winners' match", "a"), ph("Winner Elimination", "b")],
-            places: [win(combined ? "2nd · to the playoffs" : "2nd · qualifies"), lose("loser out (3rd)")],
+            places: [win(combined ? "2nd · Playoffs" : "2nd"), lose("3rd · Out")],
           },
         ],
       },
@@ -11072,21 +11075,36 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
     [...upper, ...lower].forEach((round) =>
       round.matches.forEach((m) => {
         m.rows = [cell(m.key, "a", m.rows[0]), cell(m.key, "b", m.rows[1])];
-        m.places = null;
       })
     );
   }
+  // [winner's place, loser's place] -> compact badges: ▲ winner, ▼ loser
+  const placeBadges = (places) =>
+    (places || [])
+      .map((p, i) => ({ ...p, arrow: p.kind === "lose" || i > 0 ? "▼" : "▲" }))
+      .filter((p) => p.kind !== "drop");
   const bracket = (rounds) => (
     <div className="pb-bracket">
       {rounds.map((round, r) => (
         <div className={`pb-round${round.straight ? " straight" : ""}`} key={`${round.title}-${r}`}>
           <div className="pb-round-title">{round.title}</div>
           <div className="pb-matches">
-            {round.matches.map((m) => (
+            {round.matches.map((m) => {
+              const badges = placeBadges(m.places).map((b) => (
+                <span className={`gm-badge ${b.kind}`} key={b.text}>
+                  {b.arrow} {b.text}
+                </span>
+              ));
+              const last = r === rounds.length - 1;
+              // the last round's places sit beside the card; a middle round's
+              // under it (its right side carries the connector)
+              return (
               <div className="pb-match-wrap" key={m.key}>
-                <GroupMatchCard title={m.title} meta={meta} rows={m.rows} places={m.places} />
+                <GroupMatchCard title={m.title} meta={meta} rows={m.rows} foot={!last && badges.length > 0 ? badges : null} />
+                {last && badges.length > 0 && <div className="gm-out">{badges}</div>}
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ))}
@@ -11094,11 +11112,11 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
   );
   return (
     <div className="group-brackets">
-      <div>
+      <div className="gb-upper">
         <div className="group-bracket-title">Upper bracket</div>
         {bracket(upper)}
       </div>
-      <div>
+      <div className="gb-lower">
         <div className="group-bracket-title">Lower bracket</div>
         {bracket(lower)}
       </div>
@@ -12686,8 +12704,9 @@ function GroupsTab({
                       {isCollapsed ? "▸" : "▾"}
                     </span>
                   </button>
-                  {!isCollapsed &&
-                    groupSlots.map((group, g) => (
+                  {!isCollapsed && (
+                    <div className="group-grid">
+                    {groupSlots.map((group, g) => (
                       <div className="group-block" key={`group-${g}`}>
                         {groupSlots.length > 1 && <div className="group-block-title">Group {g + 1}</div>}
                         <GroupBracketVisual
@@ -12700,6 +12719,8 @@ function GroupsTab({
                         />
                       </div>
                     ))}
+                    </div>
+                  )}
                 </div>
               );
             })()}
@@ -12963,6 +12984,7 @@ function GroupsTab({
           <>
             <div className="card sub group-card">
               <h3>{groupSlots.length > 1 ? "Group Results" : "Group Result"}</h3>
+              <div className="group-grid">
               {groupSlots.map((group, g) => (
                 <div className="group-block" key={`completed-${g}`}>
                   {groupSlots.length > 1 && <div className="group-block-title">Group {g + 1}</div>}
@@ -12978,6 +13000,7 @@ function GroupsTab({
                   />
                 </div>
               ))}
+              </div>
             </div>
             {renderTop5Filters()}
             <div className="actions">

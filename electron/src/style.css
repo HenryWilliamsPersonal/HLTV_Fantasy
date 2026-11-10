@@ -3861,3 +3861,42 @@ button:disabled {
 /* Light theme: the role / booster sprites are light glyphs on transparency;
    drawn dark on a light ground (the tier colours keep their own rules). */
 :root[data-theme="light"] :where(.role-badge:not(.booster-badge)) { filter: invert(0.85); }
+
+/* Group brackets, compact: the groups side by side, fixed-width cards, the
+   upper bracket in blue and the lower in amber, places as header badges
+   (green = through, red = out). */
+.group-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(540px, 1fr)); gap: 12px 28px; margin-top: 4px; }
+.group-grid > .group-block + .group-block { margin-top: 0; padding-top: 0; border-top: 0; }
+.group-grid > .group-block { min-width: 0; }
+.group-grid .group-block-title { margin-top: 8px; }
+.group-grid .group-brackets { gap: 4px; margin-top: 6px; }
+.group-brackets .pb-round { flex: 0 0 auto; min-width: 0; }
+.group-brackets .pb-match-wrap > .playoff-match-card { width: 250px; flex: none; }
+.gm-out { display: flex; flex-direction: column; gap: 6px; margin-left: 12px; }
+/* the card headers name each match: no round titles */
+.gb-upper .pb-round-title, .gb-lower .pb-round-title { display: none; }
+.group-brackets .pb-match-wrap { padding: 5px 22px; }
+.group-brackets .pb-round:first-child .pb-match-wrap { padding-left: 0; }
+.group-brackets .pb-round:not(:first-child) .pb-match-wrap > .playoff-match-card::before,
+.group-brackets .pb-round:not(:last-child) .pb-match-wrap > .playoff-match-card::after { width: 22px; }
+.group-brackets .playoff-match-head { gap: 6px; }
+.gb-upper .group-bracket-title { color: var(--c-35a2ff); }
+.gb-lower .group-bracket-title { color: var(--c-fbbf24); }
+.gb-upper .playoff-match-card { border-left: 3px solid var(--c-35a2ff); }
+.gb-lower .playoff-match-card { border-left: 3px solid var(--c-fbbf24); }
+.gm-badge {
+  font-family: var(--display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 12.5px;
+  line-height: 1;
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+.gm-badge.win { color: var(--c-3ee07a); background: color-mix(in srgb, var(--c-3ee07a) 14%, transparent); }
+.gm-badge.lose { color: var(--c-ff5c5c); background: color-mix(in srgb, var(--c-ff5c5c) 14%, transparent); }
+.gm-foot { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 8px; border-top: 1px solid var(--c-242b35); }
+/* three-round groups (8-team double elimination) are too wide to sit side by side */
+.group-grid:has(.pb-round:nth-child(3)) { grid-template-columns: minmax(0, 1fr); }
+.group-grid:has(.pb-round:nth-child(3)) > .group-block + .group-block { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--c-242b35); }

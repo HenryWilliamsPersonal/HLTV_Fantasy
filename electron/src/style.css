@@ -2605,8 +2605,9 @@ button:disabled {
   grid-template-columns: 220px 1fr;
   gap: 18px;
   align-items: center;
-  background: var(--c-14181f);
-  /* no box outline: the gap separates the teams, the orange edge marks them */
+  /* no fill and no outline: the break in the orange edge separates the
+     teams, the player cards carry their own fill */
+  background: transparent;
   border: 0;
   border-left: 3px solid var(--c-ff6b1a);
   padding: 12px 16px;
@@ -3958,7 +3959,8 @@ button:disabled {
   grid-template-columns: 72px minmax(0, 1fr) auto;
   grid-template-areas:
     "photo name  total"
-    "photo role  price"
+    "photo role  role"
+    "photo team  price"
     "photo team  value"
     "stats stats stats";
   column-gap: 12px;

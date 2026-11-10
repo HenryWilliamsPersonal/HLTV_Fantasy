@@ -3889,3 +3889,19 @@ button:disabled {
 .playoff-team-row.pair-row { grid-template-columns: auto minmax(0, 1fr); }
 .pair-logos { display: inline-flex; align-items: center; gap: 4px; }
 .pair-slash { color: var(--c-5d6a7c); font-size: 15px; }
+/* Tournament cards: the heading sits above the box, the box holds the board.
+   A collapsed card's box has no children and disappears. */
+.card-section { display: flex; flex-direction: column; gap: 10px; }
+.card-section > .card-section-title { margin: 0; }
+.card-section > .group-card-head { padding: 0 2px; }
+.card-section > .group-card:empty { display: none; }
+.card-section > .group-card { padding: 20px 24px 22px; }
+/* group brackets: more room between rounds, cards and groups */
+.group-grid { gap: 28px 72px; }
+.group-grid .group-block-title { margin-top: 0; }
+.group-grid .group-brackets { gap: 14px; margin-top: 10px; }
+.group-grid .group-bracket-title { margin-bottom: 4px; }
+.group-brackets .pb-match-wrap { padding: 9px 40px; }
+.group-brackets .pb-round:not(:first-child) .pb-match-wrap > .playoff-match-card::before,
+.group-brackets .pb-round:not(:last-child) .pb-match-wrap > .playoff-match-card::after { width: 40px; }
+.group-grid:has(.pb-round:nth-child(3)) > .group-block + .group-block { margin-top: 18px; padding-top: 22px; }

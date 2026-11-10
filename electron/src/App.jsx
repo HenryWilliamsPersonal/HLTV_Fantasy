@@ -8097,8 +8097,9 @@ function LiveEventBody({ ev }) {
         </div>
       )}
       {Array.isArray(ev.groups) && ev.groups.length > 0 && groupBoards && (
+        <div className="card-section">
+          <h3 className="card-section-title">{ev.groups.length > 1 ? "Groups" : "Group"}</h3>
         <div className="card sub group-card">
-          <h3>{ev.groups.length > 1 ? "Groups" : "Group"}</h3>
           <div className="group-grid">
           {ev.groups.map((g, i) => (
             <div className="group-block" key={i}>
@@ -8114,6 +8115,7 @@ function LiveEventBody({ ev }) {
             </div>
           ))}
           </div>
+        </div>
         </div>
       )}
       {Array.isArray(ev.groups) && ev.groups.length > 0 && !groupBoards && (
@@ -11281,14 +11283,16 @@ function BracketStageView({ results, teams, teamLookup, draw = null }) {
       const slots = draw.team_slots || [];
       const known = slots.filter((t) => Number(t) > 0).length;
       return (
-        <div className="card sub group-card">
+        <div className="card-section">
           <div className="group-card-head">
             <h3>Bracket</h3>
             <span className="muted">
               {known} of {slots.length} teams
             </span>
           </div>
+        <div className="card sub group-card">
           <BracketPicker bracket={draw} teamLookup={teamLookup} teams={teams} picks={{}} onPick={() => {}} readOnly />
+        </div>
         </div>
       );
     }
@@ -11300,11 +11304,13 @@ function BracketStageView({ results, teams, teamLookup, draw = null }) {
   }
   // The draw only: each team in its starting slot, later rounds open.
   return (
-    <div className="card sub group-card">
+    <div className="card-section">
       <div className="group-card-head">
         <h3>Bracket</h3>
       </div>
+    <div className="card sub group-card">
       <BracketPicker bracket={br} teamLookup={teamLookup} teams={teams} picks={{}} onPick={() => {}} readOnly />
+    </div>
     </div>
   );
 }
@@ -11608,10 +11614,11 @@ function SwissStageView({ results, teams, teamLookup, excludeSet = null, teamPla
   return (
     <>
       {simWalk && (
-        <div className="card sub group-card">
+        <div className="card-section">
           <div className="group-card-head">
             <h3>Swiss Simulator</h3>
           </div>
+        <div className="card sub group-card">
           <SwissBoard walk={simWalk} teams={teams} teamLookup={teamLookup} picks={simPicks} onPick={simPick} />
           <div className="actions">
             <button className="secondary" onClick={() => simQuery({ actual: true })}>
@@ -11625,11 +11632,13 @@ function SwissStageView({ results, teams, teamLookup, excludeSet = null, teamPla
             </button>
           </div>
         </div>
+        </div>
       )}
-      <div className="card sub group-card">
+      <div className="card-section">
       <div className="group-card-head">
         <h3>{sw.stage_name && sw.stage_name !== "SixteenEight" ? sw.stage_name : "Swiss"}</h3>
       </div>
+      <div className="card sub group-card">
       <table className="swiss-seed-table">
         <thead>
           <tr>
@@ -11688,6 +11697,7 @@ function SwissStageView({ results, teams, teamLookup, excludeSet = null, teamPla
           })}
         </tbody>
       </table>
+      </div>
       </div>
     </>
   );
@@ -12716,7 +12726,7 @@ function GroupsTab({
               const isCollapsed = Boolean(collapsedCards.groups);
               const summary = groupSlots.map((group, g) => `Group ${g + 1}: ${group.map((v) => (v ? teamName(v) : "TBD")).join(" · ")}`).join("   ");
               return (
-                <div className="card sub group-card">
+                <div className="card-section">
                   <button type="button" className="group-card-head collapsible" onClick={() => toggleCard("groups")}>
                     <h3>{groupSlots.length > 1 ? "Groups" : "Group"}</h3>
                     {isCollapsed && <span className="group-card-summary">{summary}</span>}
@@ -12724,6 +12734,7 @@ function GroupsTab({
                       {isCollapsed ? "▸" : "▾"}
                     </span>
                   </button>
+                <div className="card sub group-card">
                   {!isCollapsed && (
                     <div className="group-grid">
                     {groupSlots.map((group, g) => (
@@ -12742,10 +12753,11 @@ function GroupsTab({
                     </div>
                   )}
                 </div>
+                </div>
               );
             })()}
             {combinedPlayoffs && combinedAllowed && (
-              <div className="card sub group-card">
+              <div className="card-section">
                 <button type="button" className="group-card-head collapsible" onClick={() => toggleCard("playoff")}>
                   <h3>Playoff bracket</h3>
                   {collapsedCards.playoff && (
@@ -12759,6 +12771,7 @@ function GroupsTab({
                     {collapsedCards.playoff ? "▸" : "▾"}
                   </span>
                 </button>
+              <div className="card sub group-card">
                 {!collapsedCards.playoff && groupFormat === "gsl4" && groupCount === 2 && !PUBLIC_BUILD && (
                   <div className="playoff-layout-row">
                     <select value={playoffLayout} disabled={layoutBusy} onChange={(e) => changePlayoffLayout(e.target.value)}>
@@ -12778,6 +12791,7 @@ function GroupsTab({
                     layout={playoffLayout}
                   />
                 )}
+              </div>
               </div>
             )}
             {combinedDetected && !combinedSupported && (
@@ -13002,8 +13016,9 @@ function GroupsTab({
         )}
         {groupsTab === "top5" && results && groupsTopSubtab === "completed" && Boolean(GROUP_MATCH_KEYS[groupFormat]) && (
           <>
+            <div className="card-section">
+              <h3 className="card-section-title">{groupSlots.length > 1 ? "Group Results" : "Group Result"}</h3>
             <div className="card sub group-card">
-              <h3>{groupSlots.length > 1 ? "Group Results" : "Group Result"}</h3>
               <div className="group-grid">
               {groupSlots.map((group, g) => (
                 <div className="group-block" key={`completed-${g}`}>
@@ -13021,6 +13036,7 @@ function GroupsTab({
                 </div>
               ))}
               </div>
+            </div>
             </div>
             {renderTop5Filters()}
             <div className="actions">

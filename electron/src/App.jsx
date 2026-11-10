@@ -10797,12 +10797,11 @@ function BracketLayout({ byStage, card, meta }) {
                 {(byStage[stage] || []).map((m0, i) => {
                   const n = (byStage[stage] || []).length;
                   const nNext = (byStage[rounds[ri + 1]] || []).length;
-                  const nPrev = (byStage[rounds[ri - 1]] || []).length;
                   // a 1:1-fed card shows its fed side in the wanted row (display only)
                   const m = straight && fedRow(m0.pa) !== fedRowWanted(i, n)
                     ? { ...m0, a: m0.b, b: m0.a, pa: m0.pb, pb: m0.pa, ca: m0.cb, cb: m0.ca }
                     : m0;
-                  const cls = feedClasses({ i, n, straight, nextStraightN: straightAt(ri + 1) ? nNext : 0, prevStraightN: straightAt(ri - 1) ? nPrev : 0 });
+                  const cls = feedClasses({ i, n, straight, nextStraightN: straightAt(ri + 1) ? nNext : 0 });
                   return (
                   <div className={`pb-match-wrap${cls}`} key={m.key || `${stage}-${i}`}>
                     {card(m, titleOf(stage, m, i, n), meta(stage))}
@@ -11129,11 +11128,10 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
               // a straight round's fed slot is its second row; the bottom
               // half shows it on top so the bracket mirrors
               const next = rounds[r + 1];
-              const prev = rounds[r - 1];
               const want = fedRowWanted(i, round.matches.length);
               const cls = feedClasses({
                 i, n: round.matches.length, straight: Boolean(round.straight),
-                nextStraightN: next?.straight ? next.matches.length : 0, prevStraightN: round.straight ? 0 : prev?.straight ? prev.matches.length : 0,
+                nextStraightN: next?.straight ? next.matches.length : 0,
               });
               const rows = round.straight && want === "a" ? [...m.rows].reverse() : m.rows;
               return (
@@ -11277,11 +11275,10 @@ function PlayoffSkeleton({ format, groupCount, qualsPerGroup, stopTeams = 1, bo 
               <div className="pb-matches">
                 {round.matches.map((m, i) => {
                   const next = rounds[r + 1];
-                  const prev = rounds[r - 1];
                   const want = fedRowWanted(i, round.matches.length);
                   const cls = feedClasses({
                     i, n: round.matches.length, straight: Boolean(round.straight),
-                    nextStraightN: next?.straight ? next.matches.length : 0, prevStraightN: round.straight ? 0 : prev?.straight ? prev.matches.length : 0,
+                    nextStraightN: next?.straight ? next.matches.length : 0,
                   });
                   // the fed row (its label names the feeder) goes where the mirror wants it
                   const rows = round.straight && fedRow(m.rows[0]?.props?.placeholder) !== want ? [...m.rows].reverse() : m.rows;
@@ -11443,22 +11440,18 @@ function stageOfTitle(title) {
 // meets the row its feeder's winner fills, and the feeder card sits level
 // with that row. "a" / "b" = the fed row, from the slot's label.
 const fedRow = (label) => (/^(winner|loser)/i.test(String(label || "")) ? "a" : "b");
-// The row a 1:1-fed match shows its feeder in, so the bracket mirrors about
-// its middle: the top half's fed row at the bottom, the bottom half's on top.
-const fedRowWanted = (i, n) => (n > 1 && i >= n / 2 ? "a" : "b");
-// The connector classes of match i of n in a round. A straight round of two
-// or more matches moves its cards apart (top half up, bottom half down) so
-// each fed row meets its feeder's centre and the round after spreads its
-// bar to them; a single straight match moves its feeder down to the fed row.
-function feedClasses({ i, n, straight, nextStraightN = 0, prevStraightN = 0 }) {
+// The row a 1:1-fed match shows its feeder in: the top half's on top, the
+// bottom half's at the bottom, so the feeders sit wider apart than the
+// matches they feed (a single fed match takes its feeder at the bottom).
+const fedRowWanted = (i, n) => (n > 1 && i < n / 2 ? "a" : "b");
+// The connector classes of match i of n in a round. Feeders of a straight
+// round of two or more move outward (top half up, bottom half down) to the
+// row they fill; the feeder of a single straight match moves down to it.
+function feedClasses({ i, n, straight, nextStraightN = 0 }) {
   let cls = "";
   if (nextStraightN === 1) cls += " feeds-b";
-  if (straight) {
-    const want = fedRowWanted(i, n);
-    cls += ` entry-${want}`;
-    if (n >= 2) cls += want === "b" ? " shift-up" : " shift-down";
-  }
-  if (prevStraightN >= 2) cls += " spread";
+  else if (nextStraightN >= 2) cls += i < nextStraightN / 2 ? " shift-up" : " shift-down";
+  if (straight) cls += ` entry-${fedRowWanted(i, n)}`;
   return cls;
 }
 

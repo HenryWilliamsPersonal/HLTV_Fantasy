@@ -3925,19 +3925,28 @@ button:disabled {
 /* 1:1 feeds: the feeder card sits level with the row it fills (head 30 px +
    rows 41 px: a row centre is 36 px off the card centre) */
 .pb-match-wrap.feeds-b > .playoff-match-card { transform: translateY(36px); }
-.pb-round:not(:first-child) .pb-match-wrap.entry-b > .playoff-match-card::before { top: calc(50% + 36px); }
-.pb-round:not(:first-child) .pb-match-wrap.entry-a > .playoff-match-card::before { top: calc(50% - 36px); }
 .pb-bracket:has(.feeds-b), .group-brackets .pb-bracket:has(.feeds-b) { padding-bottom: 42px; }
 /* the two arms of a connector overlap a little so display scaling never
    leaves a hairline gap where they meet */
-.pb-round:not(:last-child) .pb-match-wrap > .playoff-match-card::after { width: 28px; }
-.group-brackets .pb-round:not(:last-child) .pb-match-wrap > .playoff-match-card::after { width: 42px; }
-/* a straight round of two or more: its cards move apart so each fed row
-   meets its feeder; the next round's bar spreads to their new centres */
+.pb-round:not(:last-child) .pb-match-wrap > .playoff-match-card::after { width: 30px; }
+.pb-round:not(:first-child) .pb-match-wrap > .playoff-match-card::before { width: 30px; }
+.group-brackets .pb-round:not(:last-child) .pb-match-wrap > .playoff-match-card::after { width: 44px; }
+.group-brackets .pb-round:not(:first-child) .pb-match-wrap > .playoff-match-card::before { width: 44px; }
+/* feeders of a straight round of two or more move outward to the row they
+   fill (top half up, bottom half down) */
 .pb-match-wrap.shift-up > .playoff-match-card { transform: translateY(-36px); }
 .pb-match-wrap.shift-down > .playoff-match-card { transform: translateY(36px); }
-.pb-round:not(:first-child) .pb-match-wrap.spread::before { top: calc(25% - 36px); height: calc(50% + 72px); }
 /* room above for the cards moved up: every round title of the bracket
    gets it, so the columns stay aligned */
 .pb-bracket:has(.shift-up) .pb-round-title { margin-bottom: 44px; }
 .pb-bracket:has(.shift-down), .group-brackets .pb-bracket:has(.shift-down) { padding-bottom: 42px; }
+/* a 1:1 feed is ONE line, drawn by the feeder across both paddings to the
+   fed card (two pieces meeting mid-gap never line up under display scaling) */
+.pb-round:not(:first-child) .pb-match-wrap.entry-a > .playoff-match-card::before,
+.pb-round:not(:first-child) .pb-match-wrap.entry-b > .playoff-match-card::before { display: none; }
+.pb-round:not(:last-child) .pb-match-wrap.shift-up > .playoff-match-card::after,
+.pb-round:not(:last-child) .pb-match-wrap.shift-down > .playoff-match-card::after,
+.pb-round:not(:last-child) .pb-match-wrap.feeds-b > .playoff-match-card::after { width: 52px; }
+.group-brackets .pb-round:not(:last-child) .pb-match-wrap.shift-up > .playoff-match-card::after,
+.group-brackets .pb-round:not(:last-child) .pb-match-wrap.shift-down > .playoff-match-card::after,
+.group-brackets .pb-round:not(:last-child) .pb-match-wrap.feeds-b > .playoff-match-card::after { width: 80px; }

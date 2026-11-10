@@ -10660,7 +10660,7 @@ function GroupTeamRow({ teamId, name, placeholder, muted = false, hltvIdByTeamId
   );
 }
 
-function GroupMatchCard({ title, meta, rows, places, foot = null }) {
+function GroupMatchCard({ title, meta, rows, places }) {
   return (
     <div className="playoff-match-card">
       <div className="playoff-match-head">
@@ -10668,7 +10668,6 @@ function GroupMatchCard({ title, meta, rows, places, foot = null }) {
         <span>{meta}</span>
       </div>
       <div className="playoff-match-teams">{rows}</div>
-      {foot && <div className="gm-foot">{foot}</div>}
       {places && places.length > 0 && (
         <div className="playoff-match-foot">
           {places.map((p) => (
@@ -11078,33 +11077,17 @@ function GroupBracketVisual({ format, slotIds, nameOf, hltvIdByTeamId, combined,
       })
     );
   }
-  // [winner's place, loser's place] -> compact badges: ▲ winner, ▼ loser
-  const placeBadges = (places) =>
-    (places || [])
-      .map((p, i) => ({ ...p, arrow: p.kind === "lose" || i > 0 ? "▼" : "▲" }))
-      .filter((p) => p.kind !== "drop");
   const bracket = (rounds) => (
     <div className="pb-bracket">
       {rounds.map((round, r) => (
         <div className={`pb-round${round.straight ? " straight" : ""}`} key={`${round.title}-${r}`}>
           <div className="pb-round-title">{round.title}</div>
           <div className="pb-matches">
-            {round.matches.map((m) => {
-              const badges = placeBadges(m.places).map((b) => (
-                <span className={`gm-badge ${b.kind}`} key={b.text}>
-                  {b.arrow} {b.text}
-                </span>
-              ));
-              const last = r === rounds.length - 1;
-              // the last round's places sit beside the card; a middle round's
-              // under it (its right side carries the connector)
-              return (
+            {round.matches.map((m) => (
               <div className="pb-match-wrap" key={m.key}>
-                <GroupMatchCard title={m.title} meta={meta} rows={m.rows} foot={!last && badges.length > 0 ? badges : null} />
-                {last && badges.length > 0 && <div className="gm-out">{badges}</div>}
+                <GroupMatchCard title={m.title} meta={meta} rows={m.rows} />
               </div>
-              );
-            })}
+            ))}
           </div>
         </div>
       ))}

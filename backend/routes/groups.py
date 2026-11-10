@@ -924,11 +924,16 @@ def _conditional_player_detail(
         by_group.setdefault(int(o.get("group") or 0), []).append(o)
     idx_arr = np.asarray(idxs, dtype=np.int64)
     if paths is not None:
-        # sampled joint outcomes, 1/N each: a group outcome's weight is its share of the samples
-        w_sample = np.full(len(idxs), 1.0 / len(idxs), dtype=np.float64)
-        mass = len(idxs) / float(n_total)
+        # joint outcomes (exact, or sampled at 1/N each): a group outcome's
+        # weight is its share of the given outcomes' probability
+        pw = probs[idx_arr]
+        tot = float(pw.sum())
+        if tot <= 0:
+            raise HTTPException(status_code=400, detail="The given outcomes carry no probability.")
+        w_sample = pw / tot
+        mass = tot
         group_w = {
-            g: np.bincount(np.asarray(paths["group_idx"][g])[idx_arr], minlength=len(olist)).astype(np.float64) / float(len(idxs))
+            g: np.bincount(np.asarray(paths["group_idx"][g])[idx_arr], weights=w_sample, minlength=len(olist)).astype(np.float64)
             for g, olist in by_group.items()
         }
     else:
@@ -3937,9 +3942,11 @@ def _group_outcome_probs_by_group(results: dict) -> Dict[int, List[float]]:
 # combinations (single group = 1024), else Monte-Carlo sample it.
 _MOST_OUTCOMES_EXACT_JOINT = 20000
 _MOST_OUTCOMES_SAMPLES = 4000
-# Combined events: joint outcomes (group results + playoff bracket) sampled for
-# the ceiling / most-likely modes — the joint space is ~33M for two 8-team
-# groups and a 6-team bracket, far too big to enumerate.
+# Combined events: joint outcomes (group results + playoff bracket) for the
+# ceiling / most-likely modes — enumerated exactly (each with its true
+# probability) when the joint space has at most this many outcomes (two GSL
+# groups + a 6-team bracket = 8,192), else this many sampled (two 8-team
+# groups and a 6-team bracket = ~33M, far too big to enumerate).
 _JOINT_SAMPLES = 100000
 _JOINT_MODEL_CACHE: Dict[Any, tuple] = {}  # (event, updated_at) -> model; ~64 MB each at 100k samples
 
@@ -3966,7 +3973,8 @@ def _event_outcome_model(results: dict, cache_key: Any = None) -> tuple:
     win points as scored, the matches played and the matches the role is
     scored for, so a roster can be re-scored under its own plan. Average stays
     exact. Stored runs without the decomposition inputs give decomposition
-    None (per-player scoring only)."""
+    None (per-player scoring only). The joint outcomes are the exact space
+    (true probabilities) whenever it fits in _JOINT_SAMPLES."""
     import numpy as np
 
     if cache_key is not None and cache_key in _JOINT_MODEL_CACHE:
@@ -4027,8 +4035,10 @@ def _group_outcome_decomposition(results: dict, group_index: int) -> Optional[Di
 
 
 def _sample_joint_outcomes(results: dict, n: int, seed: int = 20240101) -> tuple:
-    """Sample n joint outcomes of a combined event and score every player in
-    each: the group result (its stored per-player totals, group padding and
+    """The joint outcomes of a combined event, every player scored in each:
+    ALL of them with their exact probabilities when the joint space (group
+    outcome combinations x bracket paths) has at most n outcomes (outcomes of
+    probability 0 dropped), else n sampled at 1/n each. Per outcome: the group result (its stored per-player totals, group padding and
     penalties included), then the playoff bracket played match by match from
     the qualifiers with the stored win probabilities, each pairing scored from
     the stored table (booster slot numbering continues from the group matches,
@@ -4038,6 +4048,7 @@ def _sample_joint_outcomes(results: dict, n: int, seed: int = 20240101) -> tuple
     import numpy as np
 
     rng = np.random.default_rng(seed)
+    n_requested = int(n)
     outcomes = results.get("outcomes") or []
     groups = [[int(t) for t in g] for g in (results.get("groups") or [])]
     x = len(groups)
@@ -4074,6 +4085,29 @@ def _sample_joint_outcomes(results: dict, n: int, seed: int = 20240101) -> tuple
     by_group: Dict[int, List[dict]] = {}
     for o in outcomes:
         by_group.setdefault(int(o.get("group") or 0), []).append(o)
+    n_matches = sum(len(r) for r in rounds)
+    decider = template.get("decider") if (has_playoff and po.get("third_place")) else None
+    n_bits = n_matches + (1 if decider else 0)
+    group_keys = sorted(by_group)
+    space = 1
+    for g in group_keys:
+        space *= len(by_group[g])
+    space *= 1 << n_bits
+    exact = 0 < space <= n_requested
+    weight = None
+    code = None
+    if exact:
+        # every group-outcome combination x every bracket path: row i is
+        # combination i >> n_bits, bracket path i & (2**n_bits - 1) (bit k = the
+        # k-th match in draw order went to its RIGHT side)
+        n = space
+        rows_i = np.arange(n, dtype=np.int64)
+        combo = rows_i >> n_bits
+        code = rows_i & ((1 << n_bits) - 1)
+        shape = [len(by_group[g]) for g in group_keys]
+        unravel = np.unravel_index(combo, shape) if shape else []
+        exact_idx = {g: np.asarray(unravel[j], dtype=np.int64) for j, g in enumerate(group_keys)}
+        weight = np.ones(n, dtype=np.float64)
     all_pids = sorted({int(pid) for o in outcomes for pid in (o.get("players") or {})})
     vec = {pid: np.zeros(n, dtype=np.float64) for pid in all_pids}
     rw = {pid: np.zeros(n, dtype=np.float64) for pid in all_pids} if decomposed else {}
@@ -4084,7 +4118,11 @@ def _sample_joint_outcomes(results: dict, n: int, seed: int = 20240101) -> tuple
     for g, olist in by_group.items():
         p = np.asarray([float(o.get("probability") or 0.0) for o in olist], dtype=np.float64)
         p = p / p.sum()
-        idx = rng.choice(len(olist), size=n, p=p)
+        if exact:
+            idx = exact_idx[g]
+            weight *= p[idx]
+        else:
+            idx = rng.choice(len(olist), size=n, p=p)
         idx_by_group[g] = idx
         pids_g = sorted({int(pid) for o in olist for pid in (o.get("players") or {})})
         mat = np.asarray(
@@ -4117,9 +4155,7 @@ def _sample_joint_outcomes(results: dict, n: int, seed: int = 20240101) -> tuple
                 rt[pid] += rt_mat[idx, j]
                 mp[pid] += mp_mat[idx, j]
                 mr[pid] += mr_mat[idx, j]
-    n_matches = sum(len(r) for r in rounds)
-    decider = template.get("decider") if (has_playoff and po.get("third_place")) else None
-    u = rng.random((n, max(n_matches + (1 if decider else 0), 1)))
+    u = None if exact else rng.random((n, max(n_bits, 1)))
     # each sample's bracket path: the winner of every match in draw order (then
     # the decider), so a subset of samples can be replayed (winning-player-detail)
     path = np.zeros((n, max(n_matches + (1 if decider else 0), 1)), dtype=np.int32)
@@ -4146,7 +4182,16 @@ def _sample_joint_outcomes(results: dict, n: int, seed: int = 20240101) -> tuple
                 na = prior_matches[sa] + r - entry_round.get(sa, 0) + 1
                 nb = prior_matches[sb] + r - entry_round.get(sb, 0) + 1
                 probs = final_win_probs if (rem == 0 and final_win_probs) else win_probs
-                w = a if u[i, ui] < probs[a][b] else b
+                if exact:
+                    pa = probs[a][b]
+                    if (int(code[i]) >> ui) & 1:
+                        w = b
+                        weight[i] *= 1.0 - pa
+                    else:
+                        w = a
+                        weight[i] *= pa
+                else:
+                    w = a if u[i, ui] < probs[a][b] else b
                 path[i, ui] = w
                 ui += 1
                 winners[(r, m)] = w
@@ -4182,7 +4227,16 @@ def _sample_joint_outcomes(results: dict, n: int, seed: int = 20240101) -> tuple
             tb = losers[(decider[1][1], decider[1][2])]
             na = _decider_match_number(template, team_seed[ta], rounds_total)
             nb = _decider_match_number(template, team_seed[tb], rounds_total)
-            w = ta if u[i, ui] < win_probs[ta][tb] else tb
+            if exact:
+                pa = win_probs[ta][tb]
+                if (int(code[i]) >> ui) & 1:
+                    w = tb
+                    weight[i] *= 1.0 - pa
+                else:
+                    w = ta
+                    weight[i] *= pa
+            else:
+                w = ta if u[i, ui] < win_probs[ta][tb] else tb
             path[i, ui] = w
             ui += 1
             row = table.get((ta, tb, w, na, nb, _DECIDER_REM))
@@ -4220,12 +4274,28 @@ def _sample_joint_outcomes(results: dict, n: int, seed: int = 20240101) -> tuple
         import logging
 
         logging.getLogger(__name__).warning("joint sampler: %d pairings missing from the stored table", missing)
+    if exact:
+        # drop the impossible outcomes (a certain match result); renormalise
+        keep = weight > 0
+        if not keep.all():
+            vec = {pid: v[keep] for pid, v in vec.items()}
+            if decomposed:
+                rw = {pid: v[keep] for pid, v in rw.items()}
+                rt = {pid: v[keep] for pid, v in rt.items()}
+                mp = {pid: v[keep] for pid, v in mp.items()}
+                mr = {pid: v[keep] for pid, v in mr.items()}
+            idx_by_group = {g: v[keep] for g, v in idx_by_group.items()}
+            path = path[keep]
+            weight = weight[keep]
+        weight = weight / weight.sum()
+    else:
+        weight = np.full(n, 1.0 / n, dtype=np.float64)
     decomp = (
         {"rw": rw, "rt": rt, "mp": mp, "mr": mr, "paths": {"group_idx": idx_by_group, "bracket": path}}
         if decomposed
         else None
     )
-    return {0: vec}, {0: np.full(n, 1.0 / n, dtype=np.float64)}, {pid: 0 for pid in vec}, decomp
+    return {0: vec}, {0: weight}, {pid: 0 for pid in vec}, decomp
 
 
 _TEAM_PIDS_CACHE: Dict[int, Dict[int, List[int]]] = {}
@@ -4773,7 +4843,7 @@ def _forced_mask(pids: List[int], options: Dict[str, Any]):
     return forced
 
 
-def _joint_winners(model: tuple, players_info: List[Dict[str, Any]], options: Dict[str, Any]) -> Dict[tuple, int]:
+def _joint_winners(model: tuple, players_info: List[Dict[str, Any]], options: Dict[str, Any]) -> Dict[tuple, float]:
     """Best legal roster in EVERY sampled outcome under the query's budget,
     team cap and include / exclude (excluded players are already out of
     players_info), tallied by roster — the compiled search does 100k outcomes
@@ -4786,12 +4856,13 @@ def _joint_winners(model: tuple, players_info: List[Dict[str, Any]], options: Di
     if forced is None:
         return {}
     best = rk.best_rosters_batch(M, prices, team_of, int(options["budget"]), int(options["max_per_team"]), forced=forced)
-    wins: Dict[tuple, int] = {}
-    for row in best:
+    probs = model[1][0]
+    wins: Dict[tuple, float] = {}
+    for c, row in enumerate(best):
         if row[0] < 0:
             continue
         key = tuple(sorted(int(pids[j]) for j in row))
-        wins[key] = wins.get(key, 0) + 1
+        wins[key] = wins.get(key, 0.0) + float(probs[c])  # each outcome's probability
     return wins
 
 
@@ -5234,7 +5305,7 @@ def _live_groups_query(results: dict, body: dict, mode: str, cache_key: Any = No
             # the query's own budget, team cap and include / exclude, so the win
             # shares are exact within the sample and cover every roster.
             wins = _joint_winners(model, players_info, options)
-            n_samples = float(len(model[1][0])) or 1.0
+            n_samples = float(model[1][0].sum()) or 1.0  # total probability
             ranked_keys = [key_r for key_r, _w in sorted(wins.items(), key=lambda kv: -kv[1])]
             # candidates: the rosters that top outcomes with their players' own
             # best roles and boosters (the strongest 2,000), plus the strongest by

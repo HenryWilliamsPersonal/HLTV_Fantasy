@@ -5,7 +5,7 @@ import {
   CartesianGrid,
   Cell,
   ComposedChart,
-  Legend,
+  ReferenceLine,
   Line,
   Pie,
   PieChart,
@@ -1506,7 +1506,43 @@ const rosterAssignedBoosterPlayer = (player, rosterPlayers) => {
   };
 };
 
-function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, onPointClick = null }) {
+// Round axis: a 1 / 2 / 2.5 / 5 x 10^k step giving about `target` ticks, the
+// domain snapped out to whole steps so every tick is a round value.
+const buildRoundAxis = (values, target = 6, fixedStep = null) => {
+  const finite = (values || []).filter((v) => Number.isFinite(v));
+  if (finite.length === 0) return { domain: ["auto", "auto"], ticks: undefined };
+  let lo = Math.min(...finite);
+  let hi = Math.max(...finite);
+  if (hi - lo < 1e-9) {
+    lo -= 1;
+    hi += 1;
+  }
+  const raw = (hi - lo) / Math.max(1, target);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = fixedStep || [1, 2, 2.5, 5, 10].map((m) => m * mag).find((st) => st >= raw) || 10 * mag;
+  const min = Math.floor(lo / step - 1e-9) * step;
+  const max = Math.ceil(hi / step + 1e-9) * step;
+  const ticks = [];
+  for (let t = min; t <= max + step / 2; t += step) ticks.push(Number(t.toFixed(6)));
+  return { domain: [min, max], ticks };
+};
+
+function PriceVsPointsPanel({
+  title,
+  rows,
+  slope,
+  intercept,
+  showTable = true,
+  onPointClick = null,
+  dotColor = "var(--c-35a2ff)",
+  lineColor = "var(--c-ff6b1a)",
+  axisColor = "var(--c-ff6b1a)",
+  axisTitleColor = "var(--c-ff8a47)",
+  tickColor = "var(--c-c6d0dc)",
+  teamLookup = null,
+  hltvIdByTeamId = null,
+}) {
+  const teamOf = (r) => teamLookup?.[r.team_id] || "";
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("distance_desc");
   // 2D nearest-dot hover: the scatter shapes record their pixel positions and
@@ -1515,8 +1551,14 @@ function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, o
   const [hover, setHover] = useState(null);
   const wrapRef = useRef(null);
   const dotPosRef = useRef(new Map());
-  const minPrice = useMemo(() => Math.min(...rows.map((r) => Number(r.price))), [rows]);
-  const maxPrice = useMemo(() => Math.max(...rows.map((r) => Number(r.price))), [rows]);
+  const priceAxis = useMemo(() => {
+    const a = buildRoundAxis(rows.map((r) => Number(r.price) / 1000), 8, 5);
+    return a.ticks ? { domain: a.domain.map((v) => v * 1000), ticks: a.ticks.map((v) => v * 1000) } : a;
+  }, [rows]);
+  const pointsAxis = useMemo(
+    () => buildRoundAxis(rows.flatMap((r) => [Number(r.points), Number(r.on_line)]), 7, 10),
+    [rows]
+  );
   const chartRows = useMemo(
     () =>
       [...rows]
@@ -1537,23 +1579,14 @@ function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, o
         .filter(
           (r) =>
             String(r.name || "").toLowerCase().includes(q) ||
-            String(r.player_id || "").includes(q) ||
-            String(r.team_id || "").includes(q)
+            teamOf(r).toLowerCase().includes(q) ||
+            String(r.player_id || "").includes(q)
         )
         .map((r) => Number(r.player_id))
     );
   }, [rows, search]);
   const filteredRows = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    let out = [...rows];
-    if (q) {
-      out = out.filter(
-        (r) =>
-          String(r.name || "").toLowerCase().includes(q) ||
-          String(r.player_id || "").includes(q) ||
-          String(r.team_id || "").includes(q)
-      );
-    }
+    const out = rows.filter((r) => !searchActive || matchedIds.has(Number(r.player_id)));
     switch (sortBy) {
       case "player_id_asc":
         out.sort((a, b) => Number(a.player_id) - Number(b.player_id));
@@ -1585,6 +1618,12 @@ function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, o
       case "distance_asc":
         out.sort((a, b) => a.distance - b.distance);
         break;
+      case "team_asc":
+        out.sort((a, b) => teamOf(a).localeCompare(teamOf(b)) || b.distance - a.distance);
+        break;
+      case "team_desc":
+        out.sort((a, b) => teamOf(b).localeCompare(teamOf(a)) || b.distance - a.distance);
+        break;
       case "name_asc":
         out.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
         break;
@@ -1597,7 +1636,12 @@ function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, o
         break;
     }
     return out;
-  }, [rows, search, sortBy]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, searchActive, matchedIds, sortBy, teamLookup]);
+  const maxAbsDistance = useMemo(
+    () => Math.max(1e-9, ...rows.map((r) => Math.abs(Number(r.distance) || 0))),
+    [rows]
+  );
 
   // Reset the dot-position map during render (before the scatter shapes
   // re-register) whenever the data changes; an effect would wipe it AFTER the
@@ -1612,13 +1656,19 @@ function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, o
   }, [chartRows]);
 
   // Plain DOM mouse tracking on the wrapper: independent of recharts' event
-  // plumbing, matched against the dots' recorded svg positions (the svg sits
-  // at the wrapper's 6px padding offset).
+  // plumbing, matched against the dots' recorded svg positions, measured from
+  // the chart svg itself (the legend above it shifts it within the wrapper).
   const handleWrapMove = (e) => {
-    const rect = wrapRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const x = e.clientX - rect.left - 6;
-    const y = e.clientY - rect.top - 6;
+    const wrap = wrapRef.current;
+    const svg = wrap?.querySelector("svg.recharts-surface");
+    if (!wrap || !svg) return;
+    const wrapRect = wrap.getBoundingClientRect();
+    const svgRect = svg.getBoundingClientRect();
+    const x = e.clientX - svgRect.left;
+    const y = e.clientY - svgRect.top;
+    // svg origin inside the wrapper's padding box (the tooltip's frame)
+    const offX = svgRect.left - wrapRect.left - wrap.clientLeft;
+    const offY = svgRect.top - wrapRect.top - wrap.clientTop;
     let bestId = null;
     let bestPos = null;
     let bestD2 = Infinity;
@@ -1632,24 +1682,29 @@ function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, o
         bestPos = pos;
       }
     });
-    if (bestId != null && bestD2 <= 28 * 28) {
+    if (bestId != null && bestD2 <= 22 * 22) {
       setHover((prev) => {
-        if (prev?.id === bestId) return prev;
+        if (prev?.id === bestId && prev.cx === bestPos.cx + offX && prev.cy === bestPos.cy + offY) return prev;
         const row = chartRows.find((r) => Number(r.player_id) === Number(bestId));
-        return row ? { id: bestId, cx: bestPos.cx, cy: bestPos.cy, row } : null;
+        return row ? { id: bestId, cx: bestPos.cx + offX, cy: bestPos.cy + offY, row } : null;
       });
     } else {
       setHover(null);
     }
   };
 
+  // laid out like the Tournament page's Groups / Playoff bracket: a heading
+  // above each dark box (the chart, then the player table)
   return (
-    <div className="card sub">
-      <h3>{title}</h3>
+    <div className="stack value-sections">
+      <div className="card-section">
+        <h3 className="card-section-title">{title}</h3>
       {rows.length === 0 ? (
-        <p className="muted">Generate player valuation data first to view price vs points.</p>
+        <div className="card sub group-card">
+          <p className="muted">Generate player valuation data first to view price vs points.</p>
+        </div>
       ) : (
-        <div className="stack">
+        <div className="card sub group-card">
           <div
             className="value-chart-wrap value-scatter"
             ref={wrapRef}
@@ -1659,77 +1714,114 @@ function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, o
               if (hover?.row && onPointClick) onPointClick(hover.row);
             }}
           >
-            <div className="value-trend-label">
-              Average line: points = {intercept.toFixed(2)} + {(slope * 1000).toFixed(3)} per $1k of price
-            </div>
             {hover && (
               <div
                 className="value-point-tooltip"
                 style={{
-                  left: (wrapRef.current?.clientWidth || 9999) - hover.cx < 250 ? hover.cx - 14 : hover.cx + 14,
+                  left: (wrapRef.current?.clientWidth || 9999) - hover.cx < 300 ? hover.cx - 14 : hover.cx + 14,
                   top: Math.max(8, hover.cy - 24),
                   transform:
-                    (wrapRef.current?.clientWidth || 9999) - hover.cx < 250 ? "translateX(-100%)" : "none",
+                    (wrapRef.current?.clientWidth || 9999) - hover.cx < 300 ? "translateX(-100%)" : "none",
                 }}
               >
-                <div style={{ fontWeight: 700 }}>{hover.row.name}</div>
-                <div>Points: {Number(hover.row.points).toFixed(2)}</div>
-                <div>Average line: {Number(hover.row.trend).toFixed(2)}</div>
-                <div>
-                  Distance: {Number(hover.row.distance) >= 0 ? "+" : ""}
-                  {Number(hover.row.distance).toFixed(2)}
+                <div className="vpt-head">
+                  <PlayerPhoto playerId={Number(hover.row.player_id)} name={hover.row.name} size={44} />
+                  <div className="vpt-title">
+                    <div className="vpt-name">{hover.row.name}</div>
+                    <div className="vpt-price">${Math.round(Number(hover.row.price) / 1000)}k</div>
+                  </div>
+                  <div
+                    className={`vpt-distance${Number(hover.row.distance) < -0.005 ? " neg" : Number(hover.row.distance) > 0.005 ? " pos" : ""}`}
+                  >
+                    {Number(hover.row.distance) >= 0 ? "+" : ""}
+                    {Number(hover.row.distance).toFixed(1)}
+                  </div>
                 </div>
-                <div>Price: ${Number(hover.row.price).toLocaleString()}</div>
+                <div className="vpt-stats">
+                  <div className="vpt-stat">
+                    <div className="vpt-value">{Number(hover.row.points).toFixed(1)}</div>
+                    <div className="vpt-label">Expected</div>
+                  </div>
+                  <div className="vpt-stat">
+                    <div className="vpt-value">{Number(hover.row.trend).toFixed(1)}</div>
+                    <div className="vpt-label">Average line</div>
+                  </div>
+                </div>
               </div>
             )}
-            <ResponsiveContainer width="100%" height={380}>
+            <div className="value-legend">
+              <span className="value-legend-item">
+                <i className="value-legend-line" style={{ background: lineColor }} />
+                Average line
+                <span className="value-formula" style={{ "--formula-c": lineColor }}>
+                  points = <b>{(slope * 1000).toFixed(2)}</b> × price<small>($k)</small>{" "}
+                  {intercept < 0 ? "−" : "+"} <b>{Math.abs(intercept).toFixed(1)}</b>
+                </span>
+              </span>
+              <span className="value-legend-item"><i className="value-legend-dot" style={{ background: dotColor }} />Players</span>
+            </div>
+            <ResponsiveContainer width="100%" height={560}>
               <ComposedChart
                 data={chartRows}
-                margin={{ top: 12, right: 18, left: 14, bottom: 26 }}
+                margin={{ top: 12, right: 22, left: 20, bottom: 30 }}
                 accessibilityLayer={false}
               >
-                <CartesianGrid stroke="var(--c-232a34)" strokeDasharray="3 3" />
+                <CartesianGrid stroke="var(--c-313a47)" strokeDasharray="3 3" />
+                {pointsAxis.ticks && pointsAxis.domain[0] < 0 && pointsAxis.domain[1] > 0 && (
+                  <ReferenceLine y={0} stroke="var(--c-5d6a7c)" strokeWidth={1.5} />
+                )}
                 <XAxis
                   type="number"
                   dataKey="price"
-                  domain={[minPrice, maxPrice]}
-                  tick={{ fill: "var(--c-9fb2c9)", fontSize: 12 }}
+                  domain={priceAxis.domain}
+                  ticks={priceAxis.ticks}
+                  interval={0}
+                  allowDataOverflow
+                  tick={{ fill: tickColor, fontSize: 13, fontWeight: 600 }}
                   tickMargin={8}
                   tickFormatter={(v) => String(Math.round(Number(v) / 1000))}
-                  axisLine={{ stroke: "var(--c-3a4452)" }}
-                  tickLine={{ stroke: "var(--c-3a4452)" }}
+                  axisLine={{ stroke: axisColor, strokeWidth: 2 }}
+                  tickLine={{ stroke: axisColor, strokeWidth: 1.5 }}
+                  tickSize={7}
                   name="Price"
-                  label={{ value: "Price ($k)", position: "insideBottom", offset: -18, fill: "var(--c-9fb2c9)", fontSize: 12.5 }}
+                  label={{ value: "PRICE ($K)", position: "insideBottom", offset: -20, fill: axisTitleColor, fontSize: 14, fontWeight: 700, letterSpacing: "0.06em" }}
                 />
                 <YAxis
                   type="number"
                   dataKey="points"
-                  tick={{ fill: "var(--c-9fb2c9)", fontSize: 12 }}
+                  domain={pointsAxis.domain}
+                  ticks={pointsAxis.ticks}
+                  interval={0}
+                  allowDataOverflow
+                  tick={{ fill: tickColor, fontSize: 13, fontWeight: 600 }}
                   tickMargin={7}
-                  axisLine={{ stroke: "var(--c-3a4452)" }}
-                  tickLine={{ stroke: "var(--c-3a4452)" }}
+                  axisLine={{ stroke: axisColor, strokeWidth: 2 }}
+                  tickLine={{ stroke: axisColor, strokeWidth: 1.5 }}
+                  tickSize={7}
                   name="Points"
                   label={{
-                    value: "Expected points",
+                    value: "EXPECTED POINTS",
                     angle: -90,
                     position: "insideLeft",
-                    offset: 2,
-                    fill: "var(--c-9fb2c9)",
-                    fontSize: 12.5,
+                    offset: 0,
+                    fill: axisTitleColor,
+                    fontSize: 14,
+                    fontWeight: 700,
+                    letterSpacing: "0.06em",
                     style: { textAnchor: "middle" },
                   }}
                 />
-                <Legend verticalAlign="top" height={30} wrapperStyle={{ color: "var(--c-9fb2c9)" }} />
-                <Line
-                  type="linear"
-                  dataKey="trend"
-                  name="Average line"
-                  stroke="var(--c-35a2ff)"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={false}
-                  isAnimationActive={false}
-                />
+                {priceAxis.ticks && (
+                  <ReferenceLine
+                    segment={[
+                      { x: priceAxis.domain[0], y: intercept + slope * priceAxis.domain[0] },
+                      { x: priceAxis.domain[1], y: intercept + slope * priceAxis.domain[1] },
+                    ]}
+                    stroke={lineColor}
+                    strokeWidth={2}
+                    ifOverflow="hidden"
+                  />
+                )}
                 <Scatter
                   name="Players"
                   dataKey="points"
@@ -1743,12 +1835,12 @@ function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, o
                     const active = hover != null && pid === Number(hover.id);
                     const matched = searchActive && matchedIds.has(pid);
                     const lit = active || matched;
-                    return (
+                                        return (
                       <g opacity={searchActive && !lit ? 0.28 : 1}>
-                        {lit && <circle cx={cx} cy={cy} r={9.5} fill="none" stroke="var(--c-ff8a47)" strokeWidth={2} />}
-                        <circle cx={cx} cy={cy} r={lit ? 6 : 4.5} fill={lit ? "var(--c-ff8a47)" : "var(--c-4fc3ff)"} />
+                        {lit && <circle cx={cx} cy={cy} r={10} fill="none" stroke="var(--c-e9edf3)" strokeWidth={2} />}
+                        <circle cx={cx} cy={cy} r={lit ? 7 : 5.5} fill={lit ? "var(--c-ffffff)" : dotColor} />
                         {matched && !active && (
-                          <text x={cx} y={cy - 13} textAnchor="middle" fill="var(--c-ffb07a)" fontSize={11} fontWeight={700}>
+                          <text x={cx} y={cy - 13} textAnchor="middle" fill="var(--c-e9edf3)" fontSize={11} fontWeight={700}>
                             {pt?.name}
                           </text>
                         )}
@@ -1759,42 +1851,94 @@ function PriceVsPointsPanel({ title, rows, slope, intercept, showTable = true, o
               </ComposedChart>
             </ResponsiveContainer>
           </div>
-          {showTable && (
-            <>
-              <div className="grid two">
-                <Input label="Search Players" value={search} onChange={setSearch} placeholder="Player name" className="search-field" />
+        </div>
+      )}
+      </div>
+          {showTable && rows.length > 0 && (
+            <div className="card-section">
+              <h3 className="card-section-title">Players</h3>
+            <div className="card sub group-card">
+              <div className="value-toolbar">
+                <div className="value-search-wrap">
+                  <Input label="Search Players" value={search} onChange={setSearch} placeholder="Search player or team" className="search-field value-search" />
+                  {search && (
+                    <button type="button" className="value-search-clear" onClick={() => setSearch("")} aria-label="Clear search">
+                      ×
+                    </button>
+                  )}
+                </div>
               </div>
-              <table>
+              <div className="value-table-frame">
+              <table className="value-table">
+                <colgroup>
+                  <col className="vt-player" />
+                  {teamLookup && <col className="vt-team" />}
+                  <col className="vt-num" />
+                  <col className="vt-num" />
+                  <col className="vt-num" />
+                  <col className="vt-value" />
+                </colgroup>
                 <thead>
                   <tr>
                     <SortHeader sortValue={sortBy} asc="name_asc" desc="name_desc" onChange={setSortBy}>Player</SortHeader>
-                    <SortHeader sortValue={sortBy} asc="price_asc" desc="price_desc" onChange={setSortBy}>Price</SortHeader>
-                    <SortHeader sortValue={sortBy} asc="points_asc" desc="points_desc" defaultDirection="desc" onChange={setSortBy}>Points</SortHeader>
-                    <SortHeader sortValue={sortBy} asc="distance_asc" desc="distance_desc" defaultDirection="desc" onChange={setSortBy}>Distance</SortHeader>
-                    <SortHeader sortValue={sortBy} asc="on_line_asc" desc="on_line_desc" defaultDirection="desc" onChange={setSortBy}>Expected Points</SortHeader>
+                    {teamLookup && <SortHeader sortValue={sortBy} asc="team_asc" desc="team_desc" onChange={setSortBy}>Team</SortHeader>}
+                    <SortHeader sortValue={sortBy} asc="price_asc" desc="price_desc" defaultDirection="desc" onChange={setSortBy}>Price</SortHeader>
+                    <SortHeader sortValue={sortBy} asc="points_asc" desc="points_desc" defaultDirection="desc" onChange={setSortBy}>Expected Points</SortHeader>
+                    <SortHeader sortValue={sortBy} asc="on_line_asc" desc="on_line_desc" defaultDirection="desc" onChange={setSortBy}>Average Line</SortHeader>
+                    <SortHeader sortValue={sortBy} asc="distance_asc" desc="distance_desc" defaultDirection="desc" onChange={setSortBy}>Value</SortHeader>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRows.map((r) => (
-                    <tr key={`dist-${r.player_id}`}>
-                      <td>
-                        <div className="table-player-cell">
-                          <PlayerPhoto playerId={Number(r.player_id)} name={r.name} size={28} />
-                          <span>{r.name}</span>
-                        </div>
-                      </td>
-                      <td>${Number(r.price).toLocaleString()}</td>
-                      <td>{r.points.toFixed(2)}</td>
-                      <td>{r.distance >= 0 ? "+" : ""}{r.distance.toFixed(2)}</td>
-                      <td>{r.on_line.toFixed(2)}</td>
-                    </tr>
-                  ))}
+                  {filteredRows.map((r) => {
+                    const d = Number(r.distance) || 0;
+                    const share = Math.min(1, Math.abs(d) / maxAbsDistance);
+                    const tone = d > 0.005 ? "pos" : d < -0.005 ? "neg" : "";
+                    return (
+                      <tr
+                        key={`dist-${r.player_id}`}
+                        className={onPointClick ? "clickable" : undefined}
+                        onClick={onPointClick ? () => onPointClick(r) : undefined}
+                      >
+                        <td>
+                          <div className="value-table-player">
+                            <PlayerPhoto playerId={Number(r.player_id)} name={r.name} size={46} />
+                            <span className="value-table-name">{r.name}</span>
+                          </div>
+                        </td>
+                        {teamLookup && (
+                          <td>
+                            <div className="value-table-team">
+                              <TeamLogo hltvTeamId={hltvIdByTeamId?.[r.team_id]} name={teamOf(r)} size={22} />
+                              <span>{teamOf(r) || "-"}</span>
+                            </div>
+                          </td>
+                        )}
+                        <td className="num">${Math.round(Number(r.price || 0) / 1000)}k</td>
+                        <td className="num strong">{Number(r.points).toFixed(1)}</td>
+                        <td className="num muted-num">{Number(r.on_line).toFixed(1)}</td>
+                        <td>
+                          <div className={`value-bar ${tone}`}>
+                            <span className="value-bar-num">
+                              {d >= 0 ? "+" : ""}
+                              {d.toFixed(1)}
+                            </span>
+                            <span className="value-bar-track">
+                              <span
+                                className="value-bar-fill"
+                                style={d >= 0 ? { left: "50%", width: `${share * 50}%` } : { right: "50%", width: `${share * 50}%` }}
+                              />
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
-            </>
+              </div>
+            </div>
+            </div>
           )}
-        </div>
-      )}
     </div>
   );
 }
@@ -5877,6 +6021,8 @@ function PlayoffTab({
           rows={playoffPlayerValueData.rows}
           slope={playoffPlayerValueData.slope}
           intercept={playoffPlayerValueData.intercept}
+          teamLookup={teamLookup}
+          hltvIdByTeamId={hltvIdByTeamId}
         />
       )}
       {playoffTab === "value" && !results && (
@@ -13086,6 +13232,8 @@ function GroupsTab({
             rows={valueData.rows}
             slope={valueData.slope}
             intercept={valueData.intercept}
+            teamLookup={teamLookup}
+            hltvIdByTeamId={hltvIdByTeamId}
           />
         )}
         {groupsTab === "value" && !results && (

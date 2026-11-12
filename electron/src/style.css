@@ -4214,3 +4214,150 @@ button:disabled {
 }
 .event-player-headline { gap: 18px; }
 .event-player-headline > .event-player-price { font-size: 15px; }
+/* Price-vs-points legend: the trend line and the above / below dot colours */
+.value-legend { display: flex; justify-content: center; gap: 22px; padding: 4px 0 2px; font-size: 13px; color: var(--c-9fb2c9); }
+.value-legend-item { display: inline-flex; align-items: center; gap: 7px; }
+.value-legend-line { width: 22px; height: 2px; background: var(--c-ff6b1a); }
+.value-legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+.value-legend-dot { background: var(--c-35a2ff); }
+/* Price-vs-points hover card: the player card's frame, photo + name + price,
+   distance from the average line top right, the two point figures below */
+.value-point-tooltip {
+  background: var(--c-0a0c10);
+  border: 1px solid rgba(53, 162, 255, 0.6);
+  border-top: 2px solid var(--c-ff6b1a);
+  border-radius: 6px;
+  padding: 10px 12px 9px;
+  min-width: 230px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.6);
+  line-height: 1.2;
+}
+.vpt-head { display: flex; align-items: center; gap: 10px; }
+.vpt-head .player-photo-img, .vpt-head .img-fallback { width: 44px; height: 44px; border-radius: 4px; object-fit: cover; flex: none; }
+.vpt-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.vpt-name { font-size: 16px; font-weight: 700; color: var(--c-f2f5f9); }
+.vpt-price { font-size: 13px; color: var(--c-9fb2c9); letter-spacing: 0.04em; }
+.vpt-distance { font-family: var(--display); font-stretch: condensed; font-size: 22px; font-weight: 700; color: var(--c-c6d0dc); margin-left: 8px; }
+.vpt-distance.pos { color: var(--val-pos); }
+.vpt-distance.neg { color: var(--val-neg); }
+.vpt-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--c-2c3441); }
+.vpt-stat { text-align: center; }
+.vpt-value { font-size: 16px; font-weight: 700; color: var(--c-e9edf3); }
+.vpt-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--c-8fa3bf); margin-top: 2px; }
+/* Price-vs-points: no box around the chart; the fit formula sits in the legend */
+.value-chart-wrap.value-scatter { border: 0; border-radius: 0; background: none; padding: 0; }
+.value-legend { gap: 28px; font-size: 13.5px; padding-bottom: 6px; }
+.value-formula {
+  margin-left: 10px; padding-left: 12px; border-left: 1px solid var(--c-3a4452);
+  color: var(--c-9fb2c9); font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+}
+.value-formula b { color: var(--formula-c, var(--c-ff8a47)); font-weight: 700; filter: brightness(1.15); }
+.value-formula small { font-size: 11px; color: var(--c-6f819e); margin-left: 2px; }
+.value-legend-dot { background: var(--c-35a2ff); }
+/* Player Value table: team logos, right-weighted figures, the value (distance
+   from the average line) as a signed number + a bar either side of a centre */
+.value-table td, .value-table th { vertical-align: middle; }
+.value-table tbody tr:hover td { background: color-mix(in srgb, var(--c-35a2ff) 7%, transparent); }
+.value-table tbody tr.clickable { cursor: pointer; }
+.value-table-name { font-weight: 700; color: var(--c-f2f5f9); }
+.value-table-team { display: flex; align-items: center; gap: 8px; color: var(--c-c6d0dc); }
+.value-table td.num { font-variant-numeric: tabular-nums; }
+.value-table td.strong { font-weight: 700; color: var(--c-f2f5f9); }
+.value-table td.muted-num { color: var(--c-8fa3bf); }
+.value-bar { display: flex; align-items: center; gap: 12px; }
+.value-bar-num { width: 52px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--c-c6d0dc); }
+.value-bar.pos .value-bar-num { color: var(--val-pos); }
+.value-bar.neg .value-bar-num { color: var(--val-neg); }
+.value-bar-track { position: relative; flex: 1; max-width: 180px; height: 8px; background: var(--c-1a2029); border-radius: 4px; }
+.value-bar-track::after { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--c-4b5a70); }
+.value-bar-fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+.value-bar.pos .value-bar-fill { background: var(--val-pos); }
+.value-bar.neg .value-bar-fill { background: var(--val-neg); }
+/* Player Value table, denser: photo + name + team in one cell, fixed column shares */
+.value-table { table-layout: fixed; width: 100%; }
+.value-table col.vt-player { width: 30%; }
+.value-table col.vt-num { width: 13%; }
+.value-table col.vt-value { width: 31%; }
+.value-table td { padding-top: 7px; padding-bottom: 7px; }
+.value-table td.num { font-size: 15px; }
+.value-table-player { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.value-table-player .player-photo-img,
+.value-table-player .img-fallback { width: 46px; height: 46px; border-radius: 4px; object-fit: cover; flex: none; }
+.value-table-who { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.value-table-who .value-table-name { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.value-table-who .value-table-team { font-size: 12.5px; color: var(--c-8fa3bf); gap: 6px; }
+.value-bar-track { max-width: 260px; height: 10px; border-radius: 5px; }
+.value-bar-fill { border-radius: 5px; }
+.value-bar-num { width: 58px; font-size: 15px; }
+
+/* the search: no label, a magnifier inside a taller box, blue focus ring */
+.field.value-search { max-width: 380px; margin-bottom: 4px; }
+.field.value-search > span { display: none; }
+.field.value-search input {
+  height: 40px; padding: 0 14px 0 38px; font-size: 14px;
+  background: var(--c-12161c) no-repeat 13px 50% / 16px 16px
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238fa3bf' stroke-width='2.4' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.6-3.6'/%3E%3C/svg%3E");
+  border: 1px solid var(--c-2c3441); border-radius: 6px; color: var(--c-f2f5f9);
+}
+.field.value-search input::placeholder { color: var(--c-6f819e); }
+.field.value-search input:focus { outline: none; border-color: var(--c-35a2ff); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-35a2ff) 22%, transparent); }
+.value-table col.vt-player { width: 22%; }
+.value-table col.vt-num { width: 12%; }
+.value-table col.vt-value { width: 42%; }
+.value-table-who .value-table-team { display: inline-flex; align-items: center; gap: 5px; }
+.value-table-who .value-table-team .team-logo-img { margin: 0; }
+.value-bar-track { max-width: none; }
+.value-table-player .player-photo-img { margin: 0; }
+/* name and team in their own columns; bigger names */
+.value-table col.vt-player { width: 22%; }
+.value-table col.vt-team { width: 15%; }
+.value-table col.vt-num { width: 11%; }
+.value-table col.vt-value { width: 30%; }
+.value-table-player .value-table-name { font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.value-table .value-table-team { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--c-c6d0dc); }
+.value-table .value-table-team .team-logo-img { margin: 0; }
+/* Player Value table shape: a framed table with a tinted header row and soft
+   zebra rows; toolbar with the search and the row count */
+.value-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.value-search-wrap { position: relative; flex: 1 1 auto; max-width: 420px; }
+.value-search-wrap .field.value-search { max-width: none; margin: 0; }
+.field.value-search input {
+  height: 44px; padding: 0 40px 0 42px; font-size: 15px;
+  background-color: var(--c-161b23); background-position: 15px 50%; background-size: 17px 17px;
+  border: 1px solid var(--c-313a47); border-left: 3px solid var(--c-35a2ff); border-radius: 6px;
+}
+.field.value-search input:hover { border-color: var(--c-4b5a70); border-left-color: var(--c-35a2ff); }
+.field.value-search input:focus { background-color: var(--c-1a2029); border-color: var(--c-35a2ff); }
+.value-search-clear {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 28px; padding: 0; border: 0; border-radius: 4px;
+  background: transparent; color: var(--c-8fa3bf); font-size: 20px; line-height: 1; cursor: pointer;
+}
+.value-search-clear:hover { background: var(--c-242b35); color: var(--c-f2f5f9); }
+.value-count { font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.06em; font-size: 14px; color: var(--c-8fa3bf); white-space: nowrap; }
+.value-count b { color: var(--c-f2f5f9); font-size: 18px; margin-right: 3px; }
+
+.value-table-frame { border: 1px solid var(--c-2c3441); border-radius: 6px; overflow: hidden; }
+.value-table { margin: 0; }
+.value-table thead th {
+  background: color-mix(in srgb, var(--c-35a2ff) 30%, var(--c-161b23));
+  border-bottom: 2px solid var(--c-35a2ff);
+  padding-top: 12px; padding-bottom: 12px;
+}
+.value-table thead th, .value-table thead th .table-sort-button {
+  color: var(--c-ffffff); font-family: var(--display); font-stretch: condensed; text-transform: uppercase;
+  letter-spacing: 0.07em; font-size: 14px; font-weight: 700;
+}
+.value-table th:first-child, .value-table td:first-child { padding-left: 16px; }
+.value-table th:last-child, .value-table td:last-child { padding-right: 18px; }
+.value-table tbody td { border-bottom: 1px solid var(--c-1f2530); }
+.value-table tbody tr:nth-child(even) td { background: var(--c-10141a); }
+.value-table tbody tr:last-child td { border-bottom: 0; }
+.value-table tbody tr:hover td { background: color-mix(in srgb, var(--c-35a2ff) 12%, var(--c-0a0c10)); }
+.value-table td.strong { color: var(--c-ff8a47); }
+/* header row: no fill, just the blue rule under it */
+.value-table thead th { background: none; }
+/* no inner frame: the table runs edge to edge of its box */
+.value-table-frame { border: 0; border-radius: 0; margin: 0 -24px -22px; }
+.value-table th:first-child, .value-table td:first-child { padding-left: 24px; }
+.value-table th:last-child, .value-table td:last-child { padding-right: 24px; }

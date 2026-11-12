@@ -290,7 +290,7 @@ function PlayerPhoto({ playerId, name, size = 26, className = "" }) {
   return (
     <img
       className={`player-photo-img ${className}`}
-      src={`${ASSETS_BASE}/player/${id}.jpg?v=2`}
+      src={`${ASSETS_BASE}/player/${id}.jpg?v=3`}
       width={size}
       height={size}
       alt=""
@@ -5734,7 +5734,7 @@ function PlayoffTab({
                           <div className="event-player-name">{playerLookup[Number(pid)] || pid}</div>
                           {comps.role_id != null && (
                             <div className="event-player-role">
-                              <RoleBadge roleId={comps.role_id} size={16} />
+                              <RoleBadge roleId={comps.role_id} size={30} />
                               <span>{ROLE_NAMES[comps.role_id] || `Role ${comps.role_id}`}</span>
                             </div>
                           )}
@@ -5794,10 +5794,13 @@ function PlayoffTab({
                           onClick={() => openProjectedRosterBreakdown(p, team)}
                         >
                           <PlayerPhoto playerId={Number(p.player_id)} name={p.name} size={52} />
-                          <div className="event-player-name">{p.name}</div>
+                          <div className="event-player-headline">
+                            <div className="event-player-name">{p.name}</div>
+                            <div className="event-player-price combo-price">${Math.round(Number(p.price || 0) / 1000)}k</div>
+                          </div>
                           <div className="event-player-team">{teamLookup[p.team_id] || p.team_id}</div>
                           <div className="event-player-role">
-                            {roleId != null && <RoleBadge roleId={roleId} size={16} />}
+                            {roleId != null && <RoleBadge roleId={roleId} size={30} />}
                             <span>{roleLabel(p.role_name)}</span>
                           </div>
                           <div className="event-player-rating">{playoffPlayerModeScore(p).toFixed(2)}</div>
@@ -5809,7 +5812,6 @@ function PlayoffTab({
                               </div>
                             ))}
                           </div>
-                          <div className="event-player-price combo-price">${Math.round(Number(p.price || 0) / 1000)}k</div>
                         </div>
                       );
                     })}
@@ -11467,6 +11469,14 @@ function matchTitle(key) {
 // each match a logo-vs-logo card (click a side to make it the winner), the
 // rounds still to come as unknown cards, and the finishing records on the
 // right: qualified in green, eliminated in red, filled as teams get there.
+// A Swiss record pool's colour key: wins minus losses ("2-1" -> "up1").
+function swissLean(pool) {
+  const m = /(\d+)\D+(\d+)/.exec(String(pool || ""));
+  if (!m) return "even";
+  const d = Number(m[1]) - Number(m[2]);
+  return d >= 2 ? "up2" : d === 1 ? "up1" : d === 0 ? "even" : d === -1 ? "down1" : "down2";
+}
+
 function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false, onOpen = null }) {
   const hltvIdByTeamId = {};
   (teams || []).forEach((t) => {
@@ -11570,7 +11580,7 @@ function SwissBoard({ walk, teams, teamLookup, picks, onPick, readOnly = false, 
           <div className="sw-col-title">{col.title}</div>
           <div className="sw-col-body">
             {col.pools.map((p) => (
-              <div className="sw-pool" key={`${col.key}-${p.pool}`}>
+              <div className="sw-pool" data-lean={swissLean(p.pool)} key={`${col.key}-${p.pool}`}>
                 <div className="sw-pool-title">{rec(p.pool)}</div>
                 {p.matches.map((m) => (
                   <div
@@ -12593,10 +12603,13 @@ function GroupsTab({
                           onClick={() => onCard(p, rosterCtx, team)}
                         >
                           <PlayerPhoto playerId={Number(p.player_id)} name={p.name} size={52} />
-                          <div className="event-player-name">{p.name}</div>
+                          <div className="event-player-headline">
+                            <div className="event-player-name">{p.name}</div>
+                            <div className="event-player-price combo-price">${Math.round(Number(p.price || 0) / 1000)}k</div>
+                          </div>
                           <div className="event-player-team">{teamLookup[p.team_id] || p.team_id}</div>
                           <div className="event-player-role">
-                            {roleId != null && <RoleBadge roleId={roleId} size={16} />}
+                            {roleId != null && <RoleBadge roleId={roleId} size={30} />}
                             <span>{roleLabel(p.role_name)}</span>
                           </div>
                           <div className="event-player-rating">{score.toFixed(2)}</div>
@@ -12610,9 +12623,6 @@ function GroupsTab({
                                 <div className="event-player-stat-label">{label}</div>
                               </div>
                             ))}
-                          </div>
-                          <div className="event-player-price combo-price">
-                            ${Math.round(Number(p.price || 0) / 1000)}k
                           </div>
                         </div>
                       );
@@ -12901,10 +12911,17 @@ function GroupsTab({
                               onClick={() => openGroupPlayer({ player_id: Number(pid), name, team_id: Number(tid) })}
                             >
                               <PlayerPhoto playerId={Number(pid)} name={name} size={52} />
-                              <div className="event-player-name">{name}</div>
+                              <div className="event-player-headline">
+                                <div className="event-player-name">{name}</div>
+                                {valueByPid[Number(pid)] && (
+                                  <div className="event-player-price combo-price">
+                                    ${Math.round(Number(valueByPid[Number(pid)].price || 0) / 1000)}k
+                                  </div>
+                                )}
+                              </div>
                               {comps.role_id != null && (
                                 <div className="event-player-role">
-                                  <RoleBadge roleId={comps.role_id} size={16} />
+                                  <RoleBadge roleId={comps.role_id} size={30} />
                                   <span>{ROLE_NAMES[comps.role_id] || `Role ${comps.role_id}`}</span>
                                 </div>
                               )}
@@ -12922,11 +12939,6 @@ function GroupsTab({
                                   </div>
                                 ))}
                               </div>
-                              {valueByPid[Number(pid)] && (
-                                <div className="event-player-price combo-price">
-                                  ${Math.round(Number(valueByPid[Number(pid)].price || 0) / 1000)}k
-                                </div>
-                              )}
                               {valueByPid[Number(pid)] && (
                                 <div
                                   className={`event-player-value${
@@ -13430,3 +13442,4 @@ export default function App() {
 
 // Named export so the modal can be rendered on its own (preview / visual checks).
 export { GroupPlayerBreakdownModal };
+

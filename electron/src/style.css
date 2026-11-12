@@ -4002,3 +4002,215 @@ button:disabled {
   background: var(--c-0a0c10);
   border: 1px solid var(--c-39424f);
 }
+/* Bracket cards stand off their box: lighter bodies, headers filled with
+   their bracket / stage colour (vivid mix), white header text. */
+.group-brackets .playoff-team-row { background: var(--c-1a2029); }
+.group-brackets .playoff-match-head { color: var(--c-ffffff); background: color-mix(in srgb, var(--c-8fa3bf) 30%, var(--c-1a2029)); }
+.group-brackets .playoff-match-head strong { color: var(--c-ffffff); }
+.group-brackets .playoff-match-head span { color: color-mix(in srgb, var(--c-ffffff) 78%, transparent); }
+.gb-upper .playoff-match-head { background: color-mix(in srgb, var(--c-35a2ff) 62%, var(--c-1a2029)); }
+.gb-lower .playoff-match-head { background: color-mix(in srgb, var(--c-fbbf24) 58%, var(--c-1a2029)); }
+.pb-round[data-stage^="round_of"] .playoff-match-head { background: color-mix(in srgb, var(--c-38bdf8) 60%, var(--c-1a2029)); }
+.pb-round[data-stage="quarters"] .playoff-match-head { background: color-mix(in srgb, var(--c-14b8a6) 62%, var(--c-1a2029)); }
+.pb-round[data-stage="semis"] .playoff-match-head { background: color-mix(in srgb, var(--c-a78bfa) 62%, var(--c-1a2029)); }
+.pb-round[data-stage="final"] .playoff-match-head,
+.pb-round[data-stage="grand_final"] .playoff-match-head { background: color-mix(in srgb, var(--c-f7c948) 58%, var(--c-1a2029)); }
+.pb-round[data-stage^="ub_"] .playoff-match-head { background: color-mix(in srgb, var(--c-35a2ff) 62%, var(--c-1a2029)); }
+.pb-round[data-stage^="lb_"] .playoff-match-head { background: color-mix(in srgb, var(--c-fbbf24) 58%, var(--c-1a2029)); }
+.pb-round .pb-match-wrap.pb-aux .playoff-match-head { background: color-mix(in srgb, var(--c-c98a5f) 60%, var(--c-1a2029)); }
+/* the coloured left edge runs straight: no rounding on that side or under the header */
+.group-brackets .playoff-match-card { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.group-brackets .playoff-match-head { border-radius: 0; }
+/* Swiss board like the brackets: a dark board, each record pool headed by a
+   band in its record's colour (green winning ... blue level ... red losing),
+   lighter match cards with the same colour on their left edge. */
+.sw-board { background: var(--c-0a0c10); border-color: var(--c-39424f); border-radius: 0; }
+.sw-pool { --sw-c: var(--c-35a2ff); gap: 0; }
+.sw-pool[data-lean="up2"] { --sw-c: var(--c-3ee07a); }
+.sw-pool[data-lean="up1"] { --sw-c: var(--c-14b8a6); }
+.sw-pool[data-lean="even"] { --sw-c: var(--c-35a2ff); }
+.sw-pool[data-lean="down1"] { --sw-c: var(--c-fbbf24); }
+.sw-pool[data-lean="down2"] { --sw-c: var(--c-ff5c5c); }
+.sw-pool-title {
+  color: var(--c-ffffff);
+  background: color-mix(in srgb, var(--sw-c) 62%, var(--c-1a2029));
+  border-left: 3px solid var(--sw-c);
+  padding: 4px 10px;
+  margin-bottom: 6px;
+}
+.sw-pool .sw-match { background: var(--c-1a2029); border-left: 3px solid var(--sw-c); border-radius: 0; }
+.sw-pool .sw-match + .sw-match { margin-top: 6px; }
+.sw-board.readonly .sw-pool .sw-match.openable:hover { background: var(--c-1f2630); }
+/* player cards: bigger photo, bigger best-role badge + text, saturated value colours */
+.event-player-card:has(> .ev-mini) { grid-template-columns: 88px minmax(0, 1fr) auto; }
+.event-player-card:has(> .ev-mini) > .player-photo-img,
+.event-player-card:has(> .ev-mini) > .img-fallback { width: 88px !important; height: 88px !important; font-size: 28px !important; }
+.event-player-card:has(> .ev-mini) > .event-player-role { font-size: 13px; gap: 7px; color: var(--c-c6d0dc); }
+.event-player-card .event-player-value.pos { color: var(--c-22c55e); }
+.event-player-card .event-player-value.neg { color: var(--c-ef4444); }
+.event-player-card .event-player-mini.neg { color: var(--c-ef4444); }
+.combo-team .event-player-card:has(> .ev-mini) { grid-template-columns: 64px minmax(0, 1fr) auto; }
+.combo-team .event-player-card:has(> .ev-mini) > .player-photo-img,
+.combo-team .event-player-card:has(> .ev-mini) > .img-fallback { width: 64px !important; height: 64px !important; font-size: 21px !important; }
+.event-player-card:has(> .ev-mini) > .event-player-role { gap: 4px; margin-left: -5px; }
+/* value colours: vivid on the dark theme, deeper on the light one */
+:root { --val-pos: #2bf27e; --val-neg: #ff4a5a; }
+:root[data-theme="light"] { --val-pos: #0b9a47; --val-neg: #d42339; }
+.event-player-card .event-player-value.pos { color: var(--val-pos); }
+.event-player-card .event-player-value.neg { color: var(--val-neg); }
+.event-player-card .event-player-mini.neg { color: var(--val-neg); }
+
+/* player cards (chosen): stronger blue outline, rounded, a thin brand-orange top */
+.event-player-card {
+  clip-path: none;
+  background: var(--c-12161c);
+  border: 1px solid rgba(53, 162, 255, 0.6);
+  border-top: 2px solid var(--c-ff6b1a);
+  border-radius: 6px;
+}
+/* player card name: bigger and bolder */
+.event-player-card:has(> .ev-mini) > .event-player-name { font-size: 20px; font-weight: 700; line-height: 1.15; }
+.combo-team .event-player-card:has(> .ev-mini) > .event-player-name { font-size: 17px; }
+/* player card photos: square (slightly rounded corners), not a circle */
+.event-player-card:has(> .ev-mini) > .player-photo-img,
+.event-player-card:has(> .ev-mini) > .img-fallback { border-radius: 4px; }
+/* player card: the photo is a full-height column on the left edge; name,
+   role (and team) on the right with the points / price / value beside them
+   and the four components underneath */
+.event-player-card:has(> .ev-mini) {
+  grid-template-columns: 112px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "photo name  total"
+    "photo role  price"
+    "photo team  value"
+    "photo stats stats";
+  padding: 12px 14px 10px 0;
+  column-gap: 14px;
+  overflow: hidden;
+}
+.event-player-card:has(> .ev-mini) > .player-photo-img,
+.event-player-card:has(> .ev-mini) > .img-fallback {
+  width: 112px !important;
+  height: calc(100% + 22px) !important;
+  margin: -12px 0 -10px 0;
+  align-self: stretch;
+  object-fit: cover;
+  object-position: center top;
+  border-radius: 5px 0 0 5px;
+}
+.event-player-card:has(> .ev-mini) > .ev-mini { margin-top: 8px; }
+.combo-team .event-player-card:has(> .ev-mini) { grid-template-columns: 84px minmax(0, 1fr) auto; padding: 10px 12px 8px 0; }
+.combo-team .event-player-card:has(> .ev-mini) > .player-photo-img,
+.combo-team .event-player-card:has(> .ev-mini) > .img-fallback { width: 84px !important; height: calc(100% + 18px) !important; margin: -10px 0 -8px 0; }
+.event-player-card:has(> .ev-mini) {
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "photo name  total"
+    "photo role  role"
+    "photo team  team"
+    "photo stats stats"
+    "photo price value";
+}
+.event-player-card:has(> .ev-mini) > .player-photo-img,
+.event-player-card:has(> .ev-mini) > .img-fallback { width: 96px !important; }
+.event-player-card:has(> .ev-mini) > .event-player-price { justify-self: start; margin-top: 4px; }
+.event-player-card:has(> .ev-mini) > .event-player-value { justify-self: end; margin-top: 4px; }
+.event-player-card:has(> .ev-mini) > .ev-mini { margin-top: 6px; gap: 4px; }
+.combo-team .event-player-card:has(> .ev-mini) { grid-template-columns: 76px minmax(0, 1fr) auto; }
+.combo-team .event-player-card:has(> .ev-mini) > .player-photo-img,
+.combo-team .event-player-card:has(> .ev-mini) > .img-fallback { width: 76px !important; }
+.event-player-card:has(> .ev-mini) > .ev-mini { grid-template-columns: repeat(4, minmax(0, 1fr)); min-width: 0; overflow: hidden; }
+.event-player-card:has(> .ev-mini) > .ev-mini .event-player-stat-label { font-size: 9px; letter-spacing: 0.03em; }
+/* layout: total + value difference top right, price under the role, the four components at the bottom */
+.event-player-card:has(> .ev-mini) {
+  grid-template-areas:
+    "photo name  total"
+    "photo role  value"
+    "photo price price"
+    "photo team  team"
+    "photo stats stats";
+}
+.event-player-card:has(> .ev-mini) > .event-player-value { justify-self: end; margin-top: 0; font-size: 15px; }
+.event-player-card:has(> .ev-mini) > .event-player-price { justify-self: start; margin-top: 2px; }
+.event-player-card:has(> .ev-mini) > .ev-mini { align-self: end; }
+/* price the size of the role line; the name underlined; the four components
+   spread edge to edge along the bottom */
+.event-player-card:has(> .ev-mini) > .event-player-price { font-size: 13px; letter-spacing: 0.04em; }
+.event-player-card:has(> .ev-mini) > .event-player-name { text-decoration: underline; text-decoration-color: var(--c-ff6b1a); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+.event-player-card:has(> .ev-mini) > .ev-mini { display: flex; justify-content: space-between; width: 100%; padding-right: 2px; }
+.event-player-card:has(> .ev-mini) > .ev-mini .event-player-stat { flex: 0 0 auto; }
+.event-player-card:has(> .ev-mini) > .event-player-name { text-decoration: none; justify-self: start; width: auto; max-width: 100%; border-bottom: 2px solid var(--c-ff6b1a); padding-bottom: 2px; }
+/* the four components: four equal columns, each centred */
+.event-player-card:has(> .ev-mini) > .ev-mini { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); justify-items: center; padding-right: 0; }
+/* role name first, its symbol after it */
+.event-player-card:has(> .ev-mini) > .event-player-role { margin-left: 0; gap: 6px; }
+.event-player-card:has(> .ev-mini) > .event-player-role > .role-badge { order: 2; }
+/* the points band spans the card's text column (the old 250 px cap is lifted) */
+.event-player-card:has(> .ev-mini) > .ev-mini { max-width: none; }
+/* the price sits on the name line, right after the name */
+.event-player-card:has(> .ev-mini) {
+  grid-template-columns: 96px fit-content(58%) minmax(0, 1fr) auto;
+  grid-template-areas:
+    "photo name  price total"
+    "photo role  role  value"
+    "photo team  team  team"
+    "photo stats stats stats";
+}
+.event-player-card:has(> .ev-mini) > .event-player-price { justify-self: start; align-self: center; margin: 2px 0 0 10px; }
+.combo-team .event-player-card:has(> .ev-mini) { grid-template-columns: 76px fit-content(55%) minmax(0, 1fr) auto; }
+.event-player-card:has(> .ev-mini) {
+  grid-template-columns: 96px minmax(0, max-content) max-content minmax(0, 1fr) auto;
+  grid-template-areas:
+    "photo name  price .     total"
+    "photo role  role  role  value"
+    "photo team  team  team  team"
+    "photo stats stats stats stats";
+}
+.combo-team .event-player-card:has(> .ev-mini) { grid-template-columns: 76px minmax(0, max-content) max-content minmax(0, 1fr) auto; }
+.event-player-card:has(> .ev-mini) > .event-player-price { margin: 2px 8px 0 8px; }
+.event-player-card:has(> .ev-mini) { grid-template-columns: 96px fit-content(55%) max-content minmax(0, 1fr) auto; }
+.combo-team .event-player-card:has(> .ev-mini) { grid-template-columns: 76px fit-content(50%) max-content minmax(0, 1fr) auto; }
+.event-player-card:has(> .ev-mini) > .event-player-name { max-width: none; min-width: 0; }
+.event-player-card:has(> .ev-mini) {
+  grid-template-columns: 96px fit-content(55%) max-content auto;
+  grid-template-areas:
+    "photo name  price total"
+    "photo role  role  value"
+    "photo team  team  team"
+    "photo stats stats stats";
+  column-gap: 8px;
+}
+.event-player-card:has(> .ev-mini) > .player-photo-img,
+.event-player-card:has(> .ev-mini) > .img-fallback { margin-right: 6px; }
+.event-player-card:has(> .ev-mini) > .event-player-rating { justify-self: end; }
+.event-player-card:has(> .ev-mini) > .event-player-price { margin: 2px 0 0 2px; }
+.combo-team .event-player-card:has(> .ev-mini) { grid-template-columns: 76px fit-content(50%) max-content auto; }
+/* name + price on one line (the price follows the name) */
+.event-player-card:has(> .ev-mini) {
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "photo name  total"
+    "photo role  value"
+    "photo team  team"
+    "photo stats stats";
+  column-gap: 12px;
+}
+.combo-team .event-player-card:has(> .ev-mini) { grid-template-columns: 76px minmax(0, 1fr) auto; }
+.event-player-card:has(> .ev-mini) > .player-photo-img,
+.event-player-card:has(> .ev-mini) > .img-fallback { margin-right: 2px; }
+.event-player-headline { grid-area: name; display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.event-player-headline > .event-player-name {
+  min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
+  font-size: 20px; font-weight: 700; line-height: 1.15; width: auto; max-width: none;
+  border-bottom: 2px solid var(--c-ff6b1a); padding-bottom: 2px;
+}
+.combo-team .event-player-headline > .event-player-name { font-size: 17px; }
+.event-player-headline > .event-player-price { flex: none; font-size: 13px; letter-spacing: 0.04em; margin: 0; }
+/* a narrow card (small window, a five-card roster) puts the price under the name rather than cutting the name */
+.event-player-card:has(> .ev-mini) { container-type: inline-size; }
+@container (max-width: 300px) {
+  .event-player-headline { flex-direction: column; align-items: flex-start; gap: 3px; }
+  .event-player-headline > .event-player-name { max-width: 100%; }
+}
+.event-player-headline { gap: 18px; }
+.event-player-headline > .event-player-price { font-size: 15px; }

@@ -16,7 +16,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,26 @@ def sniff_content_type(data: bytes) -> str:
     return "application/octet-stream"
 
 
+def _head_crop(data: bytes) -> bytes:
+    """A full body shot (transparent PNG, no rect= crop) cut to the same
+    head-and-shoulders square HLTV's own avatars use (rect 121,0,467,467 of a
+    709 px original, scaled), on the same #3e4c54 ground, as a JPEG — so a
+    400 px body shot gives a ~265 px avatar framed like the 100 px ones."""
+    import io
+
+    from PIL import Image
+
+    im = Image.open(io.BytesIO(data)).convert("RGBA")
+    w = im.size[0]
+    x0, x1 = round(w * 121 / 709), round(w * 588 / 709)
+    crop = im.crop((x0, 0, x1, x1 - x0))
+    ground = Image.new("RGBA", crop.size, (0x3E, 0x4C, 0x54, 255))
+    ground.alpha_composite(crop)
+    out = io.BytesIO()
+    ground.convert("RGB").save(out, "JPEG", quality=92)
+    return out.getvalue()
+
+
 def _download(url: str, dest: Path) -> bool:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
@@ -99,6 +119,8 @@ def _download(url: str, dest: Path) -> bool:
             data = resp.read()
         if not data:
             return False
+        if "/playerbodyshot/" in url and "rect=" not in url:
+            data = _head_crop(data)
         dest.write_bytes(data)
         return True
     except Exception as exc:
@@ -113,6 +135,12 @@ def extract_urls_from_snapshots() -> Dict[str, Dict[int, Dict[str, Any]]]:
     from backend.data.page_snapshots import list_snapshot_urls, get_page_snapshot
 
     best: Dict[str, Dict[int, Dict[str, Any]]] = {"team": {}, "player": {}}
+    # player photos: every candidate with the archive time of its page; the
+    # player's CURRENT photo is the one on their most recently archived page,
+    # then the largest signed variant of that same photo is used (a team page
+    # archived before a transfer must not win with an old 400 px body shot)
+    player_cands: Dict[int, List[tuple]] = {}
+    seen_at = [0.0]
 
     def consider(kind: str, key: int, url: str, trust: int, night: int = 0) -> None:
         if "teamplaceholder" in url or "playerplaceholder" in url:
@@ -120,18 +148,30 @@ def extract_urls_from_snapshots() -> Dict[str, Dict[int, Dict[str, Any]]]:
         size = _url_size(url)
         if size <= 0:
             return  # unsigned/paramless variants 403 on the CDN
+        if kind == "player":
+            photo = url.split("?", 1)[0].rsplit("/", 1)[-1]
+            # trust 0 (transfer history) counts as never seen, so it only wins alone
+            player_cands.setdefault(key, []).append((seen_at[0] if trust > 0 else 0.0, trust, photo, size, url))
+            return
         cur = best[kind].get(key)
         # The UI is dark, so HLTV's night variant (inverted where a logo is
         # dark-on-transparent, e.g. BIG) beats the day variant regardless of
-        # size; attribution trust still dominates everything.
-        rank = (trust, night, size)
-        if cur is None or rank > (cur["trust"], cur["night"], cur["size"]):
+        # size; attribution trust still dominates everything for logos. A
+        # player photo is only ever taken from inside that player's own
+        # anchor / JSON object, so there the biggest variant wins (a team
+        # page's 400 px body shot over the bracket JSON's 100 px crop).
+        if kind == "player":
+            rank, cur_rank = (size, trust, night), ((cur["size"], cur["trust"], cur["night"]) if cur else None)
+        else:
+            rank, cur_rank = (trust, night, size), ((cur["trust"], cur["night"], cur["size"]) if cur else None)
+        if cur is None or rank > cur_rank:
             best[kind][key] = {"url": url, "size": size, "trust": trust, "night": night}
 
     for page_url in list_snapshot_urls():
         snap = get_page_snapshot(page_url)
         if not snap or not snap.get("html"):
             continue
+        seen_at[0] = float(snap.get("fetched_at") or 0.0)
         un = _htmlmod.unescape(snap["html"])
         # Bracket-JSON objects pair id and image explicitly — highest trust.
         for m in _TEAM_OBJ_LOGO_RE.finditer(un):
@@ -155,12 +195,25 @@ def extract_urls_from_snapshots() -> Dict[str, Dict[int, Dict[str, Any]]]:
                 for u in re.findall(r'https://img-cdn\.hltv\.org/teamlogo/[^"\s,]+', tag):
                     consider("team", int(m.group(1)), u, trust=1, night=night)
         for m in _PLAYER_ANCHOR_RE.finditer(un):
-            close = un.find("</a>", m.end(), m.end() + 1500)
+            # team pages put an inline role-pill SVG before the 400 px body
+            # shot, so the anchor runs well past 1.5k characters
+            close = un.find("</a>", m.end(), m.end() + 20000)
             if close < 0:
                 continue
             for tag_m in _IMG_TAG_RE.finditer(un, m.end(), close):
+                if "transfer-player-image" in tag_m.group(0):
+                    # a transfer history entry: often an older photo, so only
+                    # a last resort for a player with no other image
+                    for u in re.findall(r'https://img-cdn\.hltv\.org/playerbodyshot/[^"\s,]+', tag_m.group(0)):
+                        consider("player", int(m.group(1)), u, trust=0)
+                    continue
                 for u in re.findall(r'https://img-cdn\.hltv\.org/playerbodyshot/[^"\s,]+', tag_m.group(0)):
                     consider("player", int(m.group(1)), u, trust=1)
+    for pid, cands in player_cands.items():
+        latest = max(cands, key=lambda c: (c[0], c[1], c[3]))  # newest page, then JSON over HTML, then size
+        same = [c for c in cands if c[2] == latest[2]]
+        top = max(same, key=lambda c: (c[3], c[1]))
+        best["player"][pid] = {"url": top[4], "size": top[3], "trust": top[1], "night": 0}
     return best
 
 

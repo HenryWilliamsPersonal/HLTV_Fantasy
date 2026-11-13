@@ -5748,6 +5748,133 @@ def _find_completed_group_outcomes(results: dict, picks_by_group: List[List[int]
     return selected
 
 
+def _combined_playoff_picker(results: dict, selected: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The combined playoff bracket of a groups event for the picked group
+    results, in the shape the app's bracket picker draws: {team_slots (the
+    qualifiers by seed), matches [[key, stage, feeder a, feeder b]] in draw
+    order (then the decider), stages [{key, series}], final_bo, order (match
+    keys in the joint sampler's bit order)}. None without a combined playoff."""
+    po = results.get("playoff") or {}
+    if not (po.get("pairing_table") and po.get("win_probs")):
+        return None
+    groups = results.get("groups") or []
+    fmt = str(results.get("group_format") or "gsl4")
+    quals = {"gsl4": 2, "gsl4_top3": 3, "de8": 4, "de8_top3": 3}.get(fmt, 2)
+    rounds_total = int(po.get("rounds") or 1)
+    template = _combined_bracket_template(len(groups), quals, rounds_total, fmt, str(po.get("layout") or DEFAULT_PLAYOFF_LAYOUT))
+    rounds = template["rounds"]
+    stage_of_round = {}
+    names = ["final", "semis", "quarters", "round_of_16", "round_of_32"]
+    for r in range(len(rounds)):
+        stage_of_round[r] = names[min(len(names) - 1, len(rounds) - 1 - r)]
+    slots: List[int] = []
+    seed_index: Dict[tuple, int] = {}
+    for g, outcome in enumerate(selected):
+        q = [int(t) for t in (outcome.get("qualified") or [])]
+        for rank in range(quals):
+            seed_index[(g, rank)] = len(slots)
+            slots.append(q[rank] if rank < len(q) else 0)
+
+    def key_of(r: int, m: int) -> str:
+        stage = stage_of_round[r]
+        return "final" if stage == "final" and len(rounds[r]) == 1 else f"{stage}_{m + 1}"
+
+    def feeder(f) -> list:
+        if f[0] == "seed":
+            return ["seed", seed_index[(int(f[1]), int(f[2]))]]
+        return ["win" if f[0] == "win" else "lose", key_of(int(f[1]), int(f[2]))]
+
+    matches, order = [], []
+    for r, rnd in enumerate(rounds):
+        for m, (left, right) in enumerate(rnd):
+            k = key_of(r, m)
+            matches.append([k, stage_of_round[r], feeder(left), feeder(right)])
+            order.append(k)
+    decider = template.get("decider") if po.get("third_place") else None
+    if decider:
+        matches.append(["third_place", "third_place", feeder(decider[0]), feeder(decider[1])])
+        order.append("third_place")
+    final_bo = int(po.get("final_bo") or 3)
+    stages = [{"key": st, "series": final_bo if st == "final" else 3} for st in dict.fromkeys(stage_of_round[r] for r in range(len(rounds)))]
+    if decider:
+        stages.append({"key": "third_place", "series": 3})
+    return {"team_slots": slots, "matches": matches, "stages": stages, "final_bo": final_bo, "order": order}
+
+
+def _joint_outcome_scores(results: dict, cache_key: Any, selected: List[Dict[str, Any]], path: List[int]) -> tuple:
+    """(probability, {pid: total}, {pid: components}) of the joint outcome the
+    picked group outcomes and playoff winners name, from the exact joint
+    outcome model (409 when the model is sampled and lacks it)."""
+    import numpy as np
+
+    model = _event_outcome_model(results, cache_key)
+    decomp = model[3] or {}
+    paths = decomp.get("paths") or {}
+    if not paths:
+        raise HTTPException(status_code=409, detail="The stored run carries no outcome paths; re-bake the event first.")
+    outcomes = results.get("outcomes") or []
+    mask = None
+    for g, outcome in enumerate(selected):
+        in_group = [o for o in outcomes if int(o.get("group") or 0) == g]
+        gi = next(i for i, o in enumerate(in_group) if o is outcome)
+        m = np.asarray(paths["group_idx"][g]) == gi
+        mask = m if mask is None else (mask & m)
+    br = np.asarray(paths["bracket"])
+    want = np.asarray(path, dtype=br.dtype)
+    mask &= (br[:, : len(want)] == want).all(axis=1)
+    rows = np.flatnonzero(mask)
+    if rows.size == 0:
+        raise HTTPException(status_code=409, detail="That combination of results is not in this event's outcome model.")
+    i = int(rows[0])
+    vec = model[0][0]
+    probability = float(model[1][0][i])
+    role_pm = _role_points_per_match(results)
+    scores: Dict[int, float] = {}
+    comps: Dict[int, dict] = {}
+    for pid, v in vec.items():
+        total = float(v[i])
+        rating = float(decomp["rt"][pid][i]) if pid in decomp.get("rt", {}) else 0.0
+        win = float(decomp["rw"][pid][i]) - rating if pid in decomp.get("rw", {}) else 0.0
+        role = float(decomp["mr"][pid][i]) * float(role_pm.get(pid, 0.0)) if pid in decomp.get("mr", {}) else 0.0
+        scores[int(pid)] = total
+        comps[int(pid)] = {"rating": rating, "win": win, "role": role, "booster": total - rating - win - role, "total": total}
+    return probability, scores, comps
+
+
+def _bracket_path_from_picks(bracket: Dict[str, Any], picks: Dict[str, int]) -> Optional[List[int]]:
+    """The winner of every match in the picker's order, walking the picks;
+    None until every match has a valid winner."""
+    slots = bracket["team_slots"]
+    winners: Dict[str, int] = {}
+    losers: Dict[str, int] = {}
+    path: List[int] = []
+    for key, _stage, fa, fb in bracket["matches"]:
+        def side(f):
+            return slots[int(f[1])] if f[0] == "seed" else (winners if f[0] == "win" else losers).get(str(f[1]))
+        a, b = side(fa), side(fb)
+        w = int(picks.get(key) or 0)
+        if not a or not b or w not in (a, b):
+            return None
+        winners[key], losers[key] = w, (b if w == a else a)
+        path.append(w)
+    return path
+
+
+@router.post("/best-team/completed-playoff-bracket")
+def completed_playoff_bracket(payload: dict | None = None, event_id: Optional[int] = None):
+    """The playoff bracket to pick for the picked group results (combined
+    events): {bracket} or {bracket: None} without a combined playoff."""
+    body = payload or {}
+    key = _state_key(event_id or body.get("event_id"))
+    latest = _GROUPS_STATE.load(key=key)
+    if not latest:
+        raise HTTPException(status_code=404, detail="No stored group stage found.")
+    results = latest["results"] or {}
+    selected = _find_completed_group_outcomes(results, body.get("group_winners") or [])
+    bracket = _combined_playoff_picker(results, selected)
+    return {"bracket": bracket}
+
+
 @router.post("/best-team/completed-query")
 def query_groups_best_team_completed(payload: dict | None = None, event_id: Optional[int] = None):
     body = payload or {}
@@ -5757,9 +5884,6 @@ def query_groups_best_team_completed(payload: dict | None = None, event_id: Opti
         raise HTTPException(status_code=404, detail="No stored group stage found.")
     results = latest["results"] or {}
     live_pool = _is_live_pool(results)
-    latest_combos = None if live_pool else _GROUPS_BEST_STATE.load(key=key)
-    if not live_pool and not latest_combos:
-        raise HTTPException(status_code=404, detail="No stored combinations found. Run Combinations first.")
     scores_by_pid: Dict[int, float] = {}
     components_by_pid: Dict[int, dict] = {}
     probability = 1.0
@@ -5797,12 +5921,24 @@ def query_groups_best_team_completed(payload: dict | None = None, event_id: Opti
     else:
         picks_by_group = body.get("group_winners") or []
         selected = _find_completed_group_outcomes(results, picks_by_group)
-        for outcome in selected:
-            probability *= float(outcome.get("probability") or 0.0)
-            for pid_raw, score in (outcome.get("players") or {}).items():
-                scores_by_pid[int(pid_raw)] = float(score)
-            for pid_raw, comps in (outcome.get("player_components") or {}).items():
-                components_by_pid[int(pid_raw)] = dict(comps or {})
+        bracket = _combined_playoff_picker(results, selected)
+        if bracket is not None:
+            # combined event: the group results and the playoff picks name ONE
+            # joint outcome; every player's points over the whole fantasy game
+            # (groups, playoffs, bye padding) come from the joint outcome model
+            path = _bracket_path_from_picks(bracket, {str(k): int(v) for k, v in (body.get("playoff_picks") or {}).items() if v})
+            if path is None:
+                raise HTTPException(status_code=400, detail="Pick every playoff match winner first")
+            probability, scores_by_pid, components_by_pid = _joint_outcome_scores(
+                results, (key, latest["updated_at"]), selected, path,
+            )
+        else:
+            for outcome in selected:
+                probability *= float(outcome.get("probability") or 0.0)
+                for pid_raw, score in (outcome.get("players") or {}).items():
+                    scores_by_pid[int(pid_raw)] = float(score)
+                for pid_raw, comps in (outcome.get("player_components") or {}).items():
+                    components_by_pid[int(pid_raw)] = dict(comps or {})
     options = parse_optimizer_payload(body)
     # the role each player was valued with, for the roster cards' badges
     role_by_pid: Dict[int, str] = {}
@@ -5832,53 +5968,33 @@ def query_groups_best_team_completed(payload: dict | None = None, event_id: Opti
         )
     page = int(body.get("page") or 0)
     page_size = int(body.get("page_size") or 200)
-    if live_pool:
-        # Optimize directly against the realized scores; exact, since the
-        # objective is additive per player.
-        players_info = _groups_players_info(results, options["exclude"])
-        bound_scores = {int(p["player_id"]): float(scores_by_pid.get(int(p["player_id"]), 0.0)) for p in players_info}
-        k = min(LIVE_OPTIMIZER_MAX_K, max(210, (page + 1) * page_size + 10))
-        rosters, _exact = _topk_rosters_bnb(
-            players_info, bound_scores, k, options["budget"], options["max_per_team"], options["include"], None
-        )
-        scored = []
-        for team in rosters:
-            players = []
-            total = 0.0
-            for player in team.get("players") or []:
-                pid = int(player.get("player_id") or 0)
-                score = float(scores_by_pid.get(pid, 0.0))
-                total += score
-                players.append({
-                    **player,
-                    "role_name": player.get("role_name") or role_by_pid.get(pid, ""),
-                    "outcome": roster_scores.outcome_of(components_by_pid.get(pid), score),
-                })
-            scored.append({**team, "players": players, "total_ev": total, "bracket_score": total})
-        scored = _filter_saved_combo_teams(scored, set(), set(), str(body.get("search") or ""))
-        scored.sort(key=lambda team: float(team.get("bracket_score") or 0.0), reverse=True)
-        combos_total = len(rosters)
-        combos_updated_at = latest["updated_at"]
-    else:
-        teams = list((latest_combos["result"] or {}).get("all_teams") or [])
-        filtered = _filter_saved_combo_teams(teams, options["include"], options["exclude"], str(body.get("search") or ""))
-        scored = []
-        for team in filtered:
-            players = []
-            total = 0.0
-            for player in team.get("players") or []:
-                pid = int(player.get("player_id") or 0)
-                score = float(scores_by_pid.get(pid, 0.0))
-                total += score
-                players.append({
-                    **player,
-                    "role_name": player.get("role_name") or role_by_pid.get(pid, ""),
-                    "outcome": roster_scores.outcome_of(components_by_pid.get(pid), score),
-                })
-            scored.append({**team, "players": players, "total_ev": total, "bracket_score": total})
-        scored.sort(key=lambda team: float(team.get("bracket_score") or 0.0), reverse=True)
-        combos_total = len(teams)
-        combos_updated_at = latest_combos["updated_at"]
+    # Optimise directly against the realised scores over the WHOLE pool
+    # (exact: the objective is additive per player). The stored list holds
+    # only the best rosters by average, which can miss the hindsight best.
+    players_info = _groups_players_info(results, options["exclude"])
+    bound_scores = {int(p["player_id"]): float(scores_by_pid.get(int(p["player_id"]), 0.0)) for p in players_info}
+    k = min(LIVE_OPTIMIZER_MAX_K, max(210, (page + 1) * page_size + 10))
+    rosters, _exact = _topk_rosters_bnb(
+        players_info, bound_scores, k, options["budget"], options["max_per_team"], options["include"], None
+    )
+    scored = []
+    for team in rosters:
+        players = []
+        total = 0.0
+        for player in team.get("players") or []:
+            pid = int(player.get("player_id") or 0)
+            score = float(scores_by_pid.get(pid, 0.0))
+            total += score
+            players.append({
+                **player,
+                "role_name": player.get("role_name") or role_by_pid.get(pid, ""),
+                "outcome": roster_scores.outcome_of(components_by_pid.get(pid), score),
+            })
+        scored.append({**team, "players": players, "total_ev": total, "bracket_score": total})
+    scored = _filter_saved_combo_teams(scored, set(), set(), str(body.get("search") or ""))
+    scored.sort(key=lambda team: float(team.get("bracket_score") or 0.0), reverse=True)
+    combos_total = len(rosters)
+    combos_updated_at = latest["updated_at"]
     return {
         "exists": True,
         "live": live_pool,

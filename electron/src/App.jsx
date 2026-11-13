@@ -4628,7 +4628,7 @@ function PlayoffTab({
     { key: "average", label: "Average Player Value" },
     { key: "single_outcome", label: "Best Single Outcome" },
     { key: "most_outcomes", label: "Most Likely Winner" },
-    { key: "completed", label: "Completed Bracket" },
+    { key: "completed", label: "Event Results" },
   ];
   const setPlayoffTopMode = (key) => {
     setPlayoffTopSubtab(key);
@@ -5468,11 +5468,11 @@ function PlayoffTab({
                     className={`seg-standalone${playoffTopSubtab === "completed" ? " on" : ""}`}
                     onClick={() => setPlayoffTopMode(playoffTopSubtab === "completed" ? playoffBestMode : "completed")}
                   >
-                    Completed Bracket
+                    Event Results
                   </button>
                 </div>
                 <div className="card sub">
-                  <h3>{playoffTopSubtab === "completed" ? "Completed Bracket Filters" : `Top Teams - ${playoffBestModeLabel}`}</h3>
+                  <h3>{playoffTopSubtab === "completed" ? "Event Results Filters" : `Top Teams - ${playoffBestModeLabel}`}</h3>
                   <div className="top5-filters">
                     <div className="field">
                       <span>Bracket Teams</span>
@@ -5676,7 +5676,7 @@ function PlayoffTab({
                     </div>
                     {showCompletedBracketGraph && completedBracketValueData.rows.length > 0 && (
                       <PriceVsPointsPanel
-                        title="Player Price vs Points (Completed Bracket)"
+                        title="Player Price vs Points (Event Results)"
                         rows={completedBracketValueData.rows}
                         slope={completedBracketValueData.slope}
                         intercept={completedBracketValueData.intercept}
@@ -12025,7 +12025,7 @@ function GroupsTab({
     { key: "single_outcome", label: "Best Single Outcome" },
     { key: "most_outcomes", label: "Most Likely Winner" },
     { key: "season_max", label: "Season Maximum" },
-    { key: "completed", label: stageKind === "bracket" ? "Completed Bracket" : stageKind === "swiss" ? "Completed Swiss" : "Completed Groups" },
+    { key: "completed", label: "Event Results" },
   ];
   const setGroupsTopMode = (key) => {
     setGroupsTopSubtab(key);
@@ -12265,6 +12265,53 @@ function GroupsTab({
     });
   }, [groupSlots, completedPicks, groupFormat]);
   const allGroupsComplete = completedDerived.length > 0 && completedDerived.every((g) => g.complete);
+  // Combined events: once every group is picked, the playoff bracket those
+  // results seed (from the backend, which owns the seeding) is picked too, so
+  // Event Results scores the whole fantasy game. A change to the group picks
+  // re-seeds it and clears the playoff picks.
+  const [completedPlayoff, setCompletedPlayoff] = useState(null);
+  const [playoffPicks, setPlayoffPicks] = useState({});
+  const groupPicksSig = JSON.stringify(completedDerived.map((g) => g.winners));
+  useEffect(() => {
+    setPlayoffPicks({});
+    setCompletedPlayoff(null);
+    if (!combinedPlayoffs || !allGroupsComplete || groupsTopSubtab !== "completed") return;
+    let cancelled = false;
+    api
+      .post("/groups/best-team/completed-playoff-bracket", { group_winners: completedDerived.map((g) => g.winners) })
+      .then((d) => {
+        if (!cancelled) setCompletedPlayoff(d?.bracket || null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupPicksSig, combinedPlayoffs, allGroupsComplete, groupsTopSubtab]);
+  // a pick that no longer fits its match (an earlier pick changed) drops out
+  const pickPlayoffMatch = (key, tid) => {
+    setPlayoffPicks((prev) => {
+      const want = { ...prev, [key]: tid };
+      const slots = completedPlayoff?.team_slots || [];
+      const next = {};
+      const winners = {};
+      const losers = {};
+      (completedPlayoff?.matches || []).forEach(([k, _stage, fa, fb]) => {
+        const side = (f) => (f[0] === "seed" ? slots[Number(f[1])] : f[0] === "win" ? winners[String(f[1])] : losers[String(f[1])]) || null;
+        const a = side(fa);
+        const b = side(fb);
+        const w = Number(want[k] || 0);
+        if (w && (w === a || w === b)) {
+          next[k] = w;
+          winners[k] = w;
+          losers[k] = w === a ? b : a;
+        }
+      });
+      return next;
+    });
+    setCompletedResult(null);
+  };
+  const playoffComplete = !completedPlayoff || (completedPlayoff.matches || []).every(([k]) => playoffPicks[k]);
   const setCompletedPick = (g, key, tid) => {
     setCompletedPicks((prev) => ({ ...prev, [g]: { ...(prev[g] || {}), [key]: Number(tid) } }));
     setCompletedResult(null);
@@ -12406,7 +12453,7 @@ function GroupsTab({
             ? { bracket_picks: bracketPicks }
             : groupFormat === "swiss"
               ? { swiss_picks: swissPicks }
-              : { group_winners: completedDerived.map((g) => g.winners) }),
+              : { group_winners: completedDerived.map((g) => g.winners), playoff_picks: playoffPicks }),
           search: comboSearch,
           include_player_ids: Array.from(includeSet),
           exclude_player_ids: Array.from(excludeSet),
@@ -12422,7 +12469,7 @@ function GroupsTab({
       setCompletedPage(Number(data?.page || nextPage || 0));
       setCompletedResult(data);
     } catch (e) {
-      setCompletedMessage(e?.message || "Failed to score completed groups.");
+      setCompletedMessage(e?.message || "Failed to score the event results.");
     }
   };
   // a scored completed stage follows the filters like the ranking modes do
@@ -12891,7 +12938,7 @@ function GroupsTab({
             <p className="muted">
               {groupFormat === "swiss"
                 ? `Path probability 1 in ${Number(completedResult.outcome_probability) > 0 ? Math.round(1 / Number(completedResult.outcome_probability)).toLocaleString() : "∞"}`
-                : `Outcome probability ${(Number(completedResult.outcome_probability || 0) * 100).toFixed(3)}% of ${Number(completedResult.outcomes_count || 0).toLocaleString()} stored outcomes.`}
+                : `Probability ${(Number(completedResult.outcome_probability || 0) * 100).toFixed(3)}%`}
             </p>
             <ComboPager page={completedPage} pageSize={COMBO_PAGE_SIZE} total={completedResult.filtered_count} onPage={scoreCompleted} />
             {renderRosterRows(completedResult.page_teams || completedResult.top_teams || [], "completed", completedPage * COMBO_PAGE_SIZE, (p) => openCompletedPlayer(p))}
@@ -13191,7 +13238,7 @@ function GroupsTab({
                 Favourites win
               </button>
               <button className="primary" onClick={() => scoreCompleted(0)} disabled={!swissComplete || !combosReady}>
-                Score Completed Swiss
+                Score Event Results
               </button>
             </div>
             {renderCompletedResults()}
@@ -13209,7 +13256,7 @@ function GroupsTab({
                 Favourites win
               </button>
               <button className="primary" onClick={() => scoreCompleted(0)} disabled={!bracketComplete || !combosReady}>
-                Score Completed Bracket
+                Score Event Results
               </button>
             </div>
             {renderCompletedResults()}
@@ -13239,10 +13286,30 @@ function GroupsTab({
               </div>
             </div>
             </div>
+            {combinedPlayoffs && (
+              <div className="card-section">
+                <h3 className="card-section-title">Playoff Results</h3>
+                <div className="card sub group-card">
+                  {completedPlayoff ? (
+                    <BracketPicker bracket={completedPlayoff} teamLookup={teamLookup} teams={teams} picks={playoffPicks} onPick={pickPlayoffMatch} />
+                  ) : (
+                    <PlayoffSkeleton
+                      format={groupFormat}
+                      groupCount={groupCount}
+                      qualsPerGroup={qualsPerGroup}
+                      stopTeams={top3Format ? 1 : Number(playoffStopTeams) || 1}
+                      bo={playoffBo}
+                      thirdPlace={playoffThirdPlace}
+                      layout={playoffLayout}
+                    />
+                  )}
+                </div>
+              </div>
+            )}
             {renderTop5Filters()}
             <div className="actions">
-              <button className="primary" onClick={() => scoreCompleted(0)} disabled={!allGroupsComplete || !combosReady}>
-                Score Completed Groups
+              <button className="primary" onClick={() => scoreCompleted(0)} disabled={!allGroupsComplete || !playoffComplete || !combosReady}>
+                Score Event Results
               </button>
             </div>
             {renderCompletedResults()}

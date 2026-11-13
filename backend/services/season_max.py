@@ -203,6 +203,7 @@ def season_points(
     pid_idx: Dict[int, int],
     RW, MP, MR, probs,
     players_meta, reach_by_team, rates_by_pid, role_scores_by_pid,
+    plan_cache: Optional[dict] = None,
 ) -> Optional[Dict[str, Any]]:
     """Expected season points of every candidate roster (under its own
     plan) against the event's field; None without a stored field. Returns
@@ -219,12 +220,18 @@ def season_points(
     shares = np.asarray([s for s, _ in table[:-1]])  # the last tier is everyone left
     points = np.asarray([p for _, p in table], dtype=np.float64)
     max_slot = int(MP.max()) if MP.size else 0
-    cache: dict = {}
+    # a roster's best plan depends only on the run's frozen inputs: the caller
+    # keeps one cache per run, so the field's ~5,000 plans and repeat
+    # candidates are planned once, not on every page / filter
+    cache: dict = plan_cache if plan_cache is not None else {}
     f_plans = [_field_plan(k, roles, players_meta, reach_by_team, rates_by_pid, role_scores_by_pid, cache) for k, roles in field]
     f_rows, f_rpm, f_tab = _plan_arrays(f_plans, [k for k, _ in field], pid_idx, max_slot)
     c_plans = []
     for key in cand_keys:
-        plan = cache.get(key) or plan_for_roster([players_meta[str(pid)] for pid in key], reach_by_team, rates_by_pid, role_scores_by_pid)
+        plan = cache.get(key)
+        if plan is None:
+            plan = plan_for_roster([players_meta[str(pid)] for pid in key], reach_by_team, rates_by_pid, role_scores_by_pid)
+            cache[key] = plan
         c_plans.append((plan["role_pm"], plan["slot_rates"]))
     c_rows, c_rpm, c_tab = _plan_arrays(c_plans, list(cand_keys), pid_idx, max_slot)
     n_field = len(field)

@@ -5234,6 +5234,24 @@ def get_latest_groups_best_team(event_id: Optional[int] = None):
     }
 
 
+# Per-run memos (key = (event, run updated_at)): rosters' exact scores and
+# Season Maximum booster plans depend only on the run's frozen inputs, so they
+# carry across pages and filters. The last few runs are kept.
+_SEASON_PLAN_CACHE: Dict[Any, dict] = {}
+_EXACT_SCORE_MEMO: Dict[Any, dict] = {}
+
+
+def _run_memo(store: Dict[Any, dict], cache_key: Any) -> Optional[dict]:
+    if cache_key is None:
+        return None
+    memo = store.get(cache_key)
+    if memo is None:
+        while len(store) >= 3:
+            store.pop(next(iter(store)))
+        memo = store[cache_key] = {}
+    return memo
+
+
 def _live_groups_query(results: dict, body: dict, mode: str, cache_key: Any = None) -> Dict[str, Any]:
     options = parse_optimizer_payload(body)
     players_info = _groups_players_info(results, options["exclude"])
@@ -5252,7 +5270,20 @@ def _live_groups_query(results: dict, body: dict, mode: str, cache_key: Any = No
         for p in players_info
     }
 
+    score_memo = _run_memo(_EXACT_SCORE_MEMO, cache_key)
+
     def exact_score(roster: List[Dict[str, Any]]) -> float:
+        # memoised per run: a roster's exact score depends only on the run's frozen inputs
+        rkey = tuple(sorted(int(p["player_id"]) for p in roster))
+        hit = score_memo.get(rkey) if score_memo is not None else None
+        if hit is not None:
+            return hit
+        value = _exact_score_uncached(roster)
+        if score_memo is not None:
+            score_memo[rkey] = value
+        return value
+
+    def _exact_score_uncached(roster: List[Dict[str, Any]]) -> float:
         # rating+win + exact clash-free roles + exact roster-wide boosters
         booster = optimize_group_boosters_for_roster(roster, reach_by_team, rates_by_pid)["total_expected_booster_points"]
         role_total, _role_of, _role_ev_of = _exact_role_assignment(roster, role_scores_by_pid)
@@ -5425,7 +5456,8 @@ def _season_max_rosters(results, cache_key, players_info, players_meta, options,
             cand_keys.append(key_c)
     pid_idx = {pid: i for i, pid in enumerate(pids)}
     cand_keys = [key_c for key_c in cand_keys if all(int(pid) in pid_idx for pid in key_c)]
-    scored = season_max.season_points(event_id, cand_keys, pid_idx, RW, MP, MR, model[1][0], players_meta, reach_by_team, rates_by_pid, role_scores_by_pid)
+    scored = season_max.season_points(event_id, cand_keys, pid_idx, RW, MP, MR, model[1][0], players_meta, reach_by_team, rates_by_pid, role_scores_by_pid,
+                                      plan_cache=_run_memo(_SEASON_PLAN_CACHE, cache_key))
     if scored is None:
         raise HTTPException(status_code=409, detail="The field of this event has not been read yet.")
     order = sorted(range(len(cand_keys)), key=lambda i: -scored["expected"][i])[:k]
@@ -5509,7 +5541,14 @@ def _seed_live_queries(key: int, latest_sim: Optional[dict] = None) -> Dict[str,
     if not latest_sim:
         return {}
     # small pools read Average from the stored list; their other modes are live too
-    modes = _LIVE_QUERY_MODES if _is_live_pool(latest_sim.get("results") or {}) else [m for m in _LIVE_QUERY_MODES if m != "average"]
+    modes = list(_LIVE_QUERY_MODES if _is_live_pool(latest_sim.get("results") or {}) else [m for m in _LIVE_QUERY_MODES if m != "average"])
+    try:
+        from backend.services import fantasy_field
+
+        if fantasy_field.status(int(key)).get("teams_stored"):
+            modes.append("season_max")  # also fills the run's plan cache, so later pages are quick
+    except Exception:  # noqa: BLE001
+        pass
     timings: Dict[str, float] = {}
     for mode in modes:
         body = {

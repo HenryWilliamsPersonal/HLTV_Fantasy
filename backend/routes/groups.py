@@ -5455,9 +5455,10 @@ def _live_query_cache_key(key: int, updated_at: Any, mode: str, body: dict) -> t
     options = parse_optimizer_payload(body)
     field_at = None
     if mode == "season_max":
-        from backend.services import fantasy_field
+        from backend.services import fantasy_field, season_max
 
-        field_at = fantasy_field.status(int(key)).get("stored_at")
+        fz = season_max.frozen_field(int(key))
+        field_at = ("frozen", fz["frozen_at"]) if fz else fantasy_field.status(int(key)).get("stored_at")
     return (
         int(key),
         updated_at,
@@ -5505,12 +5506,14 @@ def _seed_live_queries(key: int, latest_sim: Optional[dict] = None) -> Dict[str,
     the cache. Runs after every bake and at startup; returns the seconds each
     mode took."""
     latest_sim = latest_sim or _GROUPS_STATE.load(key=key)
-    if not latest_sim or not _is_live_pool(latest_sim.get("results") or {}):
+    if not latest_sim:
         return {}
+    # small pools read Average from the stored list; their other modes are live too
+    modes = _LIVE_QUERY_MODES if _is_live_pool(latest_sim.get("results") or {}) else [m for m in _LIVE_QUERY_MODES if m != "average"]
     timings: Dict[str, float] = {}
-    for mode in _LIVE_QUERY_MODES:
+    for mode in modes:
         body = {
-            "mode": mode, "search": "", "sort": "ev_desc", "page": 0, "page_size": 200,
+            "mode": mode, "search": "", "sort": "ev_desc", "page": 0, "page_size": 10,  # the app's COMBO_PAGE_SIZE: the warm-up only helps when the keys match
             "include_player_ids": [], "exclude_player_ids": [],
         }
         t0 = time.monotonic()
@@ -5536,11 +5539,70 @@ def query_groups_best_team(payload: dict | None = None, event_id: Optional[int] 
     # app itself always asks for the active event.
     key = int(body.get("event_id") or 0) or _state_key()
     latest_sim = _GROUPS_STATE.load(key=key)
-    # Include / exclude filters search the whole pool: the stored list is only
-    # the run's best few thousand rosters, which can all share one team (every
-    # stored roster held a MOUZ player at IEM 673, so excluding MOUZ left none).
+    # Once the event has started, the unfiltered pages are served as first
+    # answered after the start (_TOP5_LOCK): no re-bake, code change or field
+    # re-read can reshuffle them. Filtered queries still compute, on the
+    # run's frozen inputs. Season Maximum locks only once its field is frozen.
+    lock_slot = _top5_lock_slot(key, mode, body)
+    if lock_slot:
+        hit = _top5_lock_get(key, lock_slot)
+        if hit is not None:
+            return hit
+    result = _query_groups_best_team_uncached(key, latest_sim, mode, body)
+    if lock_slot:
+        _top5_lock_put(key, lock_slot, result)
+    return result
+
+
+_TOP5_LOCK = SingletonState("groups_top5_lock_state", keyed=True)
+_TOP5_LOCK_MUTEX = threading.Lock()
+
+
+def _top5_lock_slot(key: int, mode: str, body: dict) -> Optional[str]:
+    """The lock slot of an unfiltered Top 5 page of a started event, else None."""
+    if body.get("include_player_ids") or body.get("exclude_player_ids") or str(body.get("search") or "").strip():
+        return None
+    start = event_start_at(int(key))
+    if not start or time.time() < float(start):
+        return None
+    if mode == "season_max":
+        from backend.services import season_max
+
+        if not season_max.frozen_field(int(key)):
+            return None
+    options = parse_optimizer_payload(body)
+    return "|".join(str(x) for x in (
+        mode, str(body.get("sort") or "ev_desc"), int(body.get("page") or 0), int(body.get("page_size") or 200),
+        int(options["budget"]), int(options["max_per_team"]),
+    ))
+
+
+def _top5_lock_get(key: int, slot: str) -> Optional[Dict[str, Any]]:
+    _TOP5_LOCK.ensure_table()
+    row = _TOP5_LOCK.load(key=int(key))
+    return ((row or {}).get("result") or {}).get("pages", {}).get(slot)
+
+
+def _top5_lock_put(key: int, slot: str, result: Dict[str, Any]) -> None:
+    with _TOP5_LOCK_MUTEX:
+        _TOP5_LOCK.ensure_table()
+        row = _TOP5_LOCK.load(key=int(key))
+        pages = dict(((row or {}).get("result") or {}).get("pages") or {})
+        if slot in pages:
+            return
+        pages[slot] = dict(result, locked_at=time.time())
+        _TOP5_LOCK.save({"event_id": int(key)}, {"pages": pages}, key=int(key))
+
+
+def _query_groups_best_team_uncached(key: int, latest_sim: Optional[dict], mode: str, body: dict) -> Dict[str, Any]:
+    # Every mode but Average is scored live: the stored list holds only the
+    # run's best rosters BY AVERAGE (Best Single Outcome found 389 there where
+    # the whole pool has 401 at IEM 673) and its win odds predate the exact
+    # joint outcomes. Average reads the stored list unless filtered: include /
+    # exclude filters search the whole pool (every stored roster held a MOUZ
+    # player at IEM 673, so excluding MOUZ left none).
     has_player_filters = bool(body.get("include_player_ids") or body.get("exclude_player_ids"))
-    if latest_sim and (_is_live_pool(latest_sim["results"] or {}) or mode == "season_max" or has_player_filters):
+    if latest_sim and (_is_live_pool(latest_sim["results"] or {}) or mode != "average" or has_player_filters):
         return _cached_live_query(key, latest_sim, mode, body)
     latest = _GROUPS_BEST_STATE.load(key=key)
     if not latest:

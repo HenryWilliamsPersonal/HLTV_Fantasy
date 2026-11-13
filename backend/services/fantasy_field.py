@@ -94,6 +94,20 @@ def _ensure() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fantasy_field_match_runs (
+                event_id   INTEGER NOT NULL,
+                match_id   INTEGER NOT NULL,
+                keys_json  TEXT NOT NULL,
+                state_json TEXT,
+                status     TEXT NOT NULL,
+                started_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (event_id, match_id)
+            )
+            """
+        )
         cols = {r[1] for r in conn.execute("PRAGMA table_info(fantasy_field_runs)").fetchall()}
         if "state_json" not in cols:
             conn.execute("ALTER TABLE fantasy_field_runs ADD COLUMN state_json TEXT")  # the walk's position, for a resume
@@ -516,6 +530,34 @@ def resume_interrupted() -> Optional[str]:
         threading.Thread(target=_read, args=(eid, int(run["league_id"]), int(state["seed"]), MAX_IDS), name=f"fantasy-field-{eid}", daemon=True).start()
         logger.info("Field read for event %s resumed after a restart (%s ids scanned, %s found)", eid, run["scanned"], run["found"])
         return f"resumed {eid}"
+    return _resume_match_refresh()
+
+
+def _resume_match_refresh() -> Optional[str]:
+    """A per-match re-read a restart cut off (still marked running, no thread
+    behind it): carried on from its saved progress. Rows older than a day are
+    closed instead (the event has moved on)."""
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT * FROM fantasy_field_match_runs WHERE status = 'running' ORDER BY updated_at DESC").fetchall()
+    finally:
+        conn.close()
+    for r in rows:
+        eid, mid = int(r["event_id"]), int(r["match_id"])
+        with _LOCK:
+            if eid in _RUNS:
+                continue
+        keys = json.loads(r["keys_json"] or "[]")
+        state = json.loads(r["state_json"]) if r["state_json"] else {}
+        if time.time() - float(r["updated_at"]) > 86400.0:
+            _save_match_run(eid, mid, keys, state, "interrupted", float(r["started_at"]))
+            continue
+        if _start_match_refresh(eid, mid, keys, resume=state):
+            st = _MATCH_DONE.setdefault((eid, mid), {"seen": float(r["started_at"]), "passes": 1, "last": time.time()})
+            st["last"] = time.time()
+            logger.info("Field: match %s of event %s re-read resumed after a restart (%s teams already read)", mid, eid, state.get("read", 0))
+            return f"resumed match {mid} of {eid}"
+        return None
     return None
 
 
@@ -578,13 +620,30 @@ def _read_team_ids(event_id: int, league_id: int, team_ids: List[int]) -> List[D
     return rows
 
 
-def refresh_match(event_id: int, match_id: int, team_keys: List[str]) -> Dict[str, Any]:
+def _save_match_run(event_id: int, match_id: int, keys: List[str], state: Optional[Dict[str, Any]], status_: str, started_at: float) -> None:
+    _ensure()
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO fantasy_field_match_runs (event_id, match_id, keys_json, state_json, status, started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (int(event_id), int(match_id), json.dumps(list(keys)), json.dumps(state) if state is not None else None, status_, float(started_at), time.time()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def refresh_match(event_id: int, match_id: int, team_keys: List[str], resume: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Re-read the teams needed for one finished match (see above): the
     players of the two teams (by team name key), every role each was given
-    somewhere in the field, read greedily until covered."""
+    somewhere in the field, read greedily until covered. Its progress (teams
+    read, pairs seen) is saved after every chunk, so a restart or a stop
+    carries on from there (`resume`, see resume_interrupted) instead of
+    dropping the rest of the pass."""
     from backend.data import team_aliases
 
     eid, mid = int(event_id), int(match_id)
+    started_at = float((resume or {}).get("started_at") or time.time())
     stored = teams(eid)
     if not stored:
         return {"status": "no field"}
@@ -604,21 +663,35 @@ def refresh_match(event_id: int, match_id: int, team_keys: List[str]) -> Dict[st
                 pairs.append(pair)
         if pairs:
             by_team[int(t["team_id"])] = pairs
-    seen_roles: set = set()
-    seen_boosters: set = set()
-    read = 0
-    stall = 0
+    seen_roles: set = {(int(a), b) for a, b in (resume or {}).get("seen_roles") or []}
+    seen_boosters: set = {(int(a), b) for a, b in (resume or {}).get("seen_boosters") or []}
+    done_ids: set = {int(t) for t in (resume or {}).get("read_ids") or []}
+    read = int((resume or {}).get("read") or 0)
+    stall = int((resume or {}).get("stall") or 0)
     order = sorted(by_team, key=lambda tid: -len(set(by_team[tid])))
-    pending = list(order)
+    pending = [tid for tid in order if tid not in done_ids]
     run = _RUNS.get(eid) if (_RUNS.get(eid) or {}).get("kind") == "match" else {}
-    run.update(teams_read=0, teams_target=min(len(order), MATCH_MAX_TEAMS))
+    run.update(teams_read=read, teams_target=min(len(order), MATCH_MAX_TEAMS))
+
+    def save(status_: str) -> None:
+        _save_match_run(eid, mid, sorted(keys), {
+            "started_at": started_at, "read": read, "stall": stall, "read_ids": sorted(done_ids),
+            "seen_roles": sorted([list(x) for x in seen_roles], key=str), "seen_boosters": sorted([list(x) for x in seen_boosters], key=str),
+        }, status_, started_at)
+
+    save("running")
+    stopped = False
     while pending and read < MATCH_MAX_TEAMS:
+        if _STOP.get(eid):
+            stopped = True
+            break
         # the teams adding the most unseen (player, role) pairs first; once all
         # are seen, the rest for booster variety (two players per team at most)
         pending.sort(key=lambda tid: -len(set(by_team[tid]) - seen_roles))
         chunk, pending = pending[:MATCH_CHUNK], pending[MATCH_CHUNK:]
         rows = _read_team_ids(eid, league_id, chunk)
         read += len(chunk)
+        done_ids.update(int(t) for t in chunk)
         run["teams_read"] = read
         new_boosters = 0
         for row in rows:
@@ -638,12 +711,14 @@ def refresh_match(event_id: int, match_id: int, team_keys: List[str]) -> Dict[st
         roles_done = roles_needed <= seen_roles or not any(set(by_team[tid]) - seen_roles for tid in pending)
         if roles_done:
             stall = stall + 1 if new_boosters == 0 else 0
-            if stall >= BOOSTER_STALL_CHUNKS:
-                break
+        save("running")
+        if roles_done and stall >= BOOSTER_STALL_CHUNKS:
+            break
         time.sleep(PAUSE_BETWEEN_CHUNKS)
+    save("stopped" if stopped else "done")
     logger.info("Field: match %s of event %s re-read from %s of %s teams (%s of %s player-role pairs, %s player-booster pairs)",
                 mid, eid, read, len(by_team), len(seen_roles & roles_needed), len(roles_needed), len(seen_boosters))
-    return {"status": "done", "teams_read": read, "teams_with_players": len(by_team), "roles": [len(seen_roles & roles_needed), len(roles_needed)], "boosters": len(seen_boosters)}
+    return {"status": "stopped" if stopped else "done", "teams_read": read, "teams_with_players": len(by_team), "roles": [len(seen_roles & roles_needed), len(roles_needed)], "boosters": len(seen_boosters)}
 
 
 def after_matches(entries: List[Dict[str, Any]], now: Optional[float] = None) -> Optional[str]:
@@ -711,24 +786,27 @@ def _match_covered(event_id: int, match_id: int) -> bool:
     return any(int(m.get("match_id") or 0) == int(match_id) for f in facts.values() for m in f.get("matches") or [])
 
 
-def _start_match_refresh(event_id: int, match_id: int, keys: List[str]) -> None:
+def _start_match_refresh(event_id: int, match_id: int, keys: List[str], resume: Optional[Dict[str, Any]] = None) -> bool:
     eid = int(event_id)
     with _LOCK:
         if any(r.get("status") == "running" for r in _RUNS.values()):
-            return
+            return False
         _RUNS[eid] = {"event_id": eid, "status": "running", "kind": "match", "match_id": int(match_id), "started_at": time.time()}
+        _STOP.pop(eid, None)
 
     def work():
         try:
-            refresh_match(eid, int(match_id), keys)
+            refresh_match(eid, int(match_id), keys, resume=resume)
         except Exception:  # noqa: BLE001
             logger.warning("Field: match refresh failed for %s / %s", eid, match_id, exc_info=True)
         finally:
             with _LOCK:
                 if (_RUNS.get(eid) or {}).get("kind") == "match":
                     _RUNS.pop(eid, None)
+                _STOP.pop(eid, None)
 
     threading.Thread(target=work, name=f"fantasy-field-match-{eid}", daemon=True).start()
+    return True
 
 
 FIELD_LEAD = 2 * 86400.0  # an upcoming event's field is read this long before it starts (lineups are open)

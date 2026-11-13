@@ -4361,3 +4361,77 @@ button:disabled {
 .value-table-frame { border: 0; border-radius: 0; margin: 0 -24px -22px; }
 .value-table th:first-child, .value-table td:first-child { padding-left: 24px; }
 .value-table th:last-child, .value-table td:last-child { padding-right: 24px; }
+/* Top 5 filters: section labels, team tiles that toggle as a whole (the
+   Exclude button's hit area covers the tile), the shared search box */
+.top5-filters { gap: 18px; }
+.top5-filters > .field > span {
+  font-family: var(--display); font-stretch: condensed; text-transform: uppercase;
+  letter-spacing: 0.08em; font-size: 13px; font-weight: 700; color: var(--c-8fa3bf); margin-bottom: 8px;
+}
+.top5-filters .filter-team-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+.top5-filters .filter-team-card {
+  position: relative; gap: 12px; min-height: 52px; padding: 8px 12px;
+  background: var(--c-161b23); border: 1px solid var(--c-2c3441); border-left: 3px solid var(--c-35a2ff);
+  border-radius: 6px; transition: border-color 0.12s, background 0.12s, opacity 0.12s;
+}
+.top5-filters .filter-team-card:hover { background: var(--c-1a2029); border-color: var(--c-4b5a70); border-left-color: var(--c-35a2ff); }
+.top5-filters .filter-team-card .team-logo-img { width: 30px; height: 30px; }
+.top5-filters .filter-team-name { font-size: 16px; color: var(--c-f2f5f9); overflow: hidden; text-overflow: ellipsis; }
+.top5-filters .filter-team-toggles { margin-left: auto; }
+.top5-filters .filter-team-card .filter-toggle {
+  border: 0; padding: 3px 7px; font-size: 10.5px; color: transparent; background: transparent; border-radius: 3px;
+}
+.top5-filters .filter-team-card .filter-toggle::after { content: ""; position: absolute; inset: 0; cursor: pointer; }
+.top5-filters .filter-team-card:hover .filter-toggle { color: var(--c-8fa3bf); }
+.top5-filters .filter-team-card .filter-toggle.out.on { color: var(--c-ffffff); background: var(--c-e2504c); }
+.top5-filters .filter-team-card.exc { opacity: 1; background: var(--c-12161c); border-color: var(--c-2c3441); border-left-color: var(--c-e2504c); }
+.top5-filters .filter-team-card.exc .team-logo-img { filter: grayscale(1); opacity: 0.45; }
+.top5-filters .filter-team-card.exc .filter-team-name { color: var(--c-6f819e); text-decoration: line-through; text-decoration-color: var(--c-e2504c); }
+.top5-controls-row .top5-search { flex: 0 1 420px; }
+.top5-filters .filter-team-card .filter-toggle:not(.on) { font-size: 0; padding: 0; }
+.top5-filters .filter-team-card .filter-toggle.out.on { font-size: 10px; padding: 3px 6px; letter-spacing: 0.08em; }
+/* Included / excluded players in the Top 5 filters: no outer box, a coloured
+   label, and chips shaped like the team tiles (photo, bold name, remove mark) */
+.top5-filters .filter-group { background: none; border: 0; padding: 0; }
+.top5-filters .filter-group.in, .top5-filters .filter-group.out { border-left: 0; }
+.top5-filters .filter-group-title {
+  font-family: var(--display); font-stretch: condensed; text-transform: uppercase;
+  letter-spacing: 0.08em; font-size: 13px; font-weight: 700; margin-bottom: 8px;
+}
+.top5-filters .filter-group.in .filter-group-title { color: var(--c-34d399); }
+.top5-filters .filter-group.out .filter-group-title { color: var(--c-e2504c); }
+.top5-filters .filter-group .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.top5-filters .filter-chip {
+  gap: 10px; height: 40px; padding: 0 10px 0 0; overflow: hidden;
+  background: var(--c-161b23); border: 1px solid var(--c-2c3441); border-radius: 6px;
+  font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 15px; color: var(--c-f2f5f9);
+}
+.top5-filters .filter-chip.in { border-left: 3px solid var(--c-34d399); background: var(--c-161b23); }
+.top5-filters .filter-chip.out { border-left: 3px solid var(--c-e2504c); background: var(--c-161b23); }
+.top5-filters .filter-chip .player-photo-img,
+.top5-filters .filter-chip .img-fallback { width: 38px; height: 38px; border-radius: 0; object-fit: cover; margin: 0; }
+.top5-filters .filter-chip .x {
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin-left: 2px;
+  border-radius: 50%; font-size: 14px; color: var(--c-8fa3bf); background: var(--c-242b35);
+}
+.top5-filters .filter-chip:hover { background: var(--c-1a2029); border-color: var(--c-4b5a70); }
+.top5-filters .filter-chip.in:hover { border-left-color: var(--c-34d399); }
+.top5-filters .filter-chip.out:hover { border-left-color: var(--c-e2504c); }
+.top5-filters .filter-chip.out:hover .x { background: var(--c-e2504c); color: var(--c-ffffff); }
+.top5-filters .filter-chip.in:hover .x { background: var(--c-34d399); color: var(--c-0a0c10); }
+.top5-filters .filter-chip .x { width: 22px; height: 22px; font-size: 17px; font-family: var(--body, inherit); font-weight: 400; line-height: 1; }
+/* Top Teams pager: arrow + numbered page buttons, the range beside them */
+.combo-pager { gap: 18px; margin: 0 0 14px; }
+.pager-pages { display: flex; align-items: center; gap: 4px; }
+.pager-btn {
+  min-width: 34px; height: 34px; padding: 0 8px; border: 1px solid var(--c-2c3441); border-radius: 4px;
+  background: var(--c-161b23); color: var(--c-c6d0dc); cursor: pointer;
+  font-family: var(--display); font-stretch: condensed; font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums;
+}
+.pager-btn:hover:not(:disabled) { border-color: var(--c-4b5a70); color: var(--c-f2f5f9); background: var(--c-1a2029); }
+.pager-btn.on { background: var(--c-ff6b1a); border-color: var(--c-ff6b1a); color: var(--c-0a0c10); }
+.pager-btn:disabled { opacity: 0.35; cursor: default; }
+.pager-arrow { font-size: 22px; line-height: 1; padding-bottom: 3px; }
+.pager-gap { min-width: 22px; text-align: center; color: var(--c-6f819e); font-weight: 700; }
+.pager-range { color: var(--c-8fa3bf); font-size: 14px; font-variant-numeric: tabular-nums; }
+.pager-range b { color: var(--c-f2f5f9); font-weight: 700; }

@@ -5536,7 +5536,11 @@ def query_groups_best_team(payload: dict | None = None, event_id: Optional[int] 
     # app itself always asks for the active event.
     key = int(body.get("event_id") or 0) or _state_key()
     latest_sim = _GROUPS_STATE.load(key=key)
-    if latest_sim and (_is_live_pool(latest_sim["results"] or {}) or mode == "season_max"):
+    # Include / exclude filters search the whole pool: the stored list is only
+    # the run's best few thousand rosters, which can all share one team (every
+    # stored roster held a MOUZ player at IEM 673, so excluding MOUZ left none).
+    has_player_filters = bool(body.get("include_player_ids") or body.get("exclude_player_ids"))
+    if latest_sim and (_is_live_pool(latest_sim["results"] or {}) or mode == "season_max" or has_player_filters):
         return _cached_live_query(key, latest_sim, mode, body)
     latest = _GROUPS_BEST_STATE.load(key=key)
     if not latest:

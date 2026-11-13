@@ -308,17 +308,38 @@ function ComboPager({ page, pageSize, total, onPage }) {
   const pages = Math.max(1, Math.ceil(count / pageSize));
   const first = count > 0 ? page * pageSize + 1 : 0;
   const last = Math.min(count, (page + 1) * pageSize);
+  // page numbers: the first, the last, and two either side of the current
+  // one, with a gap mark wherever numbers are skipped
+  const nums = [];
+  for (let i = 0; i < pages; i += 1) {
+    if (i === 0 || i === pages - 1 || Math.abs(i - page) <= 2) nums.push(i);
+    else if (nums[nums.length - 1] !== "gap") nums.push("gap");
+  }
   return (
     <div className="combo-pager">
-      <button className="secondary" onClick={() => onPage(Math.max(0, page - 1))} disabled={page <= 0}>
-        Prev
-      </button>
-      <span className="muted">
-        {first.toLocaleString()}–{last.toLocaleString()} of {count.toLocaleString()} · page {page + 1} of {pages}
+      <div className="pager-pages">
+        <button className="pager-btn pager-arrow" onClick={() => onPage(Math.max(0, page - 1))} disabled={page <= 0} aria-label="Previous page">
+          ‹
+        </button>
+        {nums.map((n, i) =>
+          n === "gap" ? (
+            <span key={`gap-${i}`} className="pager-gap">…</span>
+          ) : (
+            <button key={n} className={`pager-btn${n === page ? " on" : ""}`} onClick={() => onPage(n)} aria-current={n === page ? "page" : undefined}>
+              {n + 1}
+            </button>
+          )
+        )}
+        <button className="pager-btn pager-arrow" onClick={() => onPage(page + 1)} disabled={page + 1 >= pages} aria-label="Next page">
+          ›
+        </button>
+      </div>
+      <span className="pager-range">
+        <b>
+          {first.toLocaleString()}–{last.toLocaleString()}
+        </b>{" "}
+        of {count.toLocaleString()}
       </span>
-      <button className="secondary" onClick={() => onPage(page + 1)} disabled={page + 1 >= pages}>
-        Next
-      </button>
     </div>
   );
 }
@@ -1122,7 +1143,7 @@ const Input = ({ label, value, onChange, type = "text", placeholder = "", classN
 // `actions` add per-row buttons (e.g. Include/Exclude) that receive the name.
 // onEnter (optional) gets the current matches when Enter is pressed, so a
 // caller can accept a single match without a mouse.
-const SuggestInput = ({ label, value, onChange, placeholder = "", suggestions = [], actions = null, onEnter = null }) => {
+const SuggestInput = ({ label, value, onChange, placeholder = "", suggestions = [], actions = null, onEnter = null, className = "" }) => {
   const [open, setOpen] = useState(false);
   const q = String(value || "").trim().toLowerCase();
   const found = q ? suggestions.filter((s) => s.toLowerCase().includes(q)).slice(0, 8) : [];
@@ -1130,7 +1151,7 @@ const SuggestInput = ({ label, value, onChange, placeholder = "", suggestions = 
   // a box with actions keeps the row so Include/Exclude stay clickable.
   const matches = actions ? found : found.filter((s) => s !== value);
   return (
-    <label className="field suggest-field">
+    <label className={`field suggest-field${className ? ` ${className}` : ""}`}>
       <span>{label}</span>
       <input
         value={value}
@@ -5521,7 +5542,7 @@ function PlayoffTab({
                                     drop(setAppliedIncludeSet);
                                   }}
                                 >
-                                  <PlayerPhoto playerId={pid} name={playerNameById[pid]} size={20} />
+                                  <PlayerPhoto playerId={pid} name={playerNameById[pid]} size={38} />
                                   {playerNameById[pid] || `Player ${pid}`} <span className="x">&times;</span>
                                 </button>
                               ))}
@@ -5548,7 +5569,7 @@ function PlayoffTab({
                                     drop(setAppliedExcludeSet);
                                   }}
                                 >
-                                  <PlayerPhoto playerId={pid} name={playerNameById[pid]} size={20} />
+                                  <PlayerPhoto playerId={pid} name={playerNameById[pid]} size={38} />
                                   {playerNameById[pid] || `Player ${pid}`} <span className="x">&times;</span>
                                 </button>
                               ))}
@@ -5561,9 +5582,10 @@ function PlayoffTab({
                       <div className="top5-search">
                         <SuggestInput
                           label="Search / Filter Players"
+              className="value-search"
                           value={comboSearch}
                           onChange={setComboSearch}
-                          placeholder="Player name"
+                          placeholder="Search player"
                           suggestions={comboSearchNames}
                           actions={[
                             { key: "in", label: "Include", onPick: (name) => addPlayerFilterByName(name, "include") },
@@ -12817,7 +12839,7 @@ function GroupsTab({
             <div className="chips">
               {Array.from(includeSet).map((pid) => (
                 <button key={`inc-${pid}`} className="filter-chip in" title="Remove filter" onClick={() => toggleFilter(pid, "include")}>
-                  <PlayerPhoto playerId={pid} name={playerNameById[pid]} size={20} />
+                  <PlayerPhoto playerId={pid} name={playerNameById[pid]} size={38} />
                   {playerNameById[pid] || `Player ${pid}`} <span className="x">&times;</span>
                 </button>
               ))}
@@ -12830,7 +12852,7 @@ function GroupsTab({
             <div className="chips">
               {Array.from(excludeSet).map((pid) => (
                 <button key={`exc-${pid}`} className="filter-chip out" title="Remove filter" onClick={() => toggleFilter(pid, "exclude")}>
-                  <PlayerPhoto playerId={pid} name={playerNameById[pid]} size={20} />
+                  <PlayerPhoto playerId={pid} name={playerNameById[pid]} size={38} />
                   {playerNameById[pid] || `Player ${pid}`} <span className="x">&times;</span>
                 </button>
               ))}
@@ -12843,9 +12865,10 @@ function GroupsTab({
           <div className="top5-search">
             <SuggestInput
               label="Search / Filter Players"
+              className="value-search"
               value={comboSearch}
               onChange={setComboSearch}
-              placeholder="Player name"
+              placeholder="Search player"
               suggestions={comboSearchNames}
               actions={[
                 { key: "in", label: "Include", onPick: (name) => addPlayerFilterByName(name, "include") },

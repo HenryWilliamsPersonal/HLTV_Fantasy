@@ -4435,3 +4435,5 @@ button:disabled {
 .pager-gap { min-width: 22px; text-align: center; color: var(--c-6f819e); font-weight: 700; }
 .pager-range { color: var(--c-8fa3bf); font-size: 14px; font-variant-numeric: tabular-nums; }
 .pager-range b { color: var(--c-f2f5f9); font-weight: 700; }
+/* hover card: an all-blue border, matching the chart's line and axes */
+.value-point-tooltip { border: 1px solid var(--c-35a2ff); border-top: 2px solid var(--c-35a2ff); }

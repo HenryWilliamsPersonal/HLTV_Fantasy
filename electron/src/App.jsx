@@ -1555,10 +1555,10 @@ function PriceVsPointsPanel({
   intercept,
   showTable = true,
   onPointClick = null,
-  dotColor = "var(--c-35a2ff)",
-  lineColor = "var(--c-ff6b1a)",
-  axisColor = "var(--c-ff6b1a)",
-  axisTitleColor = "var(--c-ff8a47)",
+  dotColor = "var(--c-ff6b1a)",
+  lineColor = "var(--c-35a2ff)",
+  axisColor = "var(--c-35a2ff)",
+  axisTitleColor = "var(--c-35a2ff)",
   tickColor = "var(--c-c6d0dc)",
   teamLookup = null,
   hltvIdByTeamId = null,
@@ -13680,4 +13680,5 @@ export default function App() {
 
 // Named export so the modal can be rendered on its own (preview / visual checks).
 export { GroupPlayerBreakdownModal };
+
 

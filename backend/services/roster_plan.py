@@ -138,6 +138,31 @@ def _booster_bound_lagrangian(
     return sub, float(sum(lam))
 
 
+# Each player's booster weights (18 boosters x his match slots) depend only on
+# his team's slot odds and his trigger rates, not on the roster around him:
+# kept per (reach, rates) pair, so the thousands of rosters a search scores
+# share the few hundred players' columns instead of rebuilding them.
+_PLAYER_COLS: Dict[str, Any] = {"refs": None, "map": {}}
+
+
+def _player_columns(pid: int, tid: int, reach_by_team, rates_by_pid):
+    refs = _PLAYER_COLS["refs"]
+    if refs is None or refs[0] is not reach_by_team or refs[1] is not rates_by_pid:
+        _PLAYER_COLS["refs"] = (reach_by_team, rates_by_pid)
+        _PLAYER_COLS["map"] = {}
+    key = (int(pid), int(tid))
+    hit = _PLAYER_COLS["map"].get(key)
+    if hit is None:
+        slots = [(int(n), float(prob)) for n, prob in sorted((reach_by_team.get(int(tid)) or {}).items()) if prob > 0]
+        rates = rates_by_pid.get(int(pid)) or {}
+        weights = [
+            [slot_trigger(reach_by_team, tid, n, float(rates.get(booster_id, 0.0))) * BOOSTER_POINT_VALUE for n, _p in slots]
+            for booster_id in range(18)
+        ]
+        hit = _PLAYER_COLS["map"][key] = (slots, weights)
+    return hit
+
+
 def optimize_group_boosters_for_roster(
     players: List[Dict[str, Any]],
     reach_by_team: Dict[int, Dict[int, float]],
@@ -150,30 +175,25 @@ def optimize_group_boosters_for_roster(
     is the trigger chance in the series it is played in.
     """
     columns: List[Dict[str, Any]] = []
+    weights: List[List[float]] = [[] for _ in range(18)]
     for player in players:
         pid = int(player["player_id"])
         tid = int(player.get("team_id", 0))
-        for n, prob in sorted((reach_by_team.get(tid) or {}).items()):
-            if prob > 0:
-                columns.append(
-                    {
-                        "player_id": pid,
-                        "player_name": player.get("name", f"Player {pid}"),
-                        "match_number": int(n),
-                        "team_id": tid,
-                        "slot_probability": float(prob),
-                    }
-                )
+        slots, pw = _player_columns(pid, tid, reach_by_team, rates_by_pid)
+        for n, prob in slots:
+            columns.append(
+                {
+                    "player_id": pid,
+                    "player_name": player.get("name", f"Player {pid}"),
+                    "match_number": n,
+                    "team_id": tid,
+                    "slot_probability": prob,
+                }
+            )
+        for booster_id in range(18):
+            weights[booster_id].extend(pw[booster_id])
     if not columns:
         return {"assignments": [], "total_expected_booster_points": 0.0}
-
-    weights: List[List[float]] = []
-    for booster_id in range(18):
-        row = []
-        for col in columns:
-            trig = float((rates_by_pid.get(col["player_id"]) or {}).get(booster_id, 0.0))
-            row.append(slot_trigger(reach_by_team, col["team_id"], col["match_number"], trig) * BOOSTER_POINT_VALUE)
-        weights.append(row)
 
     assignments: List[Dict[str, Any]] = []
     total = 0.0

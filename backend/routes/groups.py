@@ -5437,7 +5437,27 @@ def _season_max_rosters(results, cache_key, players_info, players_meta, options,
     model = _event_outcome_model(results, cache_key)
     if len(model[0]) != 1:
         model = _sample_joint_outcomes(results, _JOINT_SAMPLES)
-    players, pids, _prices, _team_of, _M = _dense_players(model, players_info)
+    # The field is every manager's roster whatever the filters: an excluded
+    # player leaves the candidates, never the field (dropping the field's
+    # rosters that hold him moved the tier cut-offs and re-planned thousands of
+    # field rosters on every filter). So the outcome arrays cover the whole pool.
+    full_info = _groups_players_info(results, set()) if options["exclude"] else players_info
+    meta_all, rates_all, roles_all = players_meta, rates_by_pid, role_scores_by_pid
+    if options["exclude"]:
+        from backend.services import leader_role
+
+        leader_odds = leader_role.loaded(results.get("leader_odds"))
+        meta_all = {str(p["player_id"]): p for p in full_info}
+        meta_all.update(players_meta)
+        rates_all, roles_all = dict(rates_by_pid), dict(role_scores_by_pid)
+        for p in full_info:
+            pid = int(p["player_id"])
+            if pid in rates_all:
+                continue
+            row = _snapshot_player_row(results, pid) or {}
+            rates_all[pid] = parse_booster_rates(row.get("boosters_json"))
+            roles_all[pid] = extract_role_scores_for_player(row, leader=leader_role.for_team(int(p.get("team_id") or 0), leader_odds))
+    players, pids, _prices, _team_of, _M = _dense_players(model, full_info)
     dec = _dense_decomposition(model, pids)
     if dec is None:
         raise HTTPException(status_code=409, detail="The stored run carries no outcome paths; re-bake the event first.")
@@ -5456,7 +5476,7 @@ def _season_max_rosters(results, cache_key, players_info, players_meta, options,
             cand_keys.append(key_c)
     pid_idx = {pid: i for i, pid in enumerate(pids)}
     cand_keys = [key_c for key_c in cand_keys if all(int(pid) in pid_idx for pid in key_c)]
-    scored = season_max.season_points(event_id, cand_keys, pid_idx, RW, MP, MR, model[1][0], players_meta, reach_by_team, rates_by_pid, role_scores_by_pid,
+    scored = season_max.season_points(event_id, cand_keys, pid_idx, RW, MP, MR, model[1][0], meta_all, reach_by_team, rates_all, roles_all,
                                       plan_cache=_run_memo(_SEASON_PLAN_CACHE, cache_key))
     if scored is None:
         raise HTTPException(status_code=409, detail="The field of this event has not been read yet.")

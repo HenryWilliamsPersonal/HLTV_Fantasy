@@ -109,14 +109,6 @@ def snapshot_from_driver(driver) -> dict[str, Any]:
 
 
 def save_snapshot(snap: dict[str, Any]) -> None:
-    # the account the browser was last seen signed in as survives a
-    # signed-out snapshot: restore_login() uses it to pick a stored session
-    if snap.get("logged_in") and snap.get("username"):
-        snap["last_ok_username"] = snap["username"]
-    elif not snap.get("last_ok_username"):
-        previous = load_snapshot() or {}
-        if previous.get("last_ok_username"):
-            snap["last_ok_username"] = previous["last_ok_username"]
     try:
         SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = SESSION_FILE.with_suffix(".json.tmp")
@@ -134,93 +126,49 @@ def load_snapshot() -> dict[str, Any] | None:
         return None
 
 
-def _last_ok_username() -> str:
-    """The account the scraper browser was last signed in as: the snapshot
-    file, else the last successful login check in the run history."""
-    import re
-
-    last = load_snapshot() or {}
-    if last.get("last_ok_username"):
-        return str(last["last_ok_username"])
-    if last.get("logged_in") and last.get("username"):
-        return str(last["username"])
-    try:
-        from backend.data import schedule_db
-
-        for run in schedule_db.list_runs(limit=400):
-            if str(run.get("task")) == "hltv_session" and str(run.get("status")) == "success":
-                m = re.search(r"Signed in as ([^;,]+)", str(run.get("message") or ""))
-                if m:
-                    return m.group(1).strip()
-    except Exception:  # noqa: BLE001
-        pass
-    return ""
-
-
 def stored_login() -> dict[str, Any] | None:
-    """The stored HLTV session to sign the scraper browser in with: its own
-    (SCRAPER_KEY, stored by the hand-off), else the stored session of the
-    account it was last signed in as (a My Team connection of the same
-    account). None when nothing usable is stored."""
+    """The scraper account's stored login (written only by the cookie hand-off,
+    POST /admin/hltv-session-cookies). Never another account's: a stored login
+    whose username is a person's connected My Team account is refused (it is
+    a personal login left behind, not the scraper's). None when unusable."""
     from backend.data import hltv_accounts
 
-    def usable(row):
-        return bool(row and any(c.get("name") == "autologin" and c.get("value") for c in (row.get("cookies") or [])))
-
     row = hltv_accounts.get(SCRAPER_KEY)
-    if usable(row):
-        return row
-    name = _last_ok_username().strip().lower()
-    if not name:
+    if not (row and any(c.get("name") == "autologin" and c.get("value") for c in (row.get("cookies") or []))):
         return None
-    for meta in sorted(hltv_accounts.list_accounts(), key=lambda m: -float(m.get("saved_at") or 0.0)):
-        if str(meta.get("username") or "").strip().lower() == name:
-            row = hltv_accounts.get(str(meta["user_key"]))
-            if usable(row):
-                return row
-    return None
+    if is_personal_username(str(row.get("username") or "")):
+        logger.warning("The stored scraper login is %s's personal account; hand the scraper account's login over again", row.get("username"))
+        return None
+    return row
 
 
-def apply_login(driver, cookies: list) -> dict[str, Any]:
-    """Replace the browser's HLTV session cookies with `cookies` and report
-    the login state the front page then shows."""
-    for name in SESSION_COOKIE_NAMES:
-        try:
-            driver.delete_cookie(name)
-        except Exception:  # noqa: BLE001
-            pass
-    for c in cookies:
-        if c.get("name") not in SESSION_COOKIE_NAMES or not c.get("value"):
-            continue
-        cookie = {"name": c["name"], "value": c["value"], "domain": c.get("domain") or ".hltv.org", "path": c.get("path") or "/"}
-        if c.get("expiry"):
-            cookie["expiry"] = int(c["expiry"])
-        if c.get("secure"):
-            cookie["secure"] = True
-        if c.get("httpOnly"):
-            cookie["httpOnly"] = True
-        driver.add_cookie(cookie)
-    return snapshot_from_driver(driver)
+def is_personal_username(username: str) -> bool:
+    """Is `username` the HLTV account an app user connected for My Team?"""
+    from backend.data import hltv_accounts
+
+    name = str(username or "").strip().lower()
+    if not name:
+        return False
+    return any(
+        str(m.get("user_key") or "").startswith("user:") and str(m.get("username") or "").strip().lower() == name
+        for m in hltv_accounts.list_accounts()
+    )
 
 
 def restore_login() -> dict[str, Any] | None:
-    """Sign the scraper browser back in from the stored session (see
-    stored_login); on success the session is kept under SCRAPER_KEY so the
-    next restore needs no guesswork. None when nothing is stored."""
-    from backend.data import hltv_accounts
-    from backend.services.hltv_browser import run_hltv_browser_session
+    """Sign the scraper browser in again from the scraper's stored login and
+    report the state. None when no scraper login is stored."""
+    from backend.services.hltv_browser import forget_signed_in, run_hltv_browser_session
 
     row = stored_login()
     if not row:
         return None
-    cookies = list(row.get("cookies") or [])
-    snap = run_hltv_browser_session("https://www.hltv.org/", lambda d: apply_login(d, cookies), wait_text=None, timeout_ms=60000) or {}
+    forget_signed_in()
+    snap = run_hltv_browser_session("https://www.hltv.org/", snapshot_from_driver, wait_text=None, timeout_ms=60000) or {}
     if snap.get("logged_in"):
-        if str(row.get("user_key")) != SCRAPER_KEY:
-            hltv_accounts.save(SCRAPER_KEY, cookies, str(snap.get("username") or row.get("username") or ""))
-        logger.info("HLTV scraper login restored from the stored session of %s", snap.get("username") or row.get("username") or "?")
+        logger.info("HLTV scraper login restored as %s", snap.get("username") or row.get("username") or "?")
     else:
-        logger.warning("HLTV scraper login could not be restored: the stored session of %s is no longer accepted", row.get("username") or "?")
+        logger.warning("HLTV scraper login could not be restored: the stored login of %s is no longer accepted", row.get("username") or "?")
     return snap
 
 
@@ -241,6 +189,9 @@ def check_session_health() -> dict[str, Any]:
         if restored and restored.get("logged_in"):
             snap = restored
             snap["message"] = f"Restored from the stored login. {snap.get('message') or ''}".strip()
+    if snap.get("logged_in") and is_personal_username(str(snap.get("username") or "")):
+        snap["level"] = "error"
+        snap["message"] = f"The scraper browser is signed in as {snap.get('username')}'s personal account; hand the scraper account's login over again."
     save_snapshot(snap)
     level = snap.get("level")
     if level == "ok":

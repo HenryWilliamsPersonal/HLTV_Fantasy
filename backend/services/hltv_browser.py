@@ -464,13 +464,105 @@ def _close_shared_driver_locked() -> None:
     _SHARED_PROFILE_DIR = None
 
 
-def _acquire_shared_driver(force_new: bool = False):
-    """Return the warm shared driver, (re)creating it if missing or dead.
-    Caller must hold _FETCH_LOCK."""
-    global _SHARED_DRIVER, _SHARED_PROFILE_DIR, _SHARED_HEADLESS
+# ---- which HLTV account the shared browser is signed in as -------------------
+# Every job names the account it runs as: the scraper account (default), a
+# person's own account (My Team reads, booster Apply) or none. Before the job
+# the browser's HLTV login is swapped for that account's stored one (sign the
+# current user out, sign the right one in), and a job run as a person swaps
+# back to the scraper when it ends — so nothing ever runs as whoever happened
+# to be left signed in.
+SCRAPER_ACCOUNT = "scraper"
+SIGNED_OUT = ""
+_LOGIN_COOKIES = ("autologin", "PHPSESSID")
+_SIGNED_IN_AS: str | None = None  # None = unknown (fresh browser, failed swap)
+
+
+def forget_signed_in() -> None:
+    """Make the next job re-apply its account's login even if it looks current."""
+    global _SIGNED_IN_AS
+    _SIGNED_IN_AS = None
+
+
+def _stored_cookies(account: str) -> list:
+    if not account:
+        return []
+    if account == SCRAPER_ACCOUNT:
+        from backend.services import hltv_session
+
+        return list((hltv_session.stored_login() or {}).get("cookies") or [])
+    from backend.data import hltv_accounts
+
+    return list((hltv_accounts.get(account) or {}).get("cookies") or [])
+
+
+def _set_login_cookies(driver, cookies: list) -> None:
+    """Drop the browser's HLTV login and put `cookies` in its place (no page
+    load: CDP sets cookies for any domain)."""
+    try:
+        # every HLTV login cookie in the browser, deleted by its exact domain
+        # and path (they sit on www.hltv.org, .www.hltv.org or .hltv.org;
+        # a delete by URL misses some of them)
+        def login_cookies_in_browser():
+            jar = (driver.execute_cdp_cmd("Storage.getCookies", {}) or {}).get("cookies") or []
+            return [c for c in jar if c.get("name") in _LOGIN_COOKIES and "hltv.org" in str(c.get("domain") or "")]
+
+        for c in login_cookies_in_browser():
+            driver.execute_cdp_cmd("Network.deleteCookies", {"name": c["name"], "domain": c["domain"], "path": c.get("path") or "/"})
+        left = login_cookies_in_browser()
+        if left:
+            raise RuntimeError(f"HLTV login cookies could not be removed: {[(c['name'], c['domain']) for c in left]}")
+        for c in cookies:
+            if c.get("name") not in _LOGIN_COOKIES or not c.get("value"):
+                continue
+            params: dict[str, Any] = {"name": c["name"], "value": c["value"], "path": c.get("path") or "/"}
+            domain = str(c.get("domain") or ".hltv.org")
+            if domain.startswith("."):
+                params["domain"] = domain
+            else:
+                params["url"] = f"https://{domain}/"
+            if c.get("expiry"):
+                params["expires"] = float(c["expiry"])
+            if c.get("secure"):
+                params["secure"] = True
+            if c.get("httpOnly"):
+                params["httpOnly"] = True
+            driver.execute_cdp_cmd("Network.setCookie", params)
+    except AttributeError:
+        # no CDP on this driver: the WebDriver cookie calls need an hltv.org page
+        driver.get("https://www.hltv.org/robots.txt")
+        for name in _LOGIN_COOKIES:
+            try:
+                driver.delete_cookie(name)
+            except Exception:  # noqa: BLE001
+                pass
+        for c in cookies:
+            if c.get("name") in _LOGIN_COOKIES and c.get("value"):
+                driver.add_cookie({k: v for k, v in c.items() if k in ("name", "value", "domain", "path", "expiry", "secure", "httpOnly")})
+
+
+def _switch_account(driver, account: str, cookies: list | None = None) -> None:
+    """Sign the browser in as `account` (its stored login), or with the given
+    `cookies`; nothing to do when it already is. Caller holds _FETCH_LOCK."""
+    global _SIGNED_IN_AS
+    if cookies is None and _SIGNED_IN_AS == account:
+        return
+    previous = _SIGNED_IN_AS
+    _SIGNED_IN_AS = None
+    _set_login_cookies(driver, cookies if cookies is not None else _stored_cookies(account))
+    _SIGNED_IN_AS = account if cookies is None else "cookies"
+    if previous != _SIGNED_IN_AS:
+        logger.info("HLTV browser login switched: %s -> %s", previous or "unknown", _SIGNED_IN_AS or "signed out")
+
+
+def _acquire_shared_driver(force_new: bool = False, account: str = SCRAPER_ACCOUNT, account_cookies: list | None = None):
+    """Return the warm shared driver, (re)creating it if missing or dead, signed
+    in as `account` (see above). Caller must hold _FETCH_LOCK."""
+    global _SHARED_DRIVER, _SHARED_PROFILE_DIR, _SHARED_HEADLESS, _SIGNED_IN_AS
     if force_new or not _shared_driver_alive(_SHARED_DRIVER):
         _close_shared_driver_locked()
         _SHARED_DRIVER, _SHARED_PROFILE_DIR, _SHARED_HEADLESS = _make_driver()
+        _SIGNED_IN_AS = None  # whatever the profile kept from last time
+    _switch_account(_SHARED_DRIVER, account, account_cookies)
     return _SHARED_DRIVER, _SHARED_PROFILE_DIR, _SHARED_HEADLESS
 
 
@@ -598,42 +690,60 @@ def run_hltv_browser_session(
     wait_text: str | None = None,
     reconnect_time: float | None = None,
     priority: bool = False,
+    account: str = SCRAPER_ACCOUNT,
+    account_cookies: list | None = None,
 ):
+    """Run `callback(driver)` in the shared browser after loading `url`, signed
+    in as `account` (the scraper by default; SIGNED_OUT for none) or with
+    `account_cookies` (a person's login). A job run as anyone but the scraper
+    signs back in as the scraper when it ends, whatever happened."""
     with _browser_turn(priority):
-        _cancel_idle_timer()
-        _wait_for_rate_limit()
-        last_error: Exception | None = None
         try:
-            for attempt in range(2):
-                try:
-                    driver, profile_dir, _ = _acquire_shared_driver(force_new=(attempt == 1))
-                    _open_hltv_url(driver, url, reconnect_time=reconnect_time)
-                    _accept_cookies(driver)
-                    if wait_text:
-                        _wait_for_text(driver, wait_text, min(12.0, max(1.0, timeout_ms / 1000.0)))
-                    _wait_after_load()
-                    result = callback(driver)
-                    _mark_fetch_complete()
-                    try:
-                        # Archive whatever page the session ended on, keyed by its
-                        # actual URL (the callback may have navigated).
-                        save_page_snapshot(getattr(driver, "current_url", url) or url, driver.page_source or "")
-                    except Exception:
-                        pass
-                    return result
-                except Exception as exc:
-                    last_error = exc
-                    if _is_dead_webdriver_error(exc):
-                        _close_shared_driver_locked()
-                        _kill_orphan_chrome()
-                    if attempt == 0 and _is_dead_webdriver_error(exc):
-                        logger.warning("HLTV UC driver died while running session for %s; retrying: %s", url, exc)
-                        time.sleep(1.0)
-                        continue
-                    raise HLTVBrowserError(f"Failed to run HLTV browser session with SeleniumBase UC: {exc}") from exc
-            raise HLTVBrowserError(f"Failed to run HLTV browser session with SeleniumBase UC: {last_error}")
+            return _run_session(url, callback, timeout_ms, wait_text, reconnect_time, account, account_cookies)
         finally:
-            _schedule_idle_close()
+            if (account != SCRAPER_ACCOUNT or account_cookies is not None) and _shared_driver_alive(_SHARED_DRIVER):
+                try:
+                    _switch_account(_SHARED_DRIVER, SCRAPER_ACCOUNT)
+                except Exception:  # noqa: BLE001 - the next job swaps again (state is unknown now)
+                    forget_signed_in()
+                    logger.warning("Could not switch the HLTV browser back to the scraper login", exc_info=True)
+
+
+def _run_session(url, callback, timeout_ms, wait_text, reconnect_time, account, account_cookies):
+    _cancel_idle_timer()
+    _wait_for_rate_limit()
+    last_error: Exception | None = None
+    try:
+        for attempt in range(2):
+            try:
+                driver, profile_dir, _ = _acquire_shared_driver(force_new=(attempt == 1), account=account, account_cookies=account_cookies)
+                _open_hltv_url(driver, url, reconnect_time=reconnect_time)
+                _accept_cookies(driver)
+                if wait_text:
+                    _wait_for_text(driver, wait_text, min(12.0, max(1.0, timeout_ms / 1000.0)))
+                _wait_after_load()
+                result = callback(driver)
+                _mark_fetch_complete()
+                try:
+                    # Archive whatever page the session ended on, keyed by its
+                    # actual URL (the callback may have navigated).
+                    save_page_snapshot(getattr(driver, "current_url", url) or url, driver.page_source or "")
+                except Exception:
+                    pass
+                return result
+            except Exception as exc:
+                last_error = exc
+                if _is_dead_webdriver_error(exc):
+                    _close_shared_driver_locked()
+                    _kill_orphan_chrome()
+                if attempt == 0 and _is_dead_webdriver_error(exc):
+                    logger.warning("HLTV UC driver died while running session for %s; retrying: %s", url, exc)
+                    time.sleep(1.0)
+                    continue
+                raise HLTVBrowserError(f"Failed to run HLTV browser session with SeleniumBase UC: {exc}") from exc
+        raise HLTVBrowserError(f"Failed to run HLTV browser session with SeleniumBase UC: {last_error}")
+    finally:
+        _schedule_idle_close()
 
 
 def fetch_hltv_json(url: str, *, timeout_ms: int = 45000) -> dict[str, Any]:

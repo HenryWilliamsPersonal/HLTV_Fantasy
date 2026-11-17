@@ -469,7 +469,14 @@ def _ensure_app_login(driver) -> None:
     driver.get("https://www.hltv.org")
     time.sleep(3)
     if _is_hltv_logged_in(driver):
-        return
+        # this job SAVES lineups: it must be the scraper account's own team,
+        # never a person's (the browser session signs the scraper in first;
+        # this is the last check before any write)
+        want = str((hltv_session.stored_login() or {}).get("username") or "").strip().lower()
+        have = hltv_session.nav_username(driver).strip().lower()
+        if want and have == want:
+            return
+        raise RuntimeError(f"HLTV browser is signed in as {have or '?'}, not the scraper account; nothing was saved")
     raise RuntimeError(
         "Not signed in to HLTV. Run scripts\\hltv-login-handoff.ps1 from your desktop session "
         "(it signs this browser in with your session cookies), or click Capture and sign in there."
@@ -550,9 +557,17 @@ def hltv_session_cookies(payload: Dict[str, Any]):
         return _hltv_session_snapshot(driver)
 
     try:
-        result = run_hltv_browser_session("https://www.hltv.org/", apply, wait_text=None, timeout_ms=60000) or {}
+        # from a signed-out browser, so only the handed-over login is in it
+        from backend.services.hltv_browser import SIGNED_OUT
+
+        result = run_hltv_browser_session("https://www.hltv.org/", apply, wait_text=None, timeout_ms=60000, account=SIGNED_OUT) or {}
     except HLTVBrowserError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if result.get("logged_in") and hltv_session.is_personal_username(str(result.get("username") or "")):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{result.get('username')} is a personal account connected on My Team; sign in to HLTV as the scraper account and hand that login over.",
+        )
     if not result.get("logged_in"):
         raise HTTPException(
             status_code=409,

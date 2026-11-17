@@ -232,47 +232,17 @@ def with_personal_session(callback, cookies: Optional[List[Dict[str, Any]]] = No
         raise PersonalSessionError("No HLTV login connected")
 
     def session(driver):
-        saved = [c for c in (driver.get_cookies() or []) if c.get("name") in SESSION_COOKIE_NAMES]
-        if not any(c.get("name") == "autologin" for c in saved):
-            # the browser has lost its own login (a hard kill can drop the
-            # profile's cookies): put the stored one back afterwards instead
-            stored = hltv_session.stored_login() or {}
-            saved = [c for c in (stored.get("cookies") or []) if c.get("name") in SESSION_COOKIE_NAMES]
-        try:
-            for name in SESSION_COOKIE_NAMES:
-                try:
-                    driver.delete_cookie(name)
-                except Exception:  # noqa: BLE001
-                    pass
-            for c in personal:
-                cookie = {"name": c["name"], "value": c["value"], "domain": c.get("domain") or ".hltv.org", "path": c.get("path") or "/"}
-                if c.get("expiry"):
-                    cookie["expiry"] = int(c["expiry"])
-                if c.get("secure"):
-                    cookie["secure"] = True
-                if c.get("httpOnly"):
-                    cookie["httpOnly"] = True
-                driver.add_cookie(cookie)
-            if not verify:
-                return callback(driver, "")
-            driver.get("https://www.hltv.org/")
-            time.sleep(1.0)
-            if not hltv_session.is_logged_in(driver):
-                raise PersonalSessionError("HLTV no longer accepts the personal login; hand it over again")
-            return callback(driver, hltv_session.nav_username(driver))
-        finally:
-            for name in SESSION_COOKIE_NAMES:
-                try:
-                    driver.delete_cookie(name)
-                except Exception:  # noqa: BLE001
-                    pass
-            for c in saved:
-                try:
-                    driver.add_cookie({k: v for k, v in c.items() if k in ("name", "value", "domain", "path", "expiry", "secure", "httpOnly")})
-                except Exception:  # noqa: BLE001
-                    logger.warning("Could not restore the scraper's %s cookie", c.get("name"))
+        # the browser session signs the scraper out and this account in before
+        # the job, and the scraper back in after it (hltv_browser._switch_account)
+        if not verify:
+            return callback(driver, "")
+        driver.get("https://www.hltv.org/")
+        time.sleep(1.0)
+        if not hltv_session.is_logged_in(driver):
+            raise PersonalSessionError("HLTV no longer accepts the personal login; hand it over again")
+        return callback(driver, hltv_session.nav_username(driver))
 
-    return run_hltv_browser_session(ENTRY_URL, session, wait_text=None, timeout_ms=60000, priority=True)
+    return run_hltv_browser_session(ENTRY_URL, session, wait_text=None, timeout_ms=60000, priority=True, account_cookies=personal)
 
 ROLE_INDEX_BY_NAME = {
     "main awp": 0, "support": 1, "attacker": 2, "leader": 3, "stathunter": 4, "entry fragger": 5,

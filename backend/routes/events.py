@@ -292,6 +292,16 @@ def list_all_events():
             row["valuation"] = event_pipeline.event_status(int(row["event_id"]))
         except Exception:  # noqa: BLE001 - the list must never fail on status
             row["valuation"] = None
+        # the format as last detected (never waits on a detection; the
+        # page asks /kind only for an event with none stored yet)
+        k = cached_event_kind(int(row["event_id"]))
+        if k:
+            override = get_event_tournament_kind(int(row["event_id"]))
+            row["kind"] = {
+                "kind": override or k.get("kind"), "label": k.get("label") if not override or override == k.get("kind") else None,
+                "group_format": k.get("group_format"), "playoff_size": k.get("playoff_size"),
+                "team_count": k.get("team_count"), "start_at": k.get("start_at"), "end_at": k.get("end_at"),
+            }
     return {
         "active_event_id": get_active_event_id(),
         "events": rows,
@@ -3960,6 +3970,57 @@ def _kind_signature(event: Dict[str, Any]) -> tuple:
     return (hid, snap_ts, roster, siblings)
 
 
+# The detection also lives in the database (event_kind_cache), keyed by the
+# same signature, so a restart reuses it instead of re-parsing every event
+# page (~1.2 s each) while the Events page waits.
+def _kind_db(conn_fn=None):
+    from backend.data.db import connect
+
+    conn = connect()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS event_kind_cache (event_id INTEGER PRIMARY KEY, signature TEXT NOT NULL, detected_json TEXT NOT NULL, stored_at REAL NOT NULL)"
+    )
+    return conn
+
+
+def _kind_db_get(event_id: int) -> Optional[tuple]:
+    try:
+        conn = _kind_db()
+        try:
+            row = conn.execute("SELECT signature, detected_json FROM event_kind_cache WHERE event_id = ?", (int(event_id),)).fetchone()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - the cache is an optimisation only
+        return None
+    return (row["signature"], json.loads(row["detected_json"])) if row else None
+
+
+def _kind_db_put(event_id: int, signature: str, detected: Dict[str, Any]) -> None:
+    try:
+        conn = _kind_db()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO event_kind_cache VALUES (?, ?, ?, ?)",
+                (int(event_id), signature, json.dumps(detected, default=str), time.time()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        logger.debug("kind cache store failed", exc_info=True)
+
+
+def cached_event_kind(event_id: int) -> Optional[Dict[str, Any]]:
+    """The last detection stored for an event (memory, else the database),
+    current or not: for lists that must not wait on a detection."""
+    with _KIND_CACHE_LOCK:
+        cached = _KIND_CACHE.get(int(event_id))
+    if cached:
+        return cached[1]
+    hit = _kind_db_get(int(event_id))
+    return hit[1] if hit else None
+
+
 def _detect_event_tournament_kind_cached(event: Dict[str, Any]) -> Dict[str, Any]:
     event_id = int(event.get("event_id") or 0)
     signature = _kind_signature(event)
@@ -3967,6 +4028,12 @@ def _detect_event_tournament_kind_cached(event: Dict[str, Any]) -> Dict[str, Any
         cached = _KIND_CACHE.get(event_id)
     if cached and cached[0] == signature:
         return cached[1]
+    sig_text = json.dumps(signature, default=str)
+    stored = _kind_db_get(event_id)
+    if stored and stored[0] == sig_text:
+        with _KIND_CACHE_LOCK:
+            _KIND_CACHE[event_id] = (signature, stored[1])
+        return stored[1]
     detected = _detect_event_tournament_kind(event)
     # Event start / end from the archived event page's date stamps, so bakes
     # can tell whether the event has started (inputs are frozen from then on).
@@ -3985,6 +4052,7 @@ def _detect_event_tournament_kind_cached(event: Dict[str, Any]) -> Dict[str, Any
                 detected["start_at"] = first
     with _KIND_CACHE_LOCK:
         _KIND_CACHE[event_id] = (signature, detected)
+    _kind_db_put(event_id, sig_text, detected)
     return detected
 
 

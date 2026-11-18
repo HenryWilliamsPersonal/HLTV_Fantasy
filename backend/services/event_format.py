@@ -127,12 +127,23 @@ def _swiss_stage_from_group(group: Dict[str, Any], variant: str, stage_name: str
         except (TypeError, ValueError):
             continue
     seedings = [tid for _, tid in sorted(seed_pairs) if tid > 0]
+    if numbers:
+        team_count = numbers[0]
+        advance_count = numbers[1] if len(numbers) > 1 else 0
+    else:
+        # Major multi-stage blobs carry no variant name: the stage's size is
+        # its seeding slots (TBD slots included: later stages are filled as
+        # earlier ones finish), and Valve Swiss sends the top half through
+        # (3 wins of 16 teams = top 8)
+        slots = len((group.get("initialSeedings") or {}).get("orderedSeedings") or [])
+        team_count = max(slots, len(teams))
+        advance_count = team_count // 2 if team_count else 0
     return {
         "seedings": seedings,
         "variant": variant,
         "stage_name": stage_name,
-        "team_count": numbers[0] if numbers else len(teams),
-        "advance_count": numbers[1] if len(numbers) > 1 else 0,
+        "team_count": team_count,
+        "advance_count": advance_count,
         "teams": teams,
         "first_round_rule": str(group.get("firstRoundRules") or ""),
         "successor_rule": str(successor.get("type") or "").rsplit(".", 1)[-1],

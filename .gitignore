@@ -42,3 +42,4 @@ trigger_capture_debug.json
 
 # Packaged app output (electron-builder)
 electron/release/
+demos/

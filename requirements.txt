@@ -6,3 +6,4 @@ psutil==7.2.2
 numpy==2.5.3
 scipy==1.18.1
 numba==0.67.0
+demoparser2==0.42.2

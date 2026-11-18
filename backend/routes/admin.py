@@ -1425,3 +1425,57 @@ def _run_trigger_backfill_job(job_id: str, event_id, refresh_all: bool = False) 
         with TRIGGER_JOBS_LOCK:
             TRIGGER_WORKERS.pop(job_id, None)
 
+
+
+# ---- demo downloads (trigger-model data, see services/demo_fetch.py) --------
+_DEMO_JOBS: Dict[int, Dict[str, Any]] = {}
+
+
+@router.post("/demos/{match_id}/download")
+def demo_download(match_id: int):
+    """Download one match's demo in the background; GET the same path for its state."""
+    from backend.services import demo_fetch
+
+    job = _DEMO_JOBS.get(int(match_id))
+    if job and job.get("status") == "running":
+        return job
+    job = {"match_id": int(match_id), "status": "running", "started_at": time.time()}
+    _DEMO_JOBS[int(match_id)] = job
+
+    def work():
+        try:
+            job.update(demo_fetch.download(int(match_id)), status="done")
+        except Exception as exc:  # noqa: BLE001 - reported on the job
+            job.update(status="error", error=str(exc))
+            _admin_logger.warning("Demo download of match %s failed: %s", match_id, exc)
+
+    threading.Thread(target=work, name=f"demo-{match_id}", daemon=True).start()
+    return job
+
+
+@router.get("/demos/{match_id}/download")
+def demo_download_state(match_id: int):
+    return _DEMO_JOBS.get(int(match_id)) or {"match_id": int(match_id), "status": "none"}
+
+
+@router.post("/demos/backfill")
+def demo_backfill_start(payload: Optional[Dict[str, Any]] = None):
+    """Start the demo back-fill (services/demo_backfill): up to `limit` matches."""
+    from backend.services import demo_backfill
+
+    body = payload or {}
+    return demo_backfill.start(int(body.get("limit") or demo_backfill.NIGHT_LIMIT), body.get("match_ids") or None)
+
+
+@router.post("/demos/backfill/stop")
+def demo_backfill_stop():
+    from backend.services import demo_backfill
+
+    return demo_backfill.stop()
+
+
+@router.get("/demos/backfill")
+def demo_backfill_status():
+    from backend.services import demo_backfill
+
+    return demo_backfill.status()

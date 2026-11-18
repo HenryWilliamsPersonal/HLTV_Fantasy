@@ -370,6 +370,7 @@ class DataScheduler:
             ("valuations", lambda: self._bake_valuations(trigger, only_if_missing=True)),
             ("season", lambda: self._refresh_season(trigger)),
             ("field", lambda: self._start_field_reads(trigger)),
+            ("demos", lambda: self._start_demo_backfill(trigger)),
             ("hltv_session", lambda: self._check_hltv_session(trigger)),
             ("backup", lambda: self._run_backup(trigger)),
         ]
@@ -392,7 +393,7 @@ class DataScheduler:
             return
         task = str(pending.get("task") or "")
         order = self._enabled_tasks(cfg)
-        tail = ["valuations", "season", "field", "hltv_session", "backup"]
+        tail = ["valuations", "season", "field", "demos", "hltv_session", "backup"]
         if task in order:
             logger.info("Resuming the interrupted %s batch from task %s", pending.get("trigger"), task)
             self._run_batch(order[order.index(task):], "resume", cfg)
@@ -437,6 +438,19 @@ class DataScheduler:
         except Exception as exc:  # noqa: BLE001
             schedule_db.finish_run(run_id, "error", f"field read not started: {exc}")
             logger.exception("Field read start failed")
+
+    def _start_demo_backfill(self, trigger: str) -> None:
+        """Start the night's demo back-fill (services/demo_backfill: per-map
+        role/booster stats for the trigger model); runs on in the background."""
+        from backend.services import demo_backfill
+
+        run_id = schedule_db.start_run("demos", trigger)
+        try:
+            st = demo_backfill.start()
+            schedule_db.finish_run(run_id, "success", f"started: {st.get('total', '?')} matches; stored so far {st.get('stored', {})}")
+        except Exception as exc:  # noqa: BLE001
+            schedule_db.finish_run(run_id, "error", f"demo back-fill not started: {exc}")
+            logger.exception("Demo back-fill start failed")
 
     def _run_season_only(self, trigger: str) -> None:
         if not self._run_lock.acquire(blocking=False):

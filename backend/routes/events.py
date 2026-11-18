@@ -301,6 +301,12 @@ def list_all_events():
                 "kind": override or k.get("kind"), "label": k.get("label") if not override or override == k.get("kind") else None,
                 "group_format": k.get("group_format"), "playoff_size": k.get("playoff_size"),
                 "team_count": k.get("team_count"), "start_at": k.get("start_at"), "end_at": k.get("end_at"),
+                # what the Events table's format tags are built from
+                "group_variant": k.get("group_variant"), "playoff_byes": k.get("playoff_byes"),
+                "combined_playoffs": k.get("combined_playoffs"), "playoff_third_place": k.get("playoff_third_place"),
+                "swiss_bo_rules": k.get("swiss_bo_rules"), "group_bo_rules": k.get("group_bo_rules"),
+                "playoff_bo_rules": k.get("playoff_bo_rules"), "grand_final_bo": k.get("grand_final_bo"),
+                "stage_scoped": k.get("stage_scoped"),
             }
     return {
         "active_event_id": get_active_event_id(),

@@ -22,6 +22,55 @@ def list_players():
     return get_all_players()
 
 
+_FORM_CACHE: dict = {"key": None, "data": None}
+
+
+@router.get("/recent-form")
+def players_recent_form(limit: int = 10):
+    """Every player's ratings in their last `limit` stored matches (newest
+    first) and the average, from the per-match scoreboards on the result
+    rows. Cached until a result is imported or changed."""
+    import json as _json
+
+    limit = max(1, min(20, int(limit)))
+    conn = _connect()
+    try:
+        key = tuple(conn.execute("SELECT COUNT(*), MAX(imported_at), MAX(last_seen_at) FROM hltv_results").fetchone()) + (limit,)
+        if _FORM_CACHE["key"] == key and _FORM_CACHE["data"] is not None:
+            return _FORM_CACHE["data"]
+        rows = conn.execute(
+            "SELECT match_date, player_stats_json FROM hltv_results "
+            "WHERE match_date IS NOT NULL AND player_stats_json IS NOT NULL AND player_stats_json != '' "
+            "ORDER BY match_date DESC, match_id DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+    form: dict = {}
+    for row in rows:
+        try:
+            stats = _json.loads(row[1])
+        except Exception:  # noqa: BLE001
+            continue
+        for s in stats or []:
+            try:
+                pid = int(s.get("player_id") or 0)
+                rating = float(s.get("rating"))
+            except (TypeError, ValueError):
+                continue
+            if not pid:
+                continue
+            lst = form.setdefault(pid, [])
+            if len(lst) < limit:
+                lst.append(round(rating, 2))
+    data = {
+        str(pid): {"ratings": r, "avg": round(sum(r) / len(r), 3)}
+        for pid, r in form.items()
+        if r
+    }
+    _FORM_CACHE.update(key=key, data=data)
+    return data
+
+
 @router.get("/{player_id}/recent-form")
 def player_recent_form(player_id: int, limit: int = 5):
     """The player's recent matches with their per-match rating. Sources, in

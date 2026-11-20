@@ -1692,38 +1692,104 @@ table.players-table {
   color: var(--c-e9edf3);
 }
 
+/* Section tabs: an underline strip, no box. Plain condensed capitals; the
+   active section is ink with an orange bar sitting on the strip's rule. */
 .tab-bar.small {
-  gap: 6px;
-  margin: 6px 0 8px;
-  padding: 6px;
-  border: 1px solid var(--c-242b35);
-  border-radius: 10px;
-  background: var(--c-10141a);
-  display: inline-flex;
-  width: fit-content;
-  max-width: 100%;
+  display: flex;
   flex-wrap: wrap;
+  gap: 4px 22px;
+  margin: 4px 0 14px;
+  padding: 0;
+  border: none;
+  border-bottom: 1px solid var(--c-242b35);
+  border-radius: 0;
+  background: none;
+  width: auto;
+  max-width: 100%;
 }
 
 .tab-bar.small .tab {
-  border-radius: 8px;
-  border: 1px solid var(--c-2b3a60);
-  background: var(--c-1c2128);
-  color: var(--c-bcd0ff);
-  padding: 7px 10px;
+  position: relative;
+  clip-path: none;
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: var(--c-8fa3bf);
+  padding: 10px 2px 11px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  transition: color 0.12s ease;
+}
+
+.tab-bar.small .tab::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 3px;
+  background: transparent;
+  transition: background 0.12s ease;
 }
 
 .tab-bar.small .tab:hover {
-  border-color: var(--c-ff8a47);
-  background: var(--c-15254a);
+  color: var(--c-f2f5f9);
+  background: none;
 }
 
+.tab-bar.small .tab:hover::after { background: var(--c-2c3441); }
+
 .tab-bar.small .tab.active {
-  background: var(--c-e85d0f);
-  border-color: var(--c-ff8a47);
-  color: var(--c-ffffff);
-  box-shadow: inset 0 0 0 1px rgba(var(--rgb-ffffff), 0.14);
+  color: var(--c-f2f5f9);
+  background: none;
+  box-shadow: none;
+  font-weight: 700;
 }
+
+.tab-bar.small .tab.active::after { background: var(--c-ff6b1a); }
+
+.tab-bar.small .tab:focus-visible {
+  outline: 2px solid var(--c-ff6b1a);
+  outline-offset: 2px;
+}
+
+/* Mode switch (a choice inside a section, e.g. the Top 5 modes): one joined
+   control with the house clipped corner; the chosen option is orange with
+   dark text. */
+.tab-bar.small.seg {
+  display: inline-flex;
+  gap: 0;
+  margin: 0 0 14px;
+  padding: 0;
+  border: 1px solid var(--c-2c3441);
+  background: var(--c-12161d);
+  width: fit-content;
+  clip-path: polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px);
+}
+
+.tab-bar.small.seg .tab {
+  padding: 9px 16px;
+  font-size: 14px;
+  letter-spacing: 0.05em;
+  border-left: 1px solid var(--c-242b35);
+}
+
+.tab-bar.small.seg .tab:first-child { border-left: none; padding-left: 18px; }
+.tab-bar.small.seg .tab::after { display: none; }
+
+.tab-bar.small.seg .tab:hover {
+  color: var(--c-f2f5f9);
+  background: var(--c-171c24);
+}
+
+.tab-bar.small.seg .tab.active {
+  background: var(--c-ff6b1a);
+  color: var(--c-0a0c10);
+  border-left-color: var(--c-ff6b1a);
+}
+
+.tab-bar.small.seg .tab.active + .tab { border-left-color: var(--c-ff6b1a); }
 
 .close {
   background: none;
@@ -4024,7 +4090,8 @@ button:disabled {
 /* Swiss board like the brackets: a dark board, each record pool headed by a
    band in its record's colour (green winning ... blue level ... red losing),
    lighter match cards with the same colour on their left edge. */
-.sw-board { background: var(--c-0a0c10); border-color: var(--c-39424f); border-radius: 0; }
+/* the board sits straight on its card (every page wraps it in one): no box of its own */
+.sw-board { background: none; border: none; border-radius: 0; padding: 4px 0 8px; }
 .sw-pool { --sw-c: var(--c-35a2ff); gap: 0; }
 .sw-pool[data-lean="up2"] { --sw-c: var(--c-3ee07a); }
 .sw-pool[data-lean="up1"] { --sw-c: var(--c-14b8a6); }
@@ -4437,3 +4504,196 @@ button:disabled {
 .pager-range b { color: var(--c-f2f5f9); font-weight: 700; }
 /* hover card: an all-blue border, matching the chart's line and axes */
 .value-point-tooltip { border: 1px solid var(--c-35a2ff); border-top: 2px solid var(--c-35a2ff); }
+
+/* Swiss record odds: the Player Value table's look; Qualify set apart
+   between the winning and losing records, with a bar for the odds */
+.swiss-odds col.so-seed { width: 58px; }
+.swiss-odds col.so-team { width: 23%; }
+.swiss-odds col.so-qual { width: 15%; }
+.swiss-odds col.so-act { width: 118px; }
+.swiss-odds th.num, .swiss-odds td.num { text-align: right; }
+.swiss-odds td.num { font-size: 15px; }
+.swiss-odds-team { gap: 12px; }
+.swiss-odds-team .value-table-name { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swiss-odds .so-split { border-left: 1px solid var(--c-242b35); border-right: 1px solid var(--c-242b35); }
+.swiss-odds thead th.so-split { color: var(--c-ff8a47); }
+.so-qual-cell { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.so-bar { width: 56px; height: 5px; background: var(--c-242b35); flex: none; }
+.so-bar i { display: block; height: 100%; background: var(--c-ff6b1a); }
+.swiss-odds td:last-child .filter-toggle { padding: 4px 10px; font-size: 11px; }
+
+/* Events table: the Player Value table's look, one line per event */
+.events-table th.num, .events-table td.num { text-align: right; }
+.events-table td.et-teams-cell { padding-right: 28px; }
+.et-name { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.et-name .value-table-name { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.et-format-cell { white-space: nowrap; overflow: hidden; }
+.events-table tbody tr.et-active td { background: color-mix(in srgb, var(--c-ff6b1a) 9%, transparent); }
+.events-table tbody tr.et-active td:first-child { box-shadow: inset 3px 0 0 var(--c-ff6b1a); }
+.et-actions { display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
+.et-active-chip {
+  font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.06em;
+  font-size: 11.5px; font-weight: 700; color: var(--c-ff8a47);
+}
+.et-remove {
+  background: none; border: 0; padding: 2px 0; cursor: pointer; color: var(--c-6f819e);
+  font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.06em; font-size: 11.5px;
+}
+.et-remove:hover:not(:disabled) { color: var(--c-fca5a5); }
+.et-remove:disabled { opacity: 0.3; cursor: default; }
+
+/* format: plain text per stage (bold condensed name + detail), a chevron
+   between stages, the best-of rules after a hairline */
+.et-fmt { display: flex; align-items: baseline; gap: 10px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.et-stage { display: inline-flex; align-items: baseline; gap: 6px; font-size: 13px; color: var(--c-8fa3bf); flex: none; }
+.et-stage b {
+  font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: 13px; font-weight: 700; color: var(--c-e9edf3);
+}
+.et-arrow { color: var(--c-ff8a47); font-size: 15px; line-height: 1; flex: none; }
+.et-bo { color: var(--c-6f819e); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; padding-left: 10px; border-left: 1px solid var(--c-2c3441); }
+
+/* status: coloured condensed capitals with a square marker (live pulses) */
+.et-status {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.06em;
+  font-size: 12.5px; font-weight: 700; white-space: nowrap;
+  --st: var(--c-8fa3bf);
+  color: var(--st);
+}
+.et-status i { width: 6px; height: 6px; background: var(--st); flex: none; }
+.et-status.live { --st: var(--c-3ee07a); }
+.et-status.live i { animation: et-pulse 1.6s ease-in-out infinite; }
+.et-status.upcoming { --st: var(--c-fbbf24); }
+.et-status.finished { --st: var(--c-e9edf3); }
+.et-status.finished i { width: 4px; height: 8px; margin: 0 2px 2px 1px; background: none; border: solid var(--c-35a2ff); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.et-status.off { --st: var(--c-fca5a5); }
+@keyframes et-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .et-status.live i { animation: none; } }
+.events-table td.et-date { white-space: nowrap; }
+.et-link {
+  background: none; border: 0; padding: 2px 0; cursor: pointer; color: var(--c-c6d0dc);
+  font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.06em; font-size: 11.5px; font-weight: 700;
+}
+.et-link:hover:not(:disabled) { color: var(--c-ff8a47); }
+.et-link:disabled { opacity: 0.4; cursor: default; }
+.events-table td { padding-top: 9px; padding-bottom: 9px; }
+/* Events table sizes to its content: every column shrinks to fit except
+   Format, which takes the rest */
+.events-table { table-layout: auto; }
+.events-table th, .events-table td { width: 1%; white-space: nowrap; }
+.events-table th + th, .events-table td + td { padding-left: 22px; }
+.events-table td.et-format-cell, .events-table thead th:nth-child(6) { width: auto; }
+.et-name .value-table-name { display: block; max-width: 340px; }
+/* Events table: full width, the spare width shared out equally between the
+   columns (grid auto tracks), so the columns sit evenly spaced */
+.events-table { display: grid; grid-template-columns: repeat(7, auto); width: 100%; }
+.events-table thead, .events-table tbody, .events-table tr { display: contents; }
+.events-table th, .events-table td { width: auto; display: flex; align-items: center; min-width: 0; }
+.events-table th.num, .events-table td.num { justify-content: flex-start; text-align: left; }
+.events-table td.et-format-cell { padding-right: 0; }
+.events-table td:last-child { justify-content: flex-end; }
+.events-table .et-status, .events-table .et-fmt, .events-table .et-actions { margin-top: 2px; }
+/* row actions appear only on the row under the pointer (or with keyboard
+   focus); the Active marker always shows */
+.events-table .et-actions > button { opacity: 0; transition: opacity 0.12s ease; }
+.events-table tr:hover .et-actions > button,
+.events-table tr:focus-within .et-actions > button { opacity: 1; }
+@media (hover: none) { .events-table .et-actions > button { opacity: 1; } }
+.events-table tr.et-active .et-remove { display: none; }
+/* one shared baseline per row: cells are plain blocks again (the grid still
+   spaces the columns), inline pieces sit on the text baseline */
+.events-table th, .events-table td { display: block; align-self: stretch; line-height: 24px; }
+.events-table tbody td { padding-top: 9px; padding-bottom: 9px; }
+.events-table th.num, .events-table td.num { text-align: left; }
+.events-table td:last-child { text-align: right; }
+.events-table .et-status, .events-table .et-fmt, .events-table .et-actions { margin-top: 0; vertical-align: baseline; }
+.events-table .et-name { display: block; }
+.events-table .et-fmt { display: inline-flex; align-items: baseline; }
+.events-table .et-actions { display: inline-flex; align-items: baseline; }
+.events-table .et-status { display: inline-flex; align-items: baseline; }
+.events-table .et-status i { align-self: center; }
+/* format in sentence case at body size, so only Status reads as a tag */
+.events-table .et-stage b {
+  font-family: inherit; font-stretch: normal; text-transform: none; letter-spacing: 0;
+  font-size: 14.5px; font-weight: 600; color: var(--c-e9edf3);
+}
+.events-table .et-stage::first-letter { text-transform: uppercase; }
+.events-table .et-bo { font-size: 13.5px; color: var(--c-8fa3bf); }
+/* sort arrows only on the sorted column (and on hover) */
+.events-table .table-sort-button[aria-sort="none"] span { opacity: 0; transition: opacity 0.12s ease; }
+.events-table .table-sort-button[aria-sort="none"]:hover span,
+.events-table .table-sort-button[aria-sort="none"]:focus-visible span { opacity: 1; }
+
+/* Database tables: the Player Value table's look */
+.db-table col.db-best-map { width: 15%; }
+.db-table col.db-lineup { width: 200px; }
+.db-table th.num, .db-table td.num { text-align: right; }
+.db-table td.db-good { color: var(--c-3ee07a); }
+.db-table td.db-weak { color: var(--c-fca5a5); }
+.db-rate { display: flex; align-items: center; gap: 10px; font-variant-numeric: tabular-nums; }
+.db-rate span:first-child { min-width: 36px; text-align: right; }
+.db-map { color: var(--c-c6d0dc); white-space: nowrap; }
+.db-map b { color: var(--c-f2f5f9); font-weight: 600; margin-right: 4px; }
+.db-lineup-photos { display: flex; gap: 4px; }
+.db-lineup-photos > span { display: inline-flex; }
+/* matches: team A right-aligned against the score, team B left */
+.db-matches col.db-m-score { width: 120px; }
+.db-matches col.db-m-date { width: 140px; }
+.db-matches th.db-m-right { text-align: right; }
+.db-matches .db-m-center { text-align: center; }
+.db-m-side { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.db-m-side.right { flex-direction: row-reverse; text-align: right; }
+.db-m-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.db-m-side .value-table-name { font-size: 15.5px; color: var(--c-8fa3bf); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-m-side.won .value-table-name { color: var(--c-f2f5f9); }
+.db-m-rank { font-size: 12px; color: var(--c-6f819e); font-variant-numeric: tabular-nums; }
+.db-score { display: inline-flex; align-items: baseline; gap: 6px; font-family: var(--display); font-stretch: condensed; font-size: 20px; font-variant-numeric: tabular-nums; }
+.db-score b { font-weight: 700; }
+.db-score b.w { color: var(--c-3ee07a); }
+.db-score b.l { color: var(--c-8fa3bf); }
+.db-score i { font-style: normal; color: var(--c-6f819e); }
+.db-match-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+/* Players: last-10 form bars around the 1.00 line */
+.db-table col.db-form { width: 30%; }
+.db-formbars { display: flex; align-items: center; gap: 14px; }
+.db-form-avg { min-width: 38px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--c-f2f5f9); }
+.db-form-avg.good { color: var(--c-3ee07a); }
+.db-form-avg.weak { color: var(--c-fca5a5); }
+.db-form-track { position: relative; display: flex; gap: 3px; height: 32px; }
+.db-form-track::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px solid var(--c-2c3441); }
+.db-form-slot { position: relative; width: 9px; height: 100%; }
+.db-form-slot i { position: absolute; left: 0; right: 0; }
+.db-form-slot i.up { bottom: 50%; background: var(--c-3ee07a); }
+.db-form-slot i.down { top: 50%; background: var(--c-fca5a5); }
+.db-table td .db-formbars { padding-left: 48px; }
+.db-table th:nth-child(4) { padding-left: 48px; }
+.db-form-track { height: 36px; gap: 4px; }
+.db-form-slot { width: 13px; }
+/* form colours: the app's value pair (same as the Player Value bars) */
+.db-form-avg.good { color: var(--val-pos); }
+.db-form-avg.weak { color: var(--val-neg); }
+.db-form-slot i.up { background: var(--val-pos); }
+.db-form-slot i.down { background: var(--val-neg); }
+/* Players: four evenly spaced columns, all left-aligned so the gaps match */
+.db-players col.vt-player { width: 27%; }
+.db-players col.vt-team { width: 27%; }
+.db-players col.vt-num { width: 16%; }
+.db-players col.db-form { width: 30%; }
+.db-players th, .db-players td.num { text-align: left; }
+.db-players td .db-formbars, .db-players th:nth-child(4) { padding-left: 0; }
+.db-players .db-formbars { gap: 18px; }
+/* form: fully saturated pair so the bars read at a glance */
+.db-players { --form-pos: #14ff6c; --form-neg: #ff2e4c; }
+:root[data-theme="light"] .db-players { --form-pos: #00a843; --form-neg: #e0102f; }
+.db-players .db-form-avg.good { color: var(--form-pos); }
+.db-players .db-form-avg.weak { color: var(--form-neg); }
+.db-players .db-form-slot i.up { background: var(--form-pos); }
+.db-players .db-form-slot i.down { background: var(--form-neg); }
+/* Teams: every column left-aligned so values sit under their headers */
+.db-teams col.vt-player { width: 20%; }
+.db-teams col.vt-num { width: 10%; }
+.db-teams col.db-best-map { width: 16%; }
+.db-teams col.db-lineup { width: auto; }
+.db-teams th, .db-teams td.num { text-align: left; }
+.db-teams .db-rate span:first-child { text-align: left; }

@@ -300,6 +300,57 @@ function PlayerPhoto({ playerId, name, size = 26, className = "" }) {
   );
 }
 
+// A player's last matches as small bars around a 1.00 line (oldest left,
+// newest right; green above 1.00, red below) with the average beside them.
+function FormBars({ ratings, avg }) {
+  const list = [...(ratings || [])].reverse();
+  const tone = avg >= 1.1 ? "good" : avg < 1 ? "weak" : "";
+  return (
+    <div className="db-formbars" title={list.map((r) => r.toFixed(2)).join("  ")}>
+      <span className={`db-form-avg ${tone}`}>{Number(avg).toFixed(2)}</span>
+      <span className="db-form-track">
+        {list.map((r, i) => {
+          const d = Math.max(-0.4, Math.min(0.4, r - 1));
+          const h = Math.max(3, (Math.abs(d) / 0.4) * 17);
+          return (
+            <span key={i} className="db-form-slot">
+              <i className={d >= 0 ? "up" : "down"} style={{ height: `${h}px` }} />
+            </span>
+          );
+        })}
+      </span>
+    </div>
+  );
+}
+
+// Database tables show this many rows a page.
+const DB_PAGE_SIZE = 50;
+// A team's best map from its stored map stats: the highest win rate over
+// maps played at least 5 times.
+// A team's map win rate over every stored map (wins / maps played).
+const mapRecordOf = (json) => {
+  let rows = [];
+  try {
+    rows = JSON.parse(json || "[]") || [];
+  } catch {
+    return null;
+  }
+  const played = rows.reduce((a, r) => a + (Number(r.played) || 0), 0);
+  const wins = rows.reduce((a, r) => a + (Number(r.wins) || 0), 0);
+  return played ? { rate: wins / played, played } : null;
+};
+const bestMapOf = (json) => {
+  let rows = [];
+  try {
+    rows = JSON.parse(json || "[]") || [];
+  } catch {
+    return null;
+  }
+  const ok = rows.filter((r) => Number(r.played) >= 5);
+  if (!ok.length) return null;
+  ok.sort((a, b) => Number(b.win_rate) - Number(a.win_rate) || Number(b.played) - Number(a.played));
+  return { map: ok[0].map, win_rate: Number(ok[0].win_rate) || 0, played: Number(ok[0].played) || 0 };
+};
 // Roster cards are paged rather than tabled: this many per page.
 const COMBO_PAGE_SIZE = 10;
 // Rosters are always listed by score, best first (sort_key "ev_desc").
@@ -6180,6 +6231,69 @@ const eventStatus = (v) => {
   return { label: "Upcoming", cls: "upcoming" };
 };
 
+// The Events table's format: one tag per stage ("GSL groups 2×4 · top 3" →
+// "Playoff 6 · 2 byes") and the best-of rules apart ("Bo3 · final Bo5"),
+// built from the detection's fields; the backend's full label is the tooltip.
+const eventFormatParts = (k) => {
+  const full = (describeEventFormat(k)?.short || "").replace(/^Swiss Swiss\b/, "Swiss");
+  if (!k || !k.kind) return { stages: [], bo: "", full };
+  const label = String(k.label || "");
+  const num = (re) => {
+    const m = label.match(re);
+    return m ? Number(m[1]) : null;
+  };
+  const teams = Number(k.team_count || 0);
+  const variant = String(k.group_variant || "");
+  const boText = (rules, finalKey = "grandFinal", finalName = "final") => {
+    if (!rules) return "";
+    const d = Number(rules.default || 0);
+    const parts = d ? [`Bo${d}`] : [];
+    const f = Number(rules[finalKey] || 0);
+    if (f && f !== d) parts.push(`${finalName} Bo${f}`);
+    return parts.join(" · ");
+  };
+  const stages = [];
+  let bo = "";
+  if (k.kind === "swiss") {
+    stages.push({ name: teams && teams !== 16 ? `${teams}-team Swiss` : "Swiss", detail: "" });
+    const r = k.swiss_bo_rules || {};
+    const d = Number(r.default || 0);
+    const p = Number(r.progression || d);
+    const e = Number(r.elimination || d);
+    bo = d && p === d && e === d ? `Bo${d}` : d ? `Bo${d} · deciders Bo${Math.max(p, e)}` : "";
+  } else if (k.kind === "double_elim") {
+    const size = num(/\((\d+) teams/) || Number(k.playoff_size || 0) || teams;
+    stages.push({ name: size ? `${size}-team double elim` : "Double elim", detail: "" });
+    bo = boText(k.group_bo_rules, "grandFinal", "grand final") || (k.grand_final_bo ? `grand final Bo${k.grand_final_bo}` : "");
+  } else if (k.kind === "groups") {
+    const g = num(/\((\d+) groups of/);
+    const kindName = String(k.group_format || "") === "de8" || variant.startsWith("de8") ? "double-elim groups" : "GSL groups";
+    stages.push({ name: g ? `${g} ${kindName}` : kindName, detail: "" });
+    const groupBo = boText(k.group_bo_rules);
+    if (k.combined_playoffs && k.playoff_size) {
+      stages.push({ name: Number(k.playoff_size) === 8 ? "Playoff" : `${k.playoff_size}-team playoff`, detail: "" });
+      const poRules = k.playoff_bo_rules || {};
+      const gd = Number((k.group_bo_rules || {}).default || 0);
+      const pd = Number(poRules.default || 0);
+      const fin = Number(poRules.grandFinal || 0);
+      // same best-of throughout: "Bo3 · final Bo5"; else each stage's own
+      bo = !pd || pd === gd
+        ? [groupBo, fin && fin !== gd ? `final Bo${fin}` : ""].filter(Boolean).join(" · ")
+        : `groups ${groupBo || "Bo3"} · playoff ${boText(poRules)}`;
+    } else {
+      bo = groupBo;
+    }
+  } else if (k.kind === "playoff" || k.kind === "bounty") {
+    const size = Number(k.playoff_size || 0) || teams;
+    stages.push({ name: k.kind === "bounty" ? "Bounty draft" : size && size !== 8 ? `${size}-team playoff` : "Playoff", detail: "" });
+    bo = boText(k.playoff_bo_rules) || boText(k.group_bo_rules);
+    if (k.playoff_third_place) bo = bo ? `${bo} · 3rd place` : "3rd place";
+  } else {
+    stages.push({ name: full || String(k.kind), detail: "" });
+  }
+  return { stages, bo, full };
+};
+
 const describeEventFormat = (k) => {
   if (!k || !k.kind) return null;
   // The backend now composes an authoritative label from the event page's
@@ -6731,7 +6845,7 @@ function DisplaySettings({ prefs, onPrefs }) {
   return (
     <Section title="Display">
       <div className="stack">
-        <div className="tab-bar small">
+        <div className="tab-bar small seg">
           {[
             ["dark", "Dark"],
             ["light", "Light"],
@@ -8449,11 +8563,51 @@ function EventsTab({ refreshData, players, teams = [], onOpenPlayer, onOpenTeam,
   // Full kind-detection result per event (kind, group format, playoff size,
   // team count) — drives the Type column and the Formats sub-tab.
   const [eventKinds, setEventKinds] = useState({});
+  // newest event first by default; every column sorts
+  const [eventSort, setEventSort] = useState("id_desc");
+  const eventStartOf = (ev) => {
+    const t = Number(eventKinds[ev.event_id]?.start_at || ev.kind?.start_at || 0);
+    return t ? (t < 1e12 ? t * 1000 : t) : null;
+  };
+  const statusRank = (ev) => {
+    const v = ev.valuation;
+    if (!v) return 4;
+    if (v.status === "unsupported" && !PUBLIC_BUILD) return 3;
+    return v.finished ? 2 : v.started ? 0 : 1;
+  };
+  const sortedEvents = useMemo(() => {
+    const [key, dir] = eventSort.split("_");
+    const sign = dir === "desc" ? -1 : 1;
+    const startOf = (ev) => eventStartOf(ev) || 0;
+    const val = (ev) => {
+      if (key === "name") return String(ev.name || "").toLowerCase();
+      if (key === "format") return String(eventFormatParts(eventKinds[ev.event_id]).stages[0]?.name || "").toLowerCase();
+      if (key === "id") return Number(ev.event_id || 0);
+      if (key === "teams") return Number(ev.team_count || 0);
+      if (key === "start") return startOf(ev);
+      return statusRank(ev);
+    };
+    return [...(events || [])].sort((a, b) => {
+      const x = val(a);
+      const y = val(b);
+      if (x < y) return -sign;
+      if (x > y) return sign;
+      return startOf(b) - startOf(a) || Number(b.event_id) - Number(a.event_id);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, eventKinds, eventSort]);
   useEffect(() => {
     let cancelled = false;
+    // the event list carries each event's stored format; /kind is asked only
+    // for an event with none stored yet
+    const fromList = {};
+    (events || []).forEach((ev) => {
+      if (ev.kind?.kind) fromList[Number(ev.event_id)] = ev.kind;
+    });
+    if (Object.keys(fromList).length) setEventKinds((prev) => ({ ...fromList, ...prev }));
     (events || []).forEach((ev) => {
       const id = Number(ev.event_id);
-      if (!id || eventKinds[id] !== undefined) return;
+      if (!id || eventKinds[id] !== undefined || ev.kind?.kind) return;
       api
         .get(`/events/${id}/kind`, 60000)
         .then((d) => {
@@ -8580,69 +8734,95 @@ function EventsTab({ refreshData, players, teams = [], onOpenPlayer, onOpenTeam,
       <Section title="Events">
         <div className="stack">
           {events.length > 0 && (
-            <div className="card sub">
-              <h4>Imported Events</h4>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Fantasy Event</th>
-                    <th>Type</th>
-                    <th>Teams</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {events.map((ev) => (
-                    <tr key={ev.event_id}>
-                      <td>{ev.name || "-"}</td>
-                      <td>{ev.event_id}</td>
-                      <td>{describeEventFormat(eventKinds[ev.event_id])?.short || "..."}</td>
-                      <td>{ev.team_count ?? 0}</td>
-                      <td>
-                        {ev.valuation ? (
-                          <span className={`valuation-badge ${eventStatus(ev.valuation).cls}`} title={PUBLIC_BUILD ? undefined : ev.valuation.label}>
-                            {eventStatus(ev.valuation).label}
-                          </span>
-                        ) : (
-                          <span className="muted">-</span>
-                        )}
-                      </td>
-                      <td>
-                        {PUBLIC_BUILD ? (
-                          <div className="actions" style={{ marginTop: 0 }}>
-                            <button
-                              className={shownEventId === ev.event_id ? "primary" : "secondary"}
-                              onClick={() => onViewEvent && onViewEvent(ev.event_id === activeEventId ? null : ev.event_id)}
-                              disabled={shownEventId === ev.event_id}
-                            >
-                              {shownEventId === ev.event_id ? "Active" : "Set Active"}
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="actions" style={{ marginTop: 0 }}>
-                            <button
-                              className={activeEventId === ev.event_id ? "primary" : "secondary"}
-                              onClick={() => activateEvent(ev.event_id)}
-                              disabled={busy || activeEventId === ev.event_id}
-                            >
-                              {activeEventId === ev.event_id ? "Active" : "Set Active"}
-                            </button>
-                            <button
-                              className="danger"
-                              onClick={() => removeEvent(ev)}
-                              disabled={busy || activeEventId === ev.event_id}
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="card-section">
+              <div className="group-card-head">
+                <h3>Imported Events</h3>
+              </div>
+              <div className="card sub group-card">
+                <div className="value-table-frame">
+                  <table className="value-table events-table">
+                    <thead>
+                      <tr>
+                        <SortHeader sortValue={eventSort} asc="id_asc" desc="id_desc" defaultDirection="desc" onChange={setEventSort} className="num">#</SortHeader>
+                        <SortHeader sortValue={eventSort} asc="name_asc" desc="name_desc" onChange={setEventSort}>Event</SortHeader>
+                        <SortHeader sortValue={eventSort} asc="status_asc" desc="status_desc" onChange={setEventSort}>Status</SortHeader>
+                        <SortHeader sortValue={eventSort} asc="start_asc" desc="start_desc" defaultDirection="desc" onChange={setEventSort}>Starts</SortHeader>
+                        <SortHeader sortValue={eventSort} asc="teams_asc" desc="teams_desc" defaultDirection="desc" onChange={setEventSort} className="num">Teams</SortHeader>
+                        <SortHeader sortValue={eventSort} asc="format_asc" desc="format_desc" onChange={setEventSort}>Format</SortHeader>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedEvents.map((ev) => {
+                        const fmt = eventFormatParts(eventKinds[ev.event_id]);
+                        const st = eventStatus(ev.valuation);
+                        const isActive = (PUBLIC_BUILD ? shownEventId : activeEventId) === ev.event_id;
+                        const start = eventStartOf(ev);
+                        return (
+                          <tr key={ev.event_id} className={isActive ? "et-active" : ""}>
+                            <td className="num muted-num">{ev.event_id}</td>
+                            <td>
+                              <div className="et-name">
+                                <span className="value-table-name" title={ev.name || ""}>{ev.name || `Event ${ev.event_id}`}</span>
+                              </div>
+                            </td>
+                            <td>
+                              {ev.valuation ? (
+                                <span className={`et-status ${st.cls}`} title={PUBLIC_BUILD ? undefined : ev.valuation.label}>
+                                  <i aria-hidden="true" />
+                                  {st.label}
+                                </span>
+                              ) : (
+                                <span className="muted">-</span>
+                              )}
+                            </td>
+                            <td className="muted-num et-date">{start ? new Date(start).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "-"}</td>
+                            <td className="num et-teams-cell">{ev.team_count ?? 0}</td>
+                            <td className="et-format-cell" title={fmt.full}>
+                              {fmt.stages.length ? (
+                                <div className="et-fmt">
+                                  {fmt.stages.map((st2, k2) => (
+                                    <React.Fragment key={k2}>
+                                      {k2 > 0 && <span className="et-arrow">›</span>}
+                                      <span className="et-stage">
+                                        <b>{st2.name}</b>
+                                        {st2.detail && <span>{st2.detail}</span>}
+                                      </span>
+                                    </React.Fragment>
+                                  ))}
+                                  {fmt.bo && <span className="et-bo">{fmt.bo}</span>}
+                                </div>
+                              ) : (
+                                <span className="muted">…</span>
+                              )}
+                            </td>
+                            <td>
+                              <div className="et-actions">
+                              {isActive ? (
+                                <span className="et-active-chip">Active</span>
+                              ) : (
+                                <button
+                                  className="et-link"
+                                  onClick={() => (PUBLIC_BUILD ? onViewEvent && onViewEvent(ev.event_id === activeEventId ? null : ev.event_id) : activateEvent(ev.event_id))}
+                                  disabled={busy}
+                                >
+                                  Set active
+                                </button>
+                              )}
+                              {!PUBLIC_BUILD && (
+                                <button className="et-remove" onClick={() => removeEvent(ev)} disabled={busy || isActive} title="Remove this event">
+                                  Remove
+                                </button>
+                              )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           )}
 
@@ -8716,6 +8896,7 @@ function MatchesDataPanel({ teams = [], players = [], onOpenPlayer, onOpenTeam }
   const [matchSort, setMatchSort] = useState("date_desc");
   const [matchRankValue, setMatchRankValue] = useState("");
   const [matchRankScope, setMatchRankScope] = useState("both");
+  const [recentResultsTotal, setRecentResultsTotal] = useState(0);
   const [matchRankDir, setMatchRankDir] = useState("within");
   const loadStoredRecentResults = async (offset = 0, searchOverride = null, sortOverride = null, rankOverride = {}) => {
     const safeOffset = Math.max(0, Number(offset) || 0);
@@ -8737,6 +8918,7 @@ function MatchesDataPanel({ teams = [], players = [], onOpenPlayer, onOpenTeam }
         setRecentResultsError(String(res.detail));
       } else {
         setRecentResults(Array.isArray(res?.results) ? res.results : []);
+        setRecentResultsTotal(Number(res?.total || 0));
         setRecentResultsOffset(safeOffset);
       }
     } catch (e) {
@@ -8808,8 +8990,17 @@ function MatchesDataPanel({ teams = [], players = [], onOpenPlayer, onOpenTeam }
 
   return (
     <div className="stack">
-      <div className="grid two">
-        <Input label="Search Matches" value={matchSearch} onChange={changeMatchSearch} placeholder="Team or day/month/year" className="search-field" />
+      <div className="card-section">
+      <div className="card sub group-card">
+      <div className="value-toolbar db-match-toolbar">
+        <div className="value-search-wrap">
+          <Input label="Search Matches" value={matchSearch} onChange={changeMatchSearch} placeholder="Search team or day/month/year" className="search-field value-search" />
+          {matchSearch && (
+            <button type="button" className="value-search-clear" onClick={() => changeMatchSearch("")} aria-label="Clear search">
+              ×
+            </button>
+          )}
+        </div>
         <div className="match-rank-filter">
           <Input label="VRS Rank" value={matchRankValue} onChange={changeMatchRankValue} placeholder="e.g. 50" />
           <Select
@@ -8832,80 +9023,78 @@ function MatchesDataPanel({ teams = [], players = [], onOpenPlayer, onOpenTeam }
           />
         </div>
       </div>
-      <div className="actions" style={{ marginTop: 0 }}>
-        <button
-          className="secondary"
-          onClick={() => loadStoredRecentResults(Math.max(0, recentResultsOffset - 100))}
-          disabled={recentResultsLoading || recentResultsOffset <= 0}
-        >
-          Previous
-        </button>
-        <button
-          className="secondary"
-          onClick={() => loadStoredRecentResults(recentResultsOffset + 100)}
-          disabled={recentResultsLoading || recentResults.length < 100}
-        >
-          Next
-        </button>
-      </div>
       {recentResultsError && <p className="error">{recentResultsError}</p>}
       {!recentResultsLoading && !recentResultsError && recentResults.length === 0 && <p className="muted">No matches found.</p>}
       {recentResults.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>Team A</th>
-              <th>Score</th>
-              <th>Team B</th>
-              <SortHeader sortValue={matchSort} asc="date_asc" desc="date_desc" defaultDirection="desc" onChange={changeMatchSort}>Date</SortHeader>
-            </tr>
-          </thead>
-          <tbody>
-            {recentResults.map((r, idx) => {
-              const s1 = Number(r?.score1);
-              const s2 = Number(r?.score2);
-              const haveScore = Number.isFinite(s1) && Number.isFinite(s2);
-              return (
-                <tr
-                  key={`hltv-res-${idx}-${r?.match_url || ""}`}
-                  className={`row-link ${String(r?.match_url || "") === selectedMatchUrl ? "row-active" : ""}`}
-                  onClick={() => openMatchModal(r)}
-                >
-                  <td><TeamLogo hltvTeamId={logoForTeamName(r?.team1)} name={r?.team1} size={22} />{r?.team1 || "-"}</td>
-                  <td className="score-cell">
-                    {haveScore ? (
-                      <>
-                        <span className={s1 > s2 ? "score-win" : s1 < s2 ? "score-loss" : ""}>{s1}</span>
-                        {" - "}
-                        <span className={s2 > s1 ? "score-win" : s2 < s1 ? "score-loss" : ""}>{s2}</span>
-                      </>
-                    ) : (
-                      "-"
-                    )}
-                  </td>
-                  <td><TeamLogo hltvTeamId={logoForTeamName(r?.team2)} name={r?.team2} size={22} />{r?.team2 || "-"}</td>
-                  <td>{formatDMY(r?.match_date)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="value-table-frame">
+          <table className="value-table db-table db-matches">
+            <colgroup>
+              <col className="db-m-team" />
+              <col className="db-m-score" />
+              <col className="db-m-team" />
+              <col className="db-m-date" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th className="db-m-right">Team A</th>
+                <th className="db-m-center">Score</th>
+                <th>Team B</th>
+                <SortHeader sortValue={matchSort} asc="date_asc" desc="date_desc" defaultDirection="desc" onChange={changeMatchSort} className="num">Date</SortHeader>
+              </tr>
+            </thead>
+            <tbody>
+              {recentResults.map((r, idx) => {
+                const s1 = Number(r?.score1);
+                const s2 = Number(r?.score2);
+                const haveScore = Number.isFinite(s1) && Number.isFinite(s2);
+                const rk = (v) => (Number(v) > 0 && Number(v) < 999 ? `#${Number(v)}` : "");
+                const side = (name, rank, won, right) => (
+                  <div className={`db-m-side${right ? " right" : ""}${won ? " won" : ""}`}>
+                    <TeamLogo hltvTeamId={logoForTeamName(name)} name={name} size={30} />
+                    <span className="db-m-name">
+                      <span className="value-table-name">{name || "-"}</span>
+                      {rank && <span className="db-m-rank">VRS {rank}</span>}
+                    </span>
+                  </div>
+                );
+                return (
+                  <tr
+                    key={`hltv-res-${idx}-${r?.match_url || ""}`}
+                    className={`clickable${String(r?.match_url || "") === selectedMatchUrl ? " row-active" : ""}`}
+                    onClick={() => openMatchModal(r)}
+                  >
+                    <td>{side(r?.team1, rk(r?.vrs_rank_1), haveScore && s1 > s2, true)}</td>
+                    <td className="db-m-center">
+                      {haveScore ? (
+                        <span className="db-score">
+                          <b className={s1 > s2 ? "w" : "l"}>{s1}</b>
+                          <i>:</i>
+                          <b className={s2 > s1 ? "w" : "l"}>{s2}</b>
+                        </span>
+                      ) : (
+                        "-"
+                      )}
+                    </td>
+                    <td>{side(r?.team2, rk(r?.vrs_rank_2), haveScore && s2 > s1, false)}</td>
+                    <td className="num muted-num">
+                      {r?.match_date ? new Date(`${r.match_date}T12:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "-"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
-      <div className="actions" style={{ marginTop: 0 }}>
-        <button
-          className="secondary"
-          onClick={() => loadStoredRecentResults(Math.max(0, recentResultsOffset - 100))}
-          disabled={recentResultsLoading || recentResultsOffset <= 0}
-        >
-          Previous
-        </button>
-        <button
-          className="secondary"
-          onClick={() => loadStoredRecentResults(recentResultsOffset + 100)}
-          disabled={recentResultsLoading || recentResults.length < 100}
-        >
-          Next
-        </button>
+      </div>
+      {recentResultsTotal > 0 && (
+        <ComboPager
+          page={Math.floor(recentResultsOffset / 100)}
+          pageSize={100}
+          total={recentResultsTotal}
+          onPage={(n) => loadStoredRecentResults(n * 100)}
+        />
+      )}
       </div>
       {showMatchModal && selectedMatchRow && (
         <MatchDetailModal
@@ -9242,7 +9431,7 @@ function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, on
   // "event": players with a fantasy price (they were in an event); "all" adds
   // the roster players the nightly team-data task creates from HLTV team pages.
   const [teamSearch, setTeamSearch] = useState("");
-  const [teamSort, setTeamSort] = useState("name_asc");
+  const [teamSort, setTeamSort] = useState("vrs_asc");
   const [selectedPlayer, setSelectedPlayer] = useState(null);
   const [showPlayerModal, setShowPlayerModal] = useState(false);
   const [playerTab, setPlayerTab] = useState("info");
@@ -9328,6 +9517,33 @@ function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, on
     });
     return m;
   }, [latestTeamByPlayer]);
+  const dbTeamById = useMemo(() => {
+    const m = {};
+    teams.forEach((t) => {
+      m[Number(t.team_id)] = t;
+    });
+    return m;
+  }, [teams]);
+  const teamOfPlayer = (pid) => dbTeamById[Number(latestTeamByPlayer[pid]?.team_id || 0)] || null;
+  const rankOf = (v) => (Number(v) > 0 && Number(v) < 999 ? Number(v) : null);
+  const [playerPage, setPlayerPage] = useState(0);
+  // each player's ratings in their last 10 matches (newest first) + average
+  const [playerForm10, setPlayerForm10] = useState({});
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get("/players/recent-form?limit=10")
+      .then((res) => {
+        if (!cancelled && res && !res.detail) setPlayerForm10(res);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const [teamPage, setTeamPage] = useState(0);
+  useEffect(() => setPlayerPage(0), [playerSearch, playerSort]);
+  useEffect(() => setTeamPage(0), [teamSearch, teamSort]);
   const playerTeamLinks = useMemo(() => {
     const m = {};
     Object.entries(latestTeamByPlayer).forEach(([pid, team]) => {
@@ -9718,6 +9934,10 @@ function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, on
           return ((playerTeamLookup[a.player_id] || [])[0] || "").localeCompare(((playerTeamLookup[b.player_id] || [])[0] || ""));
         case "team_desc":
           return ((playerTeamLookup[b.player_id] || [])[0] || "").localeCompare(((playerTeamLookup[a.player_id] || [])[0] || ""));
+        case "form_desc":
+          return (playerForm10[b.player_id]?.avg ?? -1) - (playerForm10[a.player_id]?.avg ?? -1);
+        case "form_asc":
+          return (playerForm10[a.player_id]?.avg ?? 99) - (playerForm10[b.player_id]?.avg ?? 99);
         case "name_asc":
         default:
           return String(a.name || "").localeCompare(String(b.name || ""));
@@ -9725,10 +9945,40 @@ function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, on
     });
 
     return list;
-  }, [players, playerSearch, playerSort, playerTeamLookup]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [players, playerSearch, playerSort, playerTeamLookup, dbTeamById, playerForm10]);
   const filteredSortedTeams = useMemo(() => {
     const q = teamSearch.trim().toLowerCase();
-    const list = teams.filter((t) => {
+    // One row per HLTV team: the fantasy rosters store some teams under a
+    // short name (BETBOOM, RBLS, NT) beside the rankings' full name. Keep the
+    // row with the freshest ranking (lowest VRS rank, then the older row) and
+    // let search match every name the team is stored under.
+    const byHltv = new Map();
+    const merged = [];
+    teams.forEach((t) => {
+      const h = Number(t.hltv_team_id || 0);
+      if (!h) {
+        merged.push({ ...t, alt_names: [] });
+        return;
+      }
+      const prev = byHltv.get(h);
+      if (!prev) {
+        const row = { ...t, alt_names: [] };
+        byHltv.set(h, row);
+        merged.push(row);
+        return;
+      }
+      const rank = (x) => (Number(x.vrs_rank) > 0 && Number(x.vrs_rank) < 999 ? Number(x.vrs_rank) : 9999);
+      const better = rank(t) < rank(prev) || (rank(t) === rank(prev) && Number(t.team_id) < Number(prev.team_id));
+      if (better) {
+        const names = [...prev.alt_names, prev.name];
+        Object.keys(prev).forEach((k) => delete prev[k]);
+        Object.assign(prev, t, { alt_names: names });
+      } else {
+        prev.alt_names.push(t.name);
+      }
+    });
+    const list = merged.filter((t) => {
       if (!q) return true;
       const rosterText = [t.player1_id, t.player2_id, t.player3_id, t.player4_id, t.player5_id]
         .filter(Boolean)
@@ -9737,7 +9987,7 @@ function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, on
         .toLowerCase();
       return (
         String(t.team_id).includes(q) ||
-        String(t.name || "").toLowerCase().includes(q) ||
+        [t.name, ...t.alt_names].some((n) => String(n || "").toLowerCase().includes(q)) ||
         rosterText.includes(q)
       );
     });
@@ -9762,6 +10012,10 @@ function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, on
           return toNum(a.vrs_points) - toNum(b.vrs_points);
         case "vrs_points_desc":
           return toNum(b.vrs_points) - toNum(a.vrs_points);
+        case "win_asc":
+          return (mapRecordOf(a.map_stats_json)?.rate ?? 2) - (mapRecordOf(b.map_stats_json)?.rate ?? 2);
+        case "win_desc":
+          return (mapRecordOf(b.map_stats_json)?.rate ?? -1) - (mapRecordOf(a.map_stats_json)?.rate ?? -1);
         case "name_asc":
         default:
           return String(a.name || "").localeCompare(String(b.name || ""));
@@ -9796,43 +10050,78 @@ function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, on
         ) : error ? (
           <p className="error">{error}</p>
         ) : (
-          <div className="players-panel">
-            <div className="players-controls">
-              <Input label="Search Players" value={playerSearch} onChange={setPlayerSearch} placeholder="Name or team" className="search-field" />
+          <>
+            <div className="card-section">
+            <div className="card sub group-card">
+            <div className="value-toolbar">
+              <div className="value-search-wrap">
+                <Input label="Search Players" value={playerSearch} onChange={setPlayerSearch} placeholder="Search player or team" className="search-field value-search" />
+                {playerSearch && (
+                  <button type="button" className="value-search-clear" onClick={() => setPlayerSearch("")} aria-label="Clear search">
+                    ×
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="players-table-wrap">
-            <table className="players-table">
-              <colgroup>
-                <col style={{ width: "34%" }} />
-                <col style={{ width: "44%" }} />
-                <col style={{ width: "22%" }} />
-              </colgroup>
-              <thead>
-                <tr>
-                  <SortHeader sortValue={playerSort} asc="name_asc" desc="name_desc" onChange={setPlayerSort}>Name</SortHeader>
-                  <SortHeader sortValue={playerSort} asc="team_asc" desc="team_desc" onChange={setPlayerSort}>Team</SortHeader>
-                  <SortHeader sortValue={playerSort} asc="rating_asc" desc="rating_desc" defaultDirection="desc" onChange={setPlayerSort}>Rating</SortHeader>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredSortedPlayers.map((p) => (
-                  <tr
-                    key={p.player_id}
-                    className={selectedPlayer === p.player_id ? "row-active" : ""}
-                    onClick={() => {
-                      setSelectedPlayer(p.player_id);
-                      setShowPlayerModal(true);
-                    }}
-                    >
-                      <td><PlayerPhoto playerId={p.player_id} name={p.name} size={26} />{p.name}</td>
-                      <td>{(playerTeamLookup[p.player_id] || []).join(", ") || "-"}</td>
-                      <td>{Number(p.rating || 0).toFixed(2)}</td>
+            <div className="value-table-frame">
+              <table className="value-table db-table db-players">
+                <colgroup>
+                  <col className="vt-player" />
+                  <col className="vt-team" />
+                  <col className="vt-num" />
+                  <col className="db-form" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <SortHeader sortValue={playerSort} asc="name_asc" desc="name_desc" onChange={setPlayerSort}>Player</SortHeader>
+                    <SortHeader sortValue={playerSort} asc="team_asc" desc="team_desc" onChange={setPlayerSort}>Team</SortHeader>
+                    <SortHeader sortValue={playerSort} asc="rating_asc" desc="rating_desc" defaultDirection="desc" onChange={setPlayerSort}>Rating</SortHeader>
+                    <SortHeader sortValue={playerSort} asc="form_asc" desc="form_desc" defaultDirection="desc" onChange={setPlayerSort}>Last 10 Matches</SortHeader>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {filteredSortedPlayers.slice(playerPage * DB_PAGE_SIZE, (playerPage + 1) * DB_PAGE_SIZE).map((p) => {
+                    const team = teamOfPlayer(p.player_id);
+                    const teamName = (playerTeamLookup[p.player_id] || [])[0] || "";
+                    const rating = Number(p.rating || 0);
+                    const form = playerForm10[p.player_id];
+                    return (
+                      <tr
+                        key={p.player_id}
+                        className={`clickable${selectedPlayer === p.player_id ? " row-active" : ""}`}
+                        onClick={() => {
+                          setSelectedPlayer(p.player_id);
+                          setShowPlayerModal(true);
+                        }}
+                      >
+                        <td>
+                          <div className="value-table-player">
+                            <PlayerPhoto playerId={p.player_id} name={p.name} size={46} />
+                            <span className="value-table-name">{p.name}</span>
+                          </div>
+                        </td>
+                        <td>
+                          {teamName ? (
+                            <div className="value-table-team">
+                              <TeamLogo hltvTeamId={team?.hltv_team_id} name={teamName} size={22} />
+                              <span>{teamName}</span>
+                            </div>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </td>
+                        <td className="num strong">{rating > 0 ? rating.toFixed(2) : "-"}</td>
+                        <td>{form ? <FormBars ratings={form.ratings} avg={form.avg} /> : <span className="muted">-</span>}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          </div>
+            </div>
+            <ComboPager page={playerPage} pageSize={DB_PAGE_SIZE} total={filteredSortedPlayers.length} onPage={setPlayerPage} />
+            </div>
+          </>
         )}
       </Section>}
 
@@ -10241,47 +10530,103 @@ function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, on
           <p className="error">{error}</p>
         ) : (
           <>
-            <div className="teams-controls">
-              <div className="grid two teams-filters">
-                <Input label="Search Teams" value={teamSearch} onChange={setTeamSearch} placeholder="Name or player" className="search-field" />
+            <div className="card-section">
+            <div className="card sub group-card">
+            <div className="value-toolbar">
+              <div className="value-search-wrap">
+                <Input label="Search Teams" value={teamSearch} onChange={setTeamSearch} placeholder="Search team or player" className="search-field value-search" />
+                {teamSearch && (
+                  <button type="button" className="value-search-clear" onClick={() => setTeamSearch("")} aria-label="Clear search">
+                    ×
+                  </button>
+                )}
               </div>
             </div>
-            <table>
-              <thead>
-                <tr>
-                  <SortHeader sortValue={teamSort} asc="name_asc" desc="name_desc" onChange={setTeamSort}>Name</SortHeader>
-                  <SortHeader sortValue={teamSort} asc="hltv_asc" desc="hltv_desc" onChange={setTeamSort}>HLTV Rank</SortHeader>
-                  <SortHeader sortValue={teamSort} asc="hltv_points_asc" desc="hltv_points_desc" defaultDirection="desc" onChange={setTeamSort}>HLTV Points</SortHeader>
-                  <SortHeader sortValue={teamSort} asc="vrs_asc" desc="vrs_desc" onChange={setTeamSort}>VRS Rank</SortHeader>
-                  <SortHeader sortValue={teamSort} asc="vrs_points_asc" desc="vrs_points_desc" defaultDirection="desc" onChange={setTeamSort}>VRS Points</SortHeader>
-                  <th>Players</th>
-                </tr>
-              </thead>
-              <tbody>
-                  {filteredSortedTeams.map((t) => (
-                    <tr
-                      key={t.team_id}
-                      className={selectedTeam === t.team_id ? "row-active" : ""}
-                      onClick={() => {
-                        setSelectedTeam(t.team_id);
-                        setShowTeamModal(true);
-                      }}
-                    >
-                    <td><TeamLogo hltvTeamId={t.hltv_team_id} name={t.name} size={28} />{t.name}</td>
-                    <td>{t.hltv_rank}</td>
-                    <td>{t.hltv_points ?? "-"}</td>
-                    <td>{t.vrs_rank}</td>
-                    <td>{t.vrs_points ?? "-"}</td>
-                    <td>
-                      {[t.player1_id, t.player2_id, t.player3_id, t.player4_id, t.player5_id]
-                        .filter(Boolean)
-                        .map((pid) => playerLookup[pid] || pid)
-                        .join(", ")}
-                    </td>
+            <div className="value-table-frame">
+              <table className="value-table db-table db-teams">
+                <colgroup>
+                  <col className="vt-player" />
+                  <col className="vt-num" />
+                  <col className="vt-num" />
+                  <col className="vt-num" />
+                  <col className="vt-num" />
+                  <col className="db-best-map" />
+                  <col className="db-lineup" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <SortHeader sortValue={teamSort} asc="name_asc" desc="name_desc" onChange={setTeamSort}>Team</SortHeader>
+                    <SortHeader sortValue={teamSort} asc="vrs_asc" desc="vrs_desc" onChange={setTeamSort}>VRS Rank</SortHeader>
+                    <SortHeader sortValue={teamSort} asc="vrs_points_asc" desc="vrs_points_desc" defaultDirection="desc" onChange={setTeamSort}>VRS Points</SortHeader>
+                    <SortHeader sortValue={teamSort} asc="hltv_asc" desc="hltv_desc" onChange={setTeamSort}>HLTV Rank</SortHeader>
+                    <SortHeader sortValue={teamSort} asc="win_asc" desc="win_desc" defaultDirection="desc" onChange={setTeamSort}>Win Rate</SortHeader>
+                    <th>Best Map</th>
+                    <th>Lineup</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {filteredSortedTeams.slice(teamPage * DB_PAGE_SIZE, (teamPage + 1) * DB_PAGE_SIZE).map((t) => {
+                    const vrs = rankOf(t.vrs_rank);
+                    const hltv = rankOf(t.hltv_rank);
+                    const rec = mapRecordOf(t.map_stats_json);
+                    const wr = rec ? rec.rate : NaN;
+                    const best = bestMapOf(t.map_stats_json);
+                    const lineup = [t.player1_id, t.player2_id, t.player3_id, t.player4_id, t.player5_id].filter(Boolean);
+                    return (
+                      <tr
+                        key={t.team_id}
+                        className={`clickable${selectedTeam === t.team_id ? " row-active" : ""}`}
+                        onClick={() => {
+                          setSelectedTeam(t.team_id);
+                          setShowTeamModal(true);
+                        }}
+                      >
+                        <td>
+                          <div className="value-table-player">
+                            <TeamLogo hltvTeamId={t.hltv_team_id} name={t.name} size={34} />
+                            <span className="value-table-name">{t.name}</span>
+                          </div>
+                        </td>
+                        <td className="num">{vrs ? `#${vrs}` : "-"}</td>
+                        <td className="num muted-num">{Number(t.vrs_points) > 0 ? Number(t.vrs_points).toLocaleString() : "-"}</td>
+                        <td className="num muted-num">{hltv ? `#${hltv}` : "-"}</td>
+                        <td>
+                          {Number.isFinite(wr) ? (
+                            <div className="db-rate" title={`${rec.played} maps`}>
+                              <span>{Math.round(wr * 100)}%</span>
+                              <span className="so-bar"><i style={{ width: `${Math.round(wr * 100)}%` }} /></span>
+                            </div>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </td>
+                        <td>
+                          {best ? (
+                            <span className="db-map">
+                              <b>{best.map}</b> {Math.round(best.win_rate * 100)}%
+                            </span>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </td>
+                        <td>
+                          <div className="db-lineup-photos">
+                            {lineup.map((pid) => (
+                              <span key={pid} title={playerLookup[pid] || String(pid)}>
+                                <PlayerPhoto playerId={Number(pid)} name={playerLookup[pid] || ""} size={30} />
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            </div>
+            <ComboPager page={teamPage} pageSize={DB_PAGE_SIZE} total={filteredSortedTeams.length} onPage={setTeamPage} />
+            </div>
           </>
         )}
       </Section>}
@@ -11880,7 +12225,20 @@ function SwissStageView({ results, teams, teamLookup, excludeSet = null, teamPla
         <h3>{sw.stage_name && sw.stage_name !== "SixteenEight" ? sw.stage_name : "Swiss"}</h3>
       </div>
       <div className="card sub group-card">
-      <table className="swiss-seed-table">
+      <div className="value-table-frame">
+      <table className="value-table swiss-odds">
+        <colgroup>
+          <col className="so-seed" />
+          <col className="so-team" />
+          {wins.map((r) => (
+            <col key={r} />
+          ))}
+          <col className="so-qual" />
+          {losses.map((r) => (
+            <col key={r} />
+          ))}
+          {onToggleTeam && <col className="so-act" />}
+        </colgroup>
         <thead>
           <tr>
             <th className="num">#</th>
@@ -11890,9 +12248,9 @@ function SwissStageView({ results, teams, teamLookup, excludeSet = null, teamPla
                 {r}
               </th>
             ))}
-            <th className="num strong">Qualify</th>
-            {losses.map((r) => (
-              <th className="num" key={r}>
+            <th className="num so-split">Qualify</th>
+            {losses.map((r, k) => (
+              <th className={k === 0 ? "num so-split-left" : "num"} key={r}>
                 {r}
               </th>
             ))}
@@ -11903,21 +12261,31 @@ function SwissStageView({ results, teams, teamLookup, excludeSet = null, teamPla
           {order.map((tid, i) => {
             const rec = sw.records?.[String(tid)] || {};
             const info = teamInfo(tid);
+            const q = Number(qualifyOf(tid)) || 0;
             return (
               <tr key={tid}>
-                <td className="num muted">{sw.seeds?.[String(tid)] ?? i + 1}</td>
-                <td className="team">
-                  <TeamLogo hltvTeamId={info?.hltv_team_id} name={teamLookup[tid]} size={18} />
-                  <span>{teamLookup[tid] || tid}</span>
+                <td className="num muted-num">{sw.seeds?.[String(tid)] ?? i + 1}</td>
+                <td>
+                  <div className="value-table-team swiss-odds-team">
+                    <TeamLogo hltvTeamId={info?.hltv_team_id} name={teamLookup[tid]} size={26} />
+                    <span className="value-table-name">{teamLookup[tid] || tid}</span>
+                  </div>
                 </td>
                 {wins.map((r) => (
                   <td className="num" key={r}>
                     {pct(rec[r])}
                   </td>
                 ))}
-                <td className="num strong">{pct(qualifyOf(tid))}</td>
-                {losses.map((r) => (
-                  <td className="num" key={r}>
+                <td className="num strong so-split">
+                  <div className="so-qual-cell">
+                    <span>{pct(qualifyOf(tid))}</span>
+                    <span className="so-bar" aria-hidden="true">
+                      <i style={{ width: `${Math.max(0, Math.min(1, q > 1 ? q / 100 : q)) * 100}%` }} />
+                    </span>
+                  </div>
+                </td>
+                {losses.map((r, k) => (
+                  <td className={k === 0 ? "num so-split-left" : "num"} key={r}>
                     {pct(rec[r])}
                   </td>
                 ))}
@@ -11938,6 +12306,7 @@ function SwissStageView({ results, teams, teamLookup, excludeSet = null, teamPla
           })}
         </tbody>
       </table>
+      </div>
       </div>
       </div>
     </>
@@ -13190,7 +13559,7 @@ function GroupsTab({
             )}
             {results && (
               <>
-                <div className="tab-bar small">
+                <div className="tab-bar small seg">
                   {groupsTopSubtabs.map((sub) => (
                     <button
                       key={sub.key}

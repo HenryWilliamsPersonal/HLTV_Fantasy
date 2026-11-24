@@ -2866,6 +2866,97 @@ const MapBarWithWinRate = (props) => {
   );
 };
 
+const MONTH_SEG = [
+  ["1", "1M"],
+  ["3", "3M"],
+  ["6", "6M"],
+  ["12", "12M"],
+];
+
+// A choice inside a section: the app's joined mode switch.
+function SegSwitch({ options, value, onChange }) {
+  return (
+    <div className="tab-bar small seg">
+      {options.map(([v, l]) => (
+        <button key={v} type="button" className={value === v ? "tab active" : "tab"} onClick={() => onChange(v)}>
+          {l}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// VRS top-N filter (Matches browser, Most Played maps).
+function VrsRankFilter({ rank, onRank, dir, onDir, scope, onScope }) {
+  return (
+    <div className="db-rank-filter">
+      <label className="db-rank-box">
+        <span>VRS Top</span>
+        <input
+          value={rank}
+          onChange={(e) => onRank(e.target.value.replace(/[^0-9]/g, ""))}
+          inputMode="numeric"
+          placeholder="All"
+          aria-label="VRS rank cut-off"
+        />
+      </label>
+      <SegSwitch options={[["within", "Inside"], ["outside", "Outside"]]} value={dir} onChange={onDir} />
+      <SegSwitch options={[["both", "Both teams"], ["either", "Either team"]]} value={scope} onChange={onScope} />
+    </div>
+  );
+}
+
+// Teams for the Maps pickers: one per HLTV team (fantasy short-name rows
+// merged, best VRS rank kept), alphabetical, plus the VRS order for defaults.
+function mapTeamChoices(teams) {
+  const rk = (v) => (Number(v) > 0 && Number(v) < 999 ? Number(v) : 9999);
+  const byKey = new Map();
+  (teams || []).forEach((t) => {
+    const key = Number(t.hltv_team_id) > 0 ? `h${t.hltv_team_id}` : `t${t.team_id}`;
+    const cur = byKey.get(key);
+    if (
+      !cur ||
+      rk(t.vrs_rank) < rk(cur.vrs_rank) ||
+      (rk(t.vrs_rank) === rk(cur.vrs_rank) && Number(t.team_id) < Number(cur.team_id))
+    )
+      byKey.set(key, t);
+  });
+  const list = [...byKey.values()];
+  return {
+    options: list
+      .slice()
+      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+      .map((t) => ({ value: String(t.team_id), label: t.name || `Team ${t.team_id}` })),
+    ranked: list.sort((a, b) => rk(a.vrs_rank) - rk(b.vrs_rank)).map((t) => String(t.team_id)),
+  };
+}
+
+// Team picker in the toolbar box style (label, logo, select, optional count).
+function TeamPickBox({ label, value, onChange, options, team, note }) {
+  return (
+    <label className="db-rank-box db-team-box">
+      <span>{label}</span>
+      {team && <TeamLogo hltvTeamId={team.hltv_team_id} name={team.name} size={22} />}
+      <select value={value} onChange={(e) => onChange(e.target.value)} aria-label={label}>
+        {!value && <option value="">-</option>}
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {note && <em>{note}</em>}
+    </label>
+  );
+}
+
+const mapSwatch = (map) => (
+  <span className="maps-name">
+    <i style={{ background: MAP_BAR_COLORS[map] || MAP_BAR_FALLBACK_COLOR }} />
+    {map}
+  </span>
+);
+
 function PredictedVetoPanel({ teams }) {
   // Greedy veto prediction from each team's stored pick/ban tendencies
   // (per-team map-profile): bans follow historical ban rates, nudged toward
@@ -2877,21 +2968,18 @@ function PredictedVetoPanel({ teams }) {
   const [profiles, setProfiles] = useState({});
   const [loading, setLoading] = useState(false);
 
-  const teamOptions = useMemo(
-    () => [
-      { value: "", label: "Select team" },
-      ...(teams || [])
-        .slice()
-        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
-        .map((t) => ({ value: String(t.team_id), label: t.name || `Team ${t.team_id}` })),
-    ],
-    [teams]
-  );
+  const teamChoices = useMemo(() => mapTeamChoices(teams), [teams]);
+  const teamOptions = teamChoices.options;
   const teamById = useMemo(() => {
     const m = {};
     (teams || []).forEach((t) => (m[String(t.team_id)] = t));
     return m;
   }, [teams]);
+  // open on the two best VRS-ranked teams
+  useEffect(() => {
+    if (!teamAId && teamChoices.ranked[0]) setTeamAId(teamChoices.ranked[0]);
+    if (!teamBId && teamChoices.ranked[1]) setTeamBId(teamChoices.ranked[1]);
+  }, [teamChoices]);
 
   useEffect(() => {
     const ids = [teamAId, teamBId].filter((id) => Number(id) > 0);
@@ -2981,73 +3069,87 @@ function PredictedVetoPanel({ teams }) {
     profB &&
     (Number(profA.veto_matches || 0) < 5 || Number(profB.veto_matches || 0) < 5);
 
+  const actionLabel = { ban: "Ban", pick: "Pick", decider: "Decider" };
+  const rows = prediction
+    ? [
+        ...prediction.steps,
+        ...(prediction.decider ? [{ teamId: null, action: "decider", map: prediction.decider }] : []),
+      ]
+    : [];
   return (
-    <div className="card sub">
-      <h3>Predicted Veto</h3>
-      <div className="veto-controls">
-        <Select label="Team A" value={teamAId} onChange={setTeamAId} options={teamOptions} />
-        <Select label="Team B" value={teamBId} onChange={setTeamBId} options={teamOptions} />
-        <Select
-          label="Timeframe"
-          value={months}
-          onChange={setMonths}
-          options={[
-            { value: "1", label: "Last month" },
-            { value: "3", label: "Last 3 months" },
-            { value: "6", label: "Last 6 months" },
-            { value: "12", label: "Last 12 months" },
-          ]}
-        />
-        <Select
-          label="Format"
-          value={bo}
-          onChange={setBo}
-          options={[
-            { value: "bo1", label: "Best of 1" },
-            { value: "bo3", label: "Best of 3" },
-            { value: "bo5", label: "Best of 5" },
-          ]}
-        />
+    <div className="db-section">
+      <div className="value-toolbar">
+        <div className="db-veto-teams">
+          <TeamPickBox
+            label="A"
+            value={teamAId}
+            onChange={setTeamAId}
+            options={teamOptions}
+            team={teamById[String(teamAId)]}
+            note={profA ? `${Number(profA.veto_matches || 0)} vetoes` : ""}
+          />
+          <span className="db-vs">vs</span>
+          <TeamPickBox
+            label="B"
+            value={teamBId}
+            onChange={setTeamBId}
+            options={teamOptions}
+            team={teamById[String(teamBId)]}
+            note={profB ? `${Number(profB.veto_matches || 0)} vetoes` : ""}
+          />
+        </div>
+        <div className="db-rank-filter">
+          <SegSwitch options={MONTH_SEG} value={months} onChange={setMonths} />
+          <SegSwitch options={[["bo1", "BO1"], ["bo3", "BO3"], ["bo5", "BO5"]]} value={bo} onChange={setBo} />
+        </div>
       </div>
-      {!bothSelected ? (
-        teamAId && teamAId === teamBId ? <p className="muted">Pick two different teams.</p> : null
-      ) : loading && (!profA || !profB) ? (
-        <p className="muted">Loading team veto data...</p>
+      {!bothSelected ? null : loading && (!profA || !profB) ? (
+        <p className="muted">Loading...</p>
       ) : !prediction ? (
-        <p className="muted">No stored veto data for these teams in this window.</p>
+        <p className="muted">No stored vetoes.</p>
       ) : (
-        <>
-          <p className="muted">
-            Based on {Number(profA?.veto_matches || 0)} stored vetoes for {teamById[String(teamAId)]?.name} and{" "}
-            {Number(profB?.veto_matches || 0)} for {teamById[String(teamBId)]?.name}. Team A starts the veto.
-            {lowData ? " Limited data — treat with caution." : ""}
-          </p>
-          <div className="veto-steps">
-            {prediction.steps.map((s, i) => (
-              <div
-                className="veto-step"
-                key={`veto-${i}`}
-                style={{ "--map-color": MAP_BAR_COLORS[s.map] || MAP_BAR_FALLBACK_COLOR }}
-              >
-                <span className="veto-step-idx">{i + 1}</span>
-                {renderTeam(s.teamId)}
-                <span className={`veto-action ${s.action}`}>{s.action === "ban" ? "BAN" : "PICK"}</span>
-                <span className="veto-step-map">{s.map}</span>
-              </div>
-            ))}
-            {prediction.decider && (
-              <div
-                className="veto-step decider"
-                style={{ "--map-color": MAP_BAR_COLORS[prediction.decider] || MAP_BAR_FALLBACK_COLOR }}
-              >
-                <span className="veto-step-idx">{prediction.steps.length + 1}</span>
-                <span className="veto-step-team muted">Leftover</span>
-                <span className="veto-action decider-label">DECIDER</span>
-                <span className="veto-step-map">{prediction.decider}</span>
-              </div>
-            )}
-          </div>
-        </>
+        <div className={`value-table-frame${lowData ? " db-low-data" : ""}`}>
+          <table className="value-table db-table db-veto">
+            <colgroup>
+              <col className="db-veto-idx" />
+              <col className="db-veto-team" />
+              <col className="db-veto-act" />
+              <col />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Team</th>
+                <th>Action</th>
+                <th>Map</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const t = r.teamId ? teamById[String(r.teamId)] : null;
+                return (
+                  <tr key={`veto-${i}`} className={r.action === "decider" ? "db-veto-decider" : ""}>
+                    <td className="muted-num">{i + 1}</td>
+                    <td>
+                      {t ? (
+                        <span className="value-table-team">
+                          <TeamLogo hltvTeamId={t.hltv_team_id} name={t.name} size={24} />
+                          <span className="value-table-name">{t.name}</span>
+                        </span>
+                      ) : (
+                        <span className="muted">-</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`db-veto-action ${r.action}`}>{actionLabel[r.action]}</span>
+                    </td>
+                    <td>{mapSwatch(r.map)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -3154,15 +3256,15 @@ function MapsTab({ teams }) {
     return rows.sort((a, b) => b.played - a.played);
   }, [teamProfile]);
 
-  const teamOptions = useMemo(
-    () => [
-      { value: "", label: "Select team" },
-      ...(teams || [])
-        .slice()
-        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
-        .map((t) => ({ value: String(t.team_id), label: t.name || `Team ${t.team_id}` })),
-    ],
-    [teams]
+  const teamChoices = useMemo(() => mapTeamChoices(teams), [teams]);
+  const teamOptions = teamChoices.options;
+  // Team Map Stats opens on the best VRS-ranked team
+  useEffect(() => {
+    if (!selectedTeamId && teamChoices.ranked[0]) setSelectedTeamId(teamChoices.ranked[0]);
+  }, [teamChoices]);
+  const selectedTeam = useMemo(
+    () => (teams || []).find((t) => String(t.team_id) === String(selectedTeamId)),
+    [teams, selectedTeamId]
   );
 
   const formatRate = (value, digits = 1) =>
@@ -3219,8 +3321,18 @@ function MapsTab({ teams }) {
       </div>
       <div className="stack">
         {mapsSubTab === "popularity" && (
-        <div className="card sub">
-          <h3>Most Played Maps</h3>
+        <div className="db-section">
+          <div className="value-toolbar">
+            <SegSwitch options={MONTH_SEG} value={pieMonths} onChange={setPieMonths} />
+            <VrsRankFilter
+              rank={pieRank}
+              onRank={setPieRank}
+              dir={pieDir}
+              onDir={setPieDir}
+              scope={pieScope}
+              onScope={setPieScope}
+            />
+          </div>
           {(() => {
             const totalPlayed = Number(pieData?.total_maps || 0);
             // Fold slivers (single show-match maps etc.) into "Other", and
@@ -3329,97 +3441,100 @@ function MapsTab({ teams }) {
                 </div>
               );
             return (
-              <div className="pie-layout">
-                <div className="pie-filter-col">
-                  <Select
-                    label="Timeframe"
-                    value={pieMonths}
-                    onChange={setPieMonths}
-                    options={[
-                      { value: "1", label: "Last month" },
-                      { value: "3", label: "Last 3 months" },
-                      { value: "6", label: "Last 6 months" },
-                      { value: "12", label: "Last 12 months" },
-                    ]}
-                  />
-                  <Input label="VRS Rank" value={pieRank} onChange={setPieRank} placeholder="e.g. 50" />
-                  <Select
-                    label="Direction"
-                    value={pieDir}
-                    onChange={setPieDir}
-                    options={[
-                      { value: "within", label: "Inside top N" },
-                      { value: "outside", label: "Outside top N" },
-                    ]}
-                  />
-                  <Select
-                    label="Teams"
-                    value={pieScope}
-                    onChange={setPieScope}
-                    options={[
-                      { value: "both", label: "Both teams" },
-                      { value: "either", label: "At least one team" },
-                    ]}
-                  />
-                </div>
+              <div className="maps-pie-layout">
                 {chart}
+                {pieRows.length > 0 && (
+                  <table className="value-table db-table maps-share">
+                    <thead>
+                      <tr>
+                        <th>Map</th>
+                        <th>Maps</th>
+                        <th>Share</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pieRows
+                        .slice()
+                        .sort((x, y) => (x.map === "Other") - (y.map === "Other") || Number(y.played) - Number(x.played))
+                        .map((r) => {
+                          const share = totalPlayed > 0 ? Number(r.played) / totalPlayed : 0;
+                          return (
+                            <tr key={`share-${r.map}`}>
+                              <td>{mapSwatch(r.map)}</td>
+                              <td className="num">{Number(r.played).toLocaleString()}</td>
+                              <td>
+                                <div className="db-rate">
+                                  <span>{(share * 100).toFixed(1)}%</span>
+                                  <span className="so-bar">
+                                    <i style={{ width: `${Math.min(100, (share / 0.25) * 100)}%`, background: r.map === "Other" ? "var(--c-64748b)" : MAP_BAR_COLORS[r.map] || MAP_BAR_FALLBACK_COLOR }} />
+                                  </span>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                )}
               </div>
             );
           })()}
         </div>
         )}
         {mapsSubTab === "teams" && (
-        <div className="card sub">
-          <h3>Team Map Stats</h3>
-          <div className="grid two">
-            <Select label="Team" value={selectedTeamId} onChange={setSelectedTeamId} options={teamOptions} />
-            <Select
-              label="Timeframe"
-              value={teamMonths}
-              onChange={setTeamMonths}
-              options={[
-                { value: "1", label: "Last month" },
-                { value: "3", label: "Last 3 months" },
-                { value: "6", label: "Last 6 months" },
-                { value: "12", label: "Last 12 months" },
-              ]}
-            />
+        <div className="db-section">
+          <div className="value-toolbar">
+            <TeamPickBox label="Team" value={selectedTeamId} onChange={setSelectedTeamId} options={teamOptions} team={selectedTeam} />
+            <SegSwitch options={MONTH_SEG} value={teamMonths} onChange={setTeamMonths} />
           </div>
-          {!selectedTeamId ? (
-            <p className="muted">Select a team to see its per-map record.</p>
-          ) : teamProfileLoading && !teamProfile ? (
-            <p className="muted">Loading map data...</p>
+          {!selectedTeamId ? null : teamProfileLoading && !teamProfile ? (
+            <p className="muted">Loading...</p>
           ) : Number(teamProfile?.matches || 0) === 0 && Number(teamProfile?.veto_matches || 0) === 0 ? (
-            <p className="muted">No stored matches for this team in this window.</p>
+            <p className="muted">No stored matches.</p>
           ) : (
             <>
               {renderMapBars(teamRows)}
-              <table>
-                <thead>
-                  <tr>
-                    <th>Map</th>
-                    <th>Played</th>
-                    <th>W - L</th>
-                    <th>Win Rate</th>
-                    <th>Rounds</th>
-                    <th>Pick Rate</th>
-                    <th>Ban Rate</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {teamRows.map((row) => (
-                    <tr key={row.map}>
-                      <td>{row.map}</td>
-                      <td>{row.played}</td>
-                      <td>{`${row.wins} - ${row.losses}`}</td>
-                      <td>{formatRate(row.win_rate)}</td>
-                      <td>{row.total_rounds || "-"}</td>
-                      <td>{formatRate(row.pick_rate)}</td>
-                      <td>{formatRate(row.ban_rate)}</td>
+              <div className="value-table-frame">
+                <table className="value-table db-table maps-team">
+                  <thead>
+                    <tr>
+                      <th>Map</th>
+                      <th>Played</th>
+                      <th>W - L</th>
+                      <th>Win Rate</th>
+                      <th>Rounds</th>
+                      <th>Pick Rate</th>
+                      <th>Ban Rate</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {teamRows.map((row) => (
+                      <tr key={row.map} className={row.inPool ? "" : "maps-out"}>
+                        <td>{mapSwatch(row.map)}</td>
+                        <td className="num strong">{row.played}</td>
+                        <td className="num">
+                          <span className="maps-w">{row.wins}</span> - <span className="maps-l">{row.losses}</span>
+                        </td>
+                        <td>
+                          {row.win_rate === null || !Number.isFinite(row.win_rate) ? (
+                            <span className="muted">-</span>
+                          ) : (
+                            <div className="db-rate">
+                              <span>{Math.round(row.win_rate * 100)}%</span>
+                              <span className="so-bar">
+                                <i style={{ width: `${Math.round(row.win_rate * 100)}%` }} />
+                              </span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="num muted-num">{row.total_rounds || "-"}</td>
+                        <td className="num">{formatRate(row.pick_rate, 0)}</td>
+                        <td className="num">{formatRate(row.ban_rate, 0)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </>
           )}
         </div>
@@ -8990,8 +9105,7 @@ function MatchesDataPanel({ teams = [], players = [], onOpenPlayer, onOpenTeam }
 
   return (
     <div className="stack">
-      <div className="card-section">
-      <div className="card sub group-card">
+      <div className="db-section">
       <div className="value-toolbar db-match-toolbar">
         <div className="value-search-wrap">
           <Input label="Search Matches" value={matchSearch} onChange={changeMatchSearch} placeholder="Search team or day/month/year" className="search-field value-search" />
@@ -9001,27 +9115,14 @@ function MatchesDataPanel({ teams = [], players = [], onOpenPlayer, onOpenTeam }
             </button>
           )}
         </div>
-        <div className="match-rank-filter">
-          <Input label="VRS Rank" value={matchRankValue} onChange={changeMatchRankValue} placeholder="e.g. 50" />
-          <Select
-            label="Direction"
-            value={matchRankDir}
-            onChange={changeMatchRankDir}
-            options={[
-              { value: "within", label: "Inside top N" },
-              { value: "outside", label: "Outside top N" },
-            ]}
-          />
-          <Select
-            label="Teams"
-            value={matchRankScope}
-            onChange={changeMatchRankScope}
-            options={[
-              { value: "both", label: "Both teams" },
-              { value: "either", label: "At least one team" },
-            ]}
-          />
-        </div>
+        <VrsRankFilter
+          rank={matchRankValue}
+          onRank={changeMatchRankValue}
+          dir={matchRankDir}
+          onDir={changeMatchRankDir}
+          scope={matchRankScope}
+          onScope={changeMatchRankScope}
+        />
       </div>
       {recentResultsError && <p className="error">{recentResultsError}</p>}
       {!recentResultsLoading && !recentResultsError && recentResults.length === 0 && <p className="muted">No matches found.</p>}
@@ -9086,7 +9187,6 @@ function MatchesDataPanel({ teams = [], players = [], onOpenPlayer, onOpenTeam }
           </table>
         </div>
       )}
-      </div>
       {recentResultsTotal > 0 && (
         <ComboPager
           page={Math.floor(recentResultsOffset / 100)}
@@ -10051,8 +10151,7 @@ function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, on
           <p className="error">{error}</p>
         ) : (
           <>
-            <div className="card-section">
-            <div className="card sub group-card">
+            <div className="db-section">
             <div className="value-toolbar">
               <div className="value-search-wrap">
                 <Input label="Search Players" value={playerSearch} onChange={setPlayerSearch} placeholder="Search player or team" className="search-field value-search" />
@@ -10117,7 +10216,6 @@ function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, on
                   })}
                 </tbody>
               </table>
-            </div>
             </div>
             <ComboPager page={playerPage} pageSize={DB_PAGE_SIZE} total={filteredSortedPlayers.length} onPage={setPlayerPage} />
             </div>
@@ -10530,8 +10628,7 @@ function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, on
           <p className="error">{error}</p>
         ) : (
           <>
-            <div className="card-section">
-            <div className="card sub group-card">
+            <div className="db-section">
             <div className="value-toolbar">
               <div className="value-search-wrap">
                 <Input label="Search Teams" value={teamSearch} onChange={setTeamSearch} placeholder="Search team or player" className="search-field value-search" />
@@ -10623,7 +10720,6 @@ function DatabaseTab({ players, teams, loading, error, refresh, openPlayerId, on
                   })}
                 </tbody>
               </table>
-            </div>
             </div>
             <ComboPager page={teamPage} pageSize={DB_PAGE_SIZE} total={filteredSortedTeams.length} onPage={setTeamPage} />
             </div>

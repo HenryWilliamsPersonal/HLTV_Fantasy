@@ -4666,8 +4666,9 @@ button:disabled {
 .db-form-slot i { position: absolute; left: 0; right: 0; }
 .db-form-slot i.up { bottom: 50%; background: var(--c-3ee07a); }
 .db-form-slot i.down { top: 50%; background: var(--c-fca5a5); }
-.db-table td .db-formbars { padding-left: 48px; }
-.db-table th:nth-child(4) { padding-left: 48px; }
+.db-players td .db-formbars { padding-left: 48px; }
+.db-players th:nth-child(4) { padding-left: 48px; }
+.db-table th { white-space: nowrap; }
 .db-form-track { height: 36px; gap: 4px; }
 .db-form-slot { width: 13px; }
 /* form colours: the app's value pair (same as the Player Value bars) */
@@ -4697,3 +4698,65 @@ button:disabled {
 .db-teams col.db-lineup { width: auto; }
 .db-teams th, .db-teams td.num { text-align: left; }
 .db-teams .db-rate span:first-child { text-align: left; }
+
+/* Database tables: no inner box; the table runs edge to edge of the section card */
+.db-section { display: flex; flex-direction: column; gap: 10px; }
+.db-section > .value-toolbar { margin-bottom: 4px; }
+.db-section > .value-table-frame { margin: 0 -16px; border-top: 1px solid var(--c-2c3441); border-bottom: 1px solid var(--c-2c3441); }
+.db-section .value-table th:first-child, .db-section .value-table td:first-child { padding-left: 16px; }
+.db-section .value-table th:last-child, .db-section .value-table td:last-child { padding-right: 16px; }
+/* Matches: VRS top-N box + joined switches, same height as the search box */
+.db-rank-filter { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.db-rank-filter .tab-bar.small.seg { margin: 0; }
+.db-rank-filter .tab-bar.small.seg .tab { height: 44px; display: inline-flex; align-items: center; }
+.db-rank-box {
+  display: inline-flex; align-items: center; height: 44px; margin: 0;
+  background: var(--c-161b23); border: 1px solid var(--c-313a47); border-left: 3px solid var(--c-35a2ff); border-radius: 6px;
+}
+.db-rank-box:focus-within { border-color: var(--c-35a2ff); background: var(--c-1a2029); }
+.db-rank-box > span {
+  padding: 0 4px 0 14px; font-family: var(--display); font-stretch: condensed; text-transform: uppercase;
+  letter-spacing: 0.06em; font-size: 14px; color: var(--c-8fa3bf); white-space: nowrap;
+}
+.db-rank-box > input {
+  width: 56px; height: 100%; padding: 0 12px 0 6px; border: 0; background: transparent; box-shadow: none;
+  color: var(--c-f2f5f9); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; outline: none;
+}
+.db-rank-box > input::placeholder { color: var(--c-5c6b80); font-weight: 400; }
+
+/* Maps pages: toolbar switches + boxes, tables in the Database style */
+.value-toolbar { flex-wrap: wrap; }
+.db-section > .value-toolbar > .tab-bar.small.seg { margin: 0; }
+.db-section > .value-toolbar > .tab-bar.small.seg .tab { height: 44px; display: inline-flex; align-items: center; }
+.db-team-box { gap: 8px; padding-right: 6px; }
+.db-team-box > span { padding-right: 0; }
+.db-team-box > select {
+  width: auto; min-width: 170px; height: 100%; padding: 0 8px 0 2px; border: 0; border-radius: 0;
+  background: transparent; color: var(--c-f2f5f9); font-size: 15px; font-weight: 700; cursor: pointer; outline: none;
+}
+.db-team-box > select option { background: var(--c-161b23); color: var(--c-e9edf3); }
+.db-team-box > em { font-style: normal; font-size: 12px; color: var(--c-8fa3bf); padding: 0 10px 0 4px; white-space: nowrap; }
+.db-veto-teams { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.db-vs { font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.06em; color: var(--c-8fa3bf); }
+.maps-name { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; color: var(--c-f2f5f9); }
+.maps-name > i { width: 12px; height: 12px; flex: none; clip-path: polygon(3px 0, 100% 0, 100% 100%, 0 100%, 0 3px); }
+.maps-out td { opacity: 0.55; }
+.maps-w { color: var(--c-3ee07a); font-weight: 700; }
+.maps-l { color: var(--c-fca5a5); font-weight: 700; }
+.maps-team th, .maps-team td.num, .db-veto th, .maps-share th, .maps-share td.num { text-align: left; }
+.maps-team .db-rate span:first-child, .maps-share .db-rate span:first-child { text-align: left; min-width: 46px; }
+/* Most Played: donut left, share table right */
+.maps-pie-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr); gap: 24px; align-items: center; }
+.maps-share { width: 100%; }
+.maps-share td, .maps-share th { padding-top: 9px; padding-bottom: 9px; }
+@media (max-width: 1100px) { .maps-pie-layout { grid-template-columns: 1fr; } }
+/* Predicted veto */
+.db-veto col.db-veto-idx { width: 64px; }
+.db-veto col.db-veto-team { width: 34%; }
+.db-veto col.db-veto-act { width: 18%; }
+.db-veto-action { font-family: var(--display); font-stretch: condensed; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+.db-veto-action.ban { color: var(--c-fca5a5); }
+.db-veto-action.pick { color: var(--c-3ee07a); }
+.db-veto-action.decider { color: var(--c-ff8a47); }
+.db-veto-decider td { background: color-mix(in srgb, var(--c-ff6b1a) 7%, transparent); }
+.db-section > .value-table-frame:last-child { margin-bottom: -16px; border-bottom: 0; }

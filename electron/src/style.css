@@ -4760,3 +4760,22 @@ button:disabled {
 .db-veto-action.decider { color: var(--c-ff8a47); }
 .db-veto-decider td { background: color-mix(in srgb, var(--c-ff6b1a) 7%, transparent); }
 .db-section > .value-table-frame:last-child { margin-bottom: -16px; border-bottom: 0; }
+
+/* Live list: one table, a group row per state (Live / Upcoming / Previous) */
+.live-list col.ll-name { width: 36%; }
+.live-list col.ll-fmt { width: 18%; }
+.live-list col.ll-dates { width: 15%; }
+.live-list col.ll-teams { width: 9%; }
+.live-list col.ll-prog { width: 22%; }
+.live-list th, .live-list td.num { text-align: left; }
+.live-list .db-rate span:first-child { text-align: left; min-width: 46px; }
+.live-list .ll-group-row td { padding-top: 18px; padding-bottom: 8px; background: transparent; cursor: default; border-bottom: 1px solid var(--c-2c3441); }
+.live-list tbody.ll-group:first-of-type .ll-group-row td { padding-top: 14px; }
+.live-list .ll-group-row:hover td { background: transparent; }
+.ll-name-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ll-name-cell .value-table-name { font-weight: 700; }
+.ll-sub { display: flex; gap: 10px; align-items: baseline; font-size: 12.5px; color: var(--c-8fa3bf); }
+.ll-sub b { color: var(--c-e9edf3); font-variant-numeric: tabular-nums; }
+.ll-sub b.ll-live { color: var(--c-3ee07a); text-transform: uppercase; font-family: var(--display); font-stretch: condensed; letter-spacing: 0.06em; }
+.live-list .et-stage b { font-weight: 600; }
+.live-list .et-stage b { font-family: inherit; font-stretch: normal; text-transform: none; letter-spacing: 0; font-size: 14.5px; color: var(--c-e9edf3); }

@@ -6551,42 +6551,103 @@ function LiveTab({ onOpenSettings }) {
       </div>
     );
   }
+  // "24 – 27 Nov", "29 Oct – 2 Nov"
+  const dateRange = (a, b) => {
+    const da = a ? new Date(Number(a) * 1000) : null;
+    const db = b ? new Date(Number(b) * 1000) : null;
+    const dm2 = (d) => d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+    if (!da) return "-";
+    if (!db) return dm2(da);
+    if (da.getMonth() === db.getMonth()) return `${da.getDate()} – ${dm2(db)}`;
+    return `${dm2(da)} – ${dm2(db)}`;
+  };
+  const groups = LIVE_GROUPS.map((g) => ({ ...g, rows: events.filter((e) => e.status === g.key) })).filter((g) => g.rows.length > 0);
   return (
-    <div className="stack">
-      {LIVE_GROUPS.map((g) => {
-        const rows = events.filter((e) => e.status === g.key);
-        return (
-          <Section title={g.title} key={g.key}>
-            {rows.length === 0 ? (
-              <p className="muted">None</p>
-            ) : (
-              <table className="live-list">
-                <thead>
-                  <tr>
-                    <th>Event</th>
-                    <th>Format</th>
-                    <th>Dates</th>
-                    <th className="num">Teams</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((ev) => (
-                    <tr key={ev.event_id} onClick={() => setOpenId(ev.event_id)}>
-                      <td className="live-list-name">{ev.name}</td>
-                      <td>{formatOf(ev)}</td>
+    <Section title="Events">
+      <div className="db-section">
+        <div className="value-table-frame">
+          <table className="value-table db-table live-list">
+            <colgroup>
+              <col className="ll-name" />
+              <col className="ll-fmt" />
+              <col className="ll-dates" />
+              <col className="ll-teams" />
+              <col className="ll-prog" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Event</th>
+                <th>Format</th>
+                <th>Dates</th>
+                <th>Teams</th>
+                <th>Matches</th>
+              </tr>
+            </thead>
+            {groups.map((g) => (
+              <tbody key={g.key} className={`ll-group ll-${g.key}`}>
+                <tr className="ll-group-row">
+                  <td colSpan={5}>
+                    <span className={`et-status ${g.key === "live" ? "live" : g.key === "upcoming" ? "upcoming" : "finished"}`}>
+                      <i aria-hidden="true" />
+                      {g.title}
+                    </span>
+                  </td>
+                </tr>
+                {g.rows.map((ev) => {
+                  const played = Number(ev.played || 0);
+                  const total = Number(ev.total || 0);
+                  const lm = ev.last_match;
+                  return (
+                    <tr key={ev.event_id} className="clickable" onClick={() => setOpenId(ev.event_id)}>
                       <td>
-                        {dm(ev.start_at)} – {dm(ev.end_at)}
+                        <div className="ll-name-cell">
+                          <span className="value-table-name">{ev.name}</span>
+                          {g.key === "live" && (Number(ev.live_count) > 0 || lm) && (
+                            <span className="ll-sub">
+                              {Number(ev.live_count) > 0 && <b className="ll-live">{ev.live_count} live</b>}
+                              {lm && (
+                                <span>
+                                  {lm.a} <b>{lm.score_a}–{lm.score_b}</b> {lm.b}
+                                </span>
+                              )}
+                            </span>
+                          )}
+                        </div>
                       </td>
+                      <td>
+                        <span className="et-stage">
+                          <b>{formatOf(ev)}</b>
+                        </span>
+                      </td>
+                      <td className="muted-num">{dateRange(ev.start_at, ev.end_at)}</td>
                       <td className="num">{ev.team_count}</td>
+                      <td>
+                        {total > 0 ? (
+                          g.key === "live" ? (
+                            <div className="db-rate">
+                              <span>
+                                {played}/{total}
+                              </span>
+                              <span className="so-bar">
+                                <i style={{ width: `${Math.round((played / total) * 100)}%` }} />
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="muted-num">{g.key === "upcoming" ? total : played}</span>
+                          )
+                        ) : (
+                          <span className="muted">-</span>
+                        )}
+                      </td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </Section>
-        );
-      })}
-    </div>
+                  );
+                })}
+              </tbody>
+            ))}
+          </table>
+        </div>
+      </div>
+    </Section>
   );
 }
 

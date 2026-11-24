@@ -13783,7 +13783,7 @@ function GroupsTab({
 
         {groupsTab === "value" && results && (
           <PriceVsPointsPanel
-            title="Player Price vs Points (Groups)"
+            title="Player Price vs Points"
             rows={valueData.rows}
             slope={valueData.slope}
             intercept={valueData.intercept}

@@ -4375,7 +4375,6 @@ def discover_and_import_new_fantasy_events() -> Dict[str, Any]:
     existing = {int(e["event_id"]) for e in list_events()}
     removed = set(list_deleted_event_ids())  # pruned by the operator: never re-imported
     new_ids = [fid for fid in found if fid not in existing and fid not in removed]
-    prev_active = get_active_event_id()
     imported: List[int] = []
     failed: List[Dict[str, Any]] = []
     for fid in new_ids:
@@ -4408,11 +4407,6 @@ def discover_and_import_new_fantasy_events() -> Dict[str, Any]:
             refreshed.append(note)
         except Exception as exc:  # noqa: BLE001 — one event must not stop the rest
             refreshed.append(f"{fid}: failed ({str(exc)[:120]})")
-    if prev_active is not None and (imported or refreshed):
-        try:
-            set_active_event(int(prev_active))
-        except Exception:
-            logger.exception("Could not restore active event %s after auto-import", prev_active)
     # Sync names from the fantasy page nav for every event we hold — it names
     # per-stage events unambiguously where URL slugs cannot.
     renamed = []
@@ -4487,7 +4481,6 @@ def import_hltv_event(payload: Dict[str, Any]):
         "status": "ok",
         **counts,
         "event_id": int(event_id),
-        "active_event_id": int(event_id),
         **ref,
         "group_format": (autofill or {}).get("group_format"),
         "group_count": len((autofill or {}).get("groups") or []) if autofill else 0,

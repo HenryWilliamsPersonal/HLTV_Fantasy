@@ -217,7 +217,13 @@ def _import_money_draft_data(
             hltv_event_id=hltv_event_id,
             hltv_event_url=hltv_event_url,
         )
-        set_active_event(int(event_id))
+        # Importing never changes the operator's active event (the nightly
+        # import refreshes every open event); only the very first event
+        # becomes active, so a fresh install has one.
+        from backend.data.event_db import get_active_event_id
+
+        if get_active_event_id() is None:
+            set_active_event(int(event_id))
     from backend.services import event_rosters
 
     event_rosters.invalidate()
